@@ -10,61 +10,86 @@ const particle_mesh = array<v3, ${partDraws}>(${partWgsl});
 
 struct VertOut {
     @builtin(position) position: v4,
-    @location(0) vertpos:v3,
+    @location(0) worldpos:v3,
     @location(1) norm:v3,
     @location(2) uv:v2,
-    @location(3) @interpolate(flat) mesh:u32,
+    @location(3) @interpolate(flat) selected:u32,
+    @location(4) @interpolate(flat) mesh:u32,
 };
 
+struct FragIn {
+    @builtin(front_facing) front: bool,
+    @location(0) worldpos:v3,
+    @location(1) norm:v3,
+    @location(2) uv:v2,
+    @location(3) @interpolate(flat) selected:u32,
+    @location(4) @interpolate(flat) mesh:u32,
+}
 
 
-@vertex fn vert_surface(@location(0) pos:v3,
-                        @location(1) norm:v3,
-                        @location(2) mesh:u32,
-                        @location(3) uv:v2) -> VertOut {
+
+@vertex fn vert_surf(@location(0) pos:v3,
+                     @location(1) norm:v3,
+                     @location(2) mesh:u32,
+                     @location(3) uv:v2) -> VertOut {
     var output:VertOut;
-    output.position = camera.projection * camera.modelview * v4(pos, 1.0);
-    output.vertpos = pos;
+    output.worldpos = pos;
+    output.position = camera.projection * camera.modelview * v4(output.worldpos, 1.0);
     output.norm = norm;
     output.uv = uv;
     output.mesh = mesh;
     return output;
 }
 
-/*@vertex fn vert_particle(@builtin(vertex_index) vertidx:u32,
-                         @builtin(instance_index) instidx:u32) -> VertOut {
-    let p = &particles[instidx];
-    let vpos = particle_mesh[vertidx] * camera.d/2.0;
-    var output = vert((*p).si + vpos, normalize(vpos));
-    output.color = meshes[(*p).mesh].pcolor;
-    if (i32(instidx) == camera.selection) {
-        output.color.r = 1 - output.color.r;
-    }
+@vertex fn vert_part(@builtin(vertex_index) vertidx:u32,
+                     @builtin(instance_index) instidx:u32,
+                     @location(0) partPos:v3,
+                     @location(1) mesh:u32) -> VertOut {
+    var output:VertOut;
+    let vertPos = particle_mesh[vertidx];
+    output.worldpos = partPos + vertPos;
+    output.position = camera.projection * camera.modelview * v4(output.worldpos, 1.0);    
+    output.norm = normalize(vertPos);
+    output.mesh = mesh;
+    output.selected = select(0u, 1u, i32(instidx) == camera.selection);
     return output;
-    }*/
-
-
-@fragment fn frag_opaque(input:VertOut) -> @location(0) v4 {
-    return frag_surface(input, false);
 }
 
-@fragment fn frag_trans(input:VertOut) -> @location(0) v4 {
-    return frag_surface(input, true);
+@fragment fn frag_part(input:FragIn) -> @location(0) v4 {
+    var color = meshes[input.mesh].pcolor;
+    if (color.a < 0.5) { discard; }
+    color.a = 1.0;
+    if (input.selected == 1u) {
+        color.r = 1 - color.r;
+    }
+    return frag(input, color);
 }
 
 
-fn frag_surface(input:VertOut, transparents:bool) -> v4 {
+@fragment fn frag_surf_opaque(input:FragIn) -> @location(0) v4 {
+    return frag_surf(input, false);
+}
+
+@fragment fn frag_surf_transp(input:FragIn) -> @location(0) v4 {
+    return frag_surf(input, true);
+}
+
+fn frag_surf(input:FragIn, transp:bool) -> v4 {
     let m = &meshes[input.mesh];
     let color = (*m).color * select(textureSample(tex, samp, input.uv, (*m).tex), vec4(1), (*m).tex < 0);
-    if (transparents && color.a >= 0.9999) { discard; }
-    if (!transparents && color.a < 0.9999) { discard; }    
-
-    
+    if (transp && color.a >= 0.9999) { discard; }
+    if (!transp && color.a < 0.9999) { discard; }
     if (color.a < 0.0001) { discard; }
+    return frag(input, color);
+}
+
+
+fn frag(input:FragIn, color:v4) -> v4 {
+    if (!input.front) { discard; }
     var mix = color.rgb * ambient;
     for (var i = 0; i < ${numLights}; i += 1) {
         let light = &lights[i];
-        var lightdir = (*light).pos - input.vertpos;
+        var lightdir = (*light).pos - input.worldpos;
         let distance = length(lightdir);
         let lightmag = (*light).color * (*light).power / (0.1 + (distance*distance));
         lightdir = normalize(lightdir);
@@ -73,7 +98,7 @@ fn frag_surface(input:VertOut, transparents:bool) -> v4 {
         let lambertian = max(dot(lightdir, input.norm), 0.0);
         var specular = 0.0f;
         if (lambertian > 0.0) {
-            let viewdir = normalize(camera.pos - input.vertpos);
+            let viewdir = normalize(camera.pos - input.worldpos);
             let reflectdir = reflect(-lightdir, input.norm);
             let specAngle = max(dot(reflectdir, viewdir), 0.0);
             specular = pow(specAngle, shininess);

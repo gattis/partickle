@@ -158,8 +158,8 @@ module.GPU = class GPU {
                   blend: { color: { operation: 'add', srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' },
                            alpha: { operation: 'add', srcFactor: 'one', dstFactor: 'zero' }}}
             ]},
-            primitive: { topology:'triangle-list', cullMode: 'back' },
-            depthStencil: { depthWriteEnabled:true, depthCompare:'less-equal', format:this.depthFmt },
+            primitive: { topology:'triangle-list', cullMode: 'none' },
+            depthStencil: { depthWriteEnabled:true, depthCompare:'less', format:this.depthFmt },
         })
         return args
     }

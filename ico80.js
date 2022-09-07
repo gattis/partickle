@@ -1,6 +1,6 @@
 const a = 0.0, b = 0.309010, c = 0.5, d = 0.525725, e = 0.809015, f = 0.850650, g = 1.0
 
-globalThis.particleMesh = [
+globalThis.partMesh = [
 	Vec3.of(-f, a, -d), Vec3.of(-c, -b, -e), Vec3.of(-e, -c, -b),
 	Vec3.of(a, -d, -f), Vec3.of(-c, -b, -e), Vec3.of(a, a, -g),
 	Vec3.of(-f, a, -d), Vec3.of(-e, -c, -b), Vec3.of(-g, a, a),

@@ -57,7 +57,8 @@ const TETRA = { url: 'tetra.obj', fext: Vec3.of(0,0,0),
                 particleColor: CLEAR, color: Vec4.of(1,1,1,1), fshape: 0,
                 sample:true, lock:()=>0.9 }
 
-const KNOT = { url: 'knot.obj', fext: Vec3.of(0,0,0), color: Vec4.of(.5,.5,.5,1), offset: Vec3.of(0,0,1), sample:true}
+const KNOT = { url: 'knot.obj', fext: Vec3.of(0,0,0), color: Vec4.of(.5,.5,.5,1), offset: Vec3.of(0,0,1),
+               particleColor: Vec4.of(.5,.5,.5,0.3), sample:true}
 
 const HELPER = { url: 'helper.obj', scale: Vec3.of(2,2,2), sample: false, fext: Vec3.of(0) }
 
@@ -269,7 +270,8 @@ module.Sim = class Sim {
             part.q = part.si.sub(meshes[part.mesh].c0)
         for (const vert of verts)
             vert.q = vert.pos.sub(meshes[vert.mesh].c0)
-        
+            
+
         const params = Params.alloc()
         params.fcol = FCOL
         params.fshape = FSHAPE
@@ -292,7 +294,7 @@ module.Sim = class Sim {
             meshes: gpu.buf({ data:meshes, usage: 'STORAGE|COPY_DST|COPY_SRC' }),
             camera: gpu.buf({ data:camera, usage: 'UNIFORM|COPY_DST' }),
             params: gpu.buf({ data:params, usage: 'UNIFORM|COPY_DST' }),
-            tris: gpu.buf({ data:tris, usage: 'STORAGE|VERTEX|COPY_SRC' }),
+            tris: gpu.buf({ data:tris, usage: 'STORAGE|VERTEX|COPY_SRC|COPY_DST' }),
             cnts: gpu.buf({ type:GPU.array({ type:i32, length: threads**3 }), usage: 'STORAGE|COPY_DST' }),
             work1: gpu.buf({ type:GPU.array({ type:i32, length: threads**2 }), usage: 'STORAGE' }),
             work2: gpu.buf({ type:GPU.array({ type:i32, length: threads }), usage: 'STORAGE' }),
@@ -339,12 +341,12 @@ module.Sim = class Sim {
 
     run() {
         const { gpu, compute, render } = this
-        const loop = () => {
+        const loop = async () => {
             if (!gpu.okay) return;
-            render.step()
-            compute.step()
-            compute.step()
-            compute.step()
+            await render.step()
+            await compute.step()
+            await compute.step()
+            await compute.step()
             requestAnimationFrame(loop);
         }
         requestAnimationFrame(loop);
@@ -465,7 +467,7 @@ class Compute {
         localStorage.paused = val ? 'true' : ''
     }
 
-    step() {
+    async step() {
         const { gpu, bufs, meshes, possessed, params } = this.sim
         if (!this.paused || this.fwdstep) {
             for (const idx of possessed) {
@@ -511,8 +513,11 @@ class Render {
         
         camera.d = D
         camera.selection = -1
-        
-        const partWgsl = particleMesh.map(v=>`v3(${v.x}, ${v.y}, ${v.z})`).join(','), partDraws = particleMesh.length
+
+        const partDraws = partMesh.length
+        for (const i of range(partDraws))
+            partMesh[i] = partMesh[i].mulc(D/2)
+        const partWgsl = partMesh.map(v=>`v3(${v.x}, ${v.y}, ${v.z})`).join(',')
         let wgsl = (await fetchtext('./render.wgsl'))
         wgsl = wgsl.interp({partWgsl, partDraws, numLights: lights.length })
         const shader = gpu.shader({ wgsl, defs:[Vertex, Particle, Mesh, Camera, Light],
@@ -526,34 +531,36 @@ class Render {
         for (const mesh of meshes)
             if (mesh.pcolor[3] > 0)
                 showParticles = true
-
-        let partPipe = null
-        if (showParticles)
-            partpipe = gpu.renderPipe({
-                shader, vert:'vert_particle', frag:'frag',
-                binds: ['particles', 'meshes', 'camera', 'lights']
-            })
+        
+        const partPipe = gpu.renderPipe({
+            shader, vert:'vert_part', frag:'frag_part', binds: ['meshes', 'camera', 'lights'],
+            vertBufs: [{ buf:bufs.particles, arrayStride:Particles.stride, stepMode: 'instance',
+                         attributes: [{ shaderLocation:0, offset:Particle.si.off, format:'float32x3' },
+                                      { shaderLocation:1, offset:Particle.mesh.off, format:'uint32' }]}]
+        })
+        
         const surfPipeDesc = {
-            shader, vert:'vert_surface', binds: ['meshes', 'camera', 'lights', 'tex', 'samp'],
-            vertBufs: [{ buf: bufs.tris, arrayStride: Triangle.stride,
+            shader, vert:'vert_surf', binds: ['meshes', 'camera', 'lights', 'tex', 'samp'],
+            vertBufs: [{ buf:bufs.tris, arrayStride:Triangle.stride,
                          attributes: [{ shaderLocation:0, offset:TriVert.pos.off, format:'float32x3' },
                                       { shaderLocation:1, offset:TriVert.norm.off, format:'float32x3' },
-                                      { shaderLocation:2, offset:TriVert.mesh.off, format:'uint32' },                                      
+                                      { shaderLocation:2, offset:TriVert.mesh.off, format:'uint32' },
                                       { shaderLocation:3, offset:TriVert.uv.off, format:'float32x2' }]}]
         }
 
-        const surfPipeOpaque = gpu.renderPipe({ ...surfPipeDesc, frag:'frag_opaque' })
-        const surfPipeTrans = gpu.renderPipe({  ...surfPipeDesc, frag:'frag_trans' })
+        const surfPipeOpaque = gpu.renderPipe({ ...surfPipeDesc, frag:'frag_surf_opaque' })
+        const surfPipeTransp = gpu.renderPipe({ ...surfPipeDesc, frag:'frag_surf_transp' })
         
 
         let tex = gpu.texture(bitmaps)
         let samp = gpu.sampler()       
-        const com = {meshes:bufs.meshes, camera:bufs.camera, lights:bufs.lights, tex, samp }
+        const binds = {meshes:bufs.meshes, camera:bufs.camera, lights:bufs.lights}
         const draws = []
-        draws.push(gpu.draw({ pipe:surfPipeOpaque, dispatch:tris.length*3, binds:com }))
-        if (partPipe)
-            draws.push(gpu.draw({ pipe:partPipe, dispatch:[partDraws, particles.length], binds:{ particles:bufs.particles, ...com }}))
-        draws.push(gpu.draw({ pipe:surfPipeTrans, dispatch:tris.length*3, binds:com }))
+        draws.push(gpu.draw({ pipe:surfPipeOpaque, dispatch:tris.length*3, binds:{ ...binds, tex, samp }}))
+        if (showParticles)
+            draws.push(gpu.draw({ pipe:partPipe, dispatch:[partDraws, particles.length], binds }))
+        draws.push(gpu.draw({ pipe:surfPipeTransp, dispatch:tris.length*3, binds:{ ...binds, tex, samp }}))
+        
         
         this.batch = gpu.encode([gpu.renderPass(draws)])
 
@@ -568,7 +575,7 @@ class Render {
         return ret
     }
     
-    step() {
+    async step() {
         const { camera, lights, canvas, gpu, bufs } = this.sim
         camera.pos = camPos
         camera.projection = Mat4.perspective(FOV, canvas.width/canvas.height, .01, 200)
@@ -583,6 +590,27 @@ class Render {
             offset += 2*PI/3
         }
         gpu.write({ buf:bufs.lights, data: lights})
+
+        /*await gpu.dev.queue.onSubmittedWorkDone()
+        const tris = new Triangles(await gpu.read(bufs.tris))
+        const triArr = []
+        for (const tri of tris)
+            triArr.push(tri)
+        triArr.sort((a,b) => {
+            let ca = Vec3.of(0), cb = Vec3.of(0)
+            for (const i of range(3)) {
+                ca = ca.add(a[i].pos)
+                cb = cb.add(b[i].pos)
+            }
+            ca = ca.divc(3)
+            cb = cb.divc(3)
+            return cb.dist(camPos) - ca.dist(camPos)
+        })
+        for (const i of range(tris.length))
+            tris[i] = triArr[i]
+        gpu.write({ buf:bufs.tris, data: tris })
+        await gpu.dev.queue.onSubmittedWorkDone()*/
+        
         this.batch.execute()
         this.frames++
         this.tlast = clock()
