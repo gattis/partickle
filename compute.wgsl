@@ -340,6 +340,20 @@ fn vertpos(@builtin(global_invocation_id) gid:vec3<u32>) {
     }
 }
 
+@compute @workgroup_size(${threads})
+fn sort_tris(@builtin(global_invocation_id) gid:vec3<u32>) {
+    let tid:u32 = gid.x;
+    let ntris = arrayLength(&tris);
+    if (tid >= ntris) { return; }
+    let tri = &tris[tid];
+    for (var i = 0; i < 3; i += 1) {
+        let tv = &(*tri)[i];
+        let v = &vertices[(*tv).vidx];
+        (*tv).pos = (*v).pos;
+        (*tv).norm = (*v).norm;
+        (*tv).mesh = (*v).mesh;
+    }
+}
 
 
 @compute @workgroup_size(${threads})

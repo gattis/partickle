@@ -60,12 +60,9 @@ module.GPU = class GPU {
             depthClearValue: 1.0,
             depthLoadOp: 'clear',
             depthStoreOp: 'store',
-            stencilClearValue: 1.0,
-            stencilLoadOp: 'clear',
-            stencilStoreOp: 'store'
         }
         Object.assign(this, { dev, adapter, ctx, fmt, threads, colorAttachment, depthAttachment, sampleCount: 4,
-                              depthFmt: 'depth24plus-stencil8' })
+                              depthFmt: 'depth32float' })
         this.okay = true
 
 
@@ -113,7 +110,8 @@ module.GPU = class GPU {
         const { compute, wgsl, defs, storage, uniform, textures, samplers } = args
         const binds = []
         for (const [label,type] of Object.entries(storage||{}))
-            binds.push({ label, type, as: compute ? '<storage,read_write>':'<storage>', layout:{ buffer:{ type:'storage' } }, idx:binds.length })
+            binds.push({ label, type, as: compute ? '<storage,read_write>':'<storage>',
+                         layout:{ buffer:{ type: compute ? 'storage' : 'read-only-storage' } }, idx:binds.length })
         for (const [label,type] of Object.entries(uniform||{}))
             binds.push({ label, type, as: '<uniform>', layout:{ buffer:{ type:'uniform' } }, idx:binds.length })
         for (const [label,type] of Object.entries(textures||{}))
@@ -145,20 +143,24 @@ module.GPU = class GPU {
 
     renderPipe(args) {
         const buffers = args.vertBufs ||= []
-        const { shader, frag, vert, vertBufs } = args
+        let { shader, frag, vert, vertBufs, binds } = args
+        const visibility = GPUShaderStage.FRAGMENT | GPUShaderStage.VERTEX
+        const entries = shader.binds.filter(b => binds.includes(b.label)).map(b => (
+            { binding:b.idx, ...b.layout,
+              visibility: GPUShaderStage.FRAGMENT | (b.label in shader.uniform ? GPUShaderStage.VERTEX : 0) }))
+        args.layout = this.dev.createBindGroupLayout({ entries })
         args.pipeline = this.dev.createRenderPipeline({
-            layout: 'auto',
+            layout: this.dev.createPipelineLayout({ bindGroupLayouts: [ args.layout ] }),
             multisample: { count: this.sampleCount },
             vertex: { module: shader.module, entryPoint:vert, buffers:vertBufs },
             fragment: { module: shader.module , entryPoint:frag, targets: [
                 { format: this.fmt,
-                  blend: { color: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
-                           alpha: { operation: 'add', srcFactor: 'one', dstFactor: 'one' }}}
+                  blend: { color: { operation: 'add', srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' },
+                           alpha: { operation: 'add', srcFactor: 'one', dstFactor: 'zero' }}}
             ]},
-            primitive: { topology:'triangle-list', cullMode:'back' },
+            primitive: { topology:'triangle-list', cullMode: 'back' },
             depthStencil: { depthWriteEnabled:true, depthCompare:'less-equal', format:this.depthFmt },
         })
-        args.layout = args.pipeline.getBindGroupLayout(0)
         return args
     }
 
@@ -399,6 +401,9 @@ module.GPU = class GPU {
                 get() { return new type(this.buffer, this.byteOffset + off, type.size) },
                 set(v) { return new Int8Array(this.buffer,this.byteOffset+off,type.size).set(new Int8Array(v.buffer,v.byteOffset,type.size)) }   
             })
+            //static toWGSL() {
+            //    let fieldWGSL = cls.fields.map(f => `${f.name}: ${f.type.name}`).join(',\n')
+            //    return `struct ${cls.name} {\n${fieldWGSL}\n}\n`
         }
         
         cls.stride = roundUp(opt.type.size, opt.type.align)
@@ -424,12 +429,14 @@ module.uatomicarray = GPU.array({ type: uatomic })
 
 module.Vec2 = GPU.struct({
     name: 'vec2<f32>',
-    fields: [['x', f32], ['y', f32]]
+    fields: [['x', f32], ['y', f32]],
+    size: 8, align: 8
 })
 
 module.uVec2 = GPU.struct({
     name: 'vec2<u32>',
-    fields: [['x', u32], ['y', u32]]
+    fields: [['x', u32], ['y', u32]],
+    size: 8, align: 8
 })
 
 module.iVec3 = GPU.struct({
@@ -504,7 +511,7 @@ module.Vec3 = class extends Float32Array {
 module.Vec4 = GPU.struct({
     name: 'vec4<f32>',
     fields: [['x', f32], ['y', f32], ['z', f32], ['w', f32]],
-    align: 16,
+    size: 16, align: 16,
     members: {
         dot: function(b) { return this.x*b.x + this.y*b.y + this.z*b.z + this.w*b.w },
         toString: function() {
@@ -517,7 +524,7 @@ module.Mat3 = GPU.array({
     name: 'mat3x3<f32>',
     type: Vec3,
     length: 3,
-    align: 16,
+    align: 16, size: 48,
     statics: {
         of: (arrmat) => {
             const m = Mat3.alloc()
@@ -550,6 +557,7 @@ module.Mat4 = GPU.array({
     name: 'mat4x4<f32>',
     type: Vec4,
     length: 4,
+    align: 16, size: 64,
     statics: {
         of: (arrmat) => {
             const m = Mat4.alloc()
