@@ -44,21 +44,27 @@ const TORUS = { url: 'torus.obj', offset: Vec3.of(0,0,1), scale: Vec3.of(1,1,1),
 
 const GROUND = { url: 'ground.obj', texUrl: 'marble.png',
                  fext: Vec3.of(0,0,0),
-                 particleColor: CLEAR, color: Vec4.of(1,1,1,1), fshape: 0,
+                 particleColor: CLEAR, color: Vec4.of(1,1,1,1),
                  sample:true, lock:()=>0.9 }
 
-const WALL = { url: 'wall.obj', fext: Vec3.of(0,0,0), sample: true, 
-               particleColor: CLEAR, color: Vec4.of(.1,.1,.1,.2) }
 
-const CUBE = { url: 'cube.obj', fext: Vec3.of(0,0,0), sample: true,
-               particleColor: CLEAR, color: Vec4.of(.1,.5,.2,0.75)}
+
+const CUBE = { url: 'cube.obj', sample: true, color: Vec4.of(.1,.5,.2,0.75) }
+
+const WALL = { url: 'wall.obj', fext: Vec3.of(0,0,0), sample: true, color: Vec4.of(.1,.1,.1,.2), lock:()=>0.9 }
+
+/*const WALL = { url: CUBE.url, fext: Vec3.of(0,0,0), sample: true, color: Vec4.of(.1,.1,.1,.2), lock:()=>0.9 }
+const WALLS = [{ ...WALL, scale:Vec3.of(3,0.08,2), offset:Vec3.of(0.0,-1.46,1) },
+               { ...WALL, scale:Vec3.of(3,0.08,2), offset:Vec3.of(0.0,1.46,1) },
+               { ...WALL, scale:Vec3.of(0.08,3-.16,2), offset:Vec3.of(-1.46,0,1) },
+               { ...WALL, scale:Vec3.of(0.08,3-.16,2), offset:Vec3.of(1.46,0,1) }]*/
 
 const TETRA = { url: 'tetra.obj', fext: Vec3.of(0,0,0),
                 particleColor: CLEAR, color: Vec4.of(1,1,1,1), fshape: 0,
                 sample:true, lock:()=>0.9 }
 
-const KNOT = { url: 'knot.obj', fext: Vec3.of(0,0,0), color: Vec4.of(.5,.5,.5,1), offset: Vec3.of(0,0,1),
-               particleColor: Vec4.of(.5,.5,.5,0.3), sample:true}
+const KNOT = { url: 'knot.obj', color: Vec4.of(.5,.5,.5,1), offset: Vec3.of(0,0,1),
+               particleColor: Vec4.of(.5,.5,.5,0.3), sample:true, fext:Vec3.of(0)}
 
 const HELPER = { url: 'helper.obj', scale: Vec3.of(2,2,2), sample: false, fext: Vec3.of(0) }
 
@@ -509,7 +515,7 @@ class Render {
     }
 
     async setup() {
-        const { gpu, meshes, bufs, tris, bitmaps, particles, camera, lights, possessed } = this.sim
+        const { gpu, meshes, bufs, tris, bitmaps, particles, verts, camera, lights, possessed } = this.sim
         
         camera.d = D
         camera.selection = -1
@@ -531,7 +537,8 @@ class Render {
         for (const mesh of meshes)
             if (mesh.pcolor[3] > 0)
                 showParticles = true
-        
+
+        console.log('partPipe')
         const partPipe = gpu.renderPipe({
             shader, vert:'vert_part', frag:'frag_part', binds: ['meshes', 'camera', 'lights'],
             vertBufs: [{ buf:bufs.particles, arrayStride:Particles.stride, stepMode: 'instance',
@@ -547,20 +554,32 @@ class Render {
                                       { shaderLocation:2, offset:TriVert.mesh.off, format:'uint32' },
                                       { shaderLocation:3, offset:TriVert.uv.off, format:'float32x2' }]}]
         }
-
+        console.log('surfPipeOpaque')
         const surfPipeOpaque = gpu.renderPipe({ ...surfPipeDesc, frag:'frag_surf_opaque' })
-        const surfPipeTransp = gpu.renderPipe({ ...surfPipeDesc, frag:'frag_surf_transp' })
-        
+        console.log('surfPipeTransp')
+        const surfPipeTransp = gpu.renderPipe({ ...surfPipeDesc, frag:'frag_surf_transp', depthWriteEnabled: false,
+                                                blend: { color: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+                                                         alpha: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' }}})
+        console.log('normPipe')
+        const normPipe = gpu.renderPipe({
+            shader, vert:'vert_norm', frag:'frag_norm', binds: ['camera'], topology: 'line-list',
+            vertBufs: [{ buf:bufs.tris, arrayStride:Triangle.stride, stepMode: 'instance',
+                         attributes: [{ shaderLocation:0, offset:TriVert.pos.off, format:'float32x3' },
+                                      { shaderLocation:1, offset:TriVert.norm.off, format:'float32x3' }]}]
+        })
+
+
 
         let tex = gpu.texture(bitmaps)
         let samp = gpu.sampler()       
         const binds = {meshes:bufs.meshes, camera:bufs.camera, lights:bufs.lights}
         const draws = []
         draws.push(gpu.draw({ pipe:surfPipeOpaque, dispatch:tris.length*3, binds:{ ...binds, tex, samp }}))
+        draws.push(gpu.draw({ pipe:normPipe, dispatch:[2, tris.length*3], binds:{ camera:bufs.camera }}))
         if (showParticles)
             draws.push(gpu.draw({ pipe:partPipe, dispatch:[partDraws, particles.length], binds }))
         draws.push(gpu.draw({ pipe:surfPipeTransp, dispatch:tris.length*3, binds:{ ...binds, tex, samp }}))
-        
+
         
         this.batch = gpu.encode([gpu.renderPass(draws)])
 

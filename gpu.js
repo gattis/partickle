@@ -48,7 +48,7 @@ module.GPU = class GPU {
             }
         })
         const ctx = this.canvas.getContext('webgpu')
-        const fmt = "rgba16float" //navigator.gpu.getPreferredCanvasFormat()      
+        const fmt = navigator.gpu.getPreferredCanvasFormat()      
         ctx.configure({ device: dev, format: fmt, alphaMode: 'premultiplied' })
         const threads = floor(sqrt(limits.maxComputeWorkgroupsPerDimension))
         const colorAttachment = {
@@ -61,8 +61,7 @@ module.GPU = class GPU {
             depthLoadOp: 'clear',
             depthStoreOp: 'store',
         }
-        Object.assign(this, { dev, adapter, ctx, fmt, threads, colorAttachment, depthAttachment, sampleCount: 4,
-                              depthFmt: 'depth32float' })
+        Object.assign(this, { dev, adapter, ctx, fmt, threads, colorAttachment, depthAttachment, sampleCount: 4, depthFmt: 'depth32float' })
         this.okay = true
 
 
@@ -143,24 +142,24 @@ module.GPU = class GPU {
 
     renderPipe(args) {
         const buffers = args.vertBufs ||= []
-        let { shader, frag, vert, vertBufs, binds } = args
+        let { shader, frag, vert, vertBufs, binds, topology, depthWriteEnabled, blend } = args
+        if (depthWriteEnabled == undefined) depthWriteEnabled = true
+        topology ||= 'triangle-list'
         const visibility = GPUShaderStage.FRAGMENT | GPUShaderStage.VERTEX
         const entries = shader.binds.filter(b => binds.includes(b.label)).map(b => (
             { binding:b.idx, ...b.layout,
               visibility: GPUShaderStage.FRAGMENT | (b.label in shader.uniform ? GPUShaderStage.VERTEX : 0) }))
         args.layout = this.dev.createBindGroupLayout({ entries })
-        args.pipeline = this.dev.createRenderPipeline({
+        const pipeDesc = {        
             layout: this.dev.createPipelineLayout({ bindGroupLayouts: [ args.layout ] }),
             multisample: { count: this.sampleCount },
             vertex: { module: shader.module, entryPoint:vert, buffers:vertBufs },
-            fragment: { module: shader.module , entryPoint:frag, targets: [
-                { format: this.fmt,
-                  blend: { color: { operation: 'add', srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' },
-                           alpha: { operation: 'add', srcFactor: 'one', dstFactor: 'zero' }}}
-            ]},
-            primitive: { topology:'triangle-list', cullMode: 'none' },
-            depthStencil: { depthWriteEnabled:true, depthCompare:'less', format:this.depthFmt },
-        })
+            fragment: { module: shader.module , entryPoint:frag, targets: [{ format: this.fmt, blend }]},
+            primitive: { topology, cullMode: 'back' },
+            depthStencil: { depthWriteEnabled , depthCompare:'less-equal', format:this.depthFmt },
+        }
+        console.log(pipeDesc)
+        args.pipeline = this.dev.createRenderPipeline(pipeDesc)
         return args
     }
 
@@ -174,7 +173,7 @@ module.GPU = class GPU {
                                                  usage: GPUTextureUsage.TEXTURE_BINDING|GPUTextureUsage.RENDER_ATTACHMENT|GPUTextureUsage.COPY_DST })
         bitmaps.forEach((bitmap,z) => {
             let source = { source: bitmap, origin: {x:0, y:0, z:0}, flipY: true }
-            let destination = { texture: texture, mipLevel: 0, origin: {x:0, y:0, z:z}, aspect: 'all', colorSpace: 'srgb', premultipliedAlpha: true }
+            let destination = { texture: texture, mipLevel: 0, origin: {x:0, y:0, z:z}, aspect: 'all', colorSpace: 'srgb', premultipliedAlpha: false }
             this.dev.queue.copyExternalImageToTexture(source, destination, [bitmap.width, bitmap.height, 1])
         })
         return { resource: texture.createView({ format: this.fmt, dimension: '2d-array', aspect: 'all', baseMipLevel: 0,

@@ -368,9 +368,10 @@ fn normals(@builtin(global_invocation_id) gid:vec3<u32>) {
     for (var i = 0u; i < nedges; i = i + 1u) {
         let b = vertices[(*v).edges[i % nedges]].pos - pos;
         let c = vertices[(*v).edges[(i+1u) % nedges]].pos - pos;
-        
+        let n = cross(c,b);
+        let area = 0.5 * length(n);
         let angle = acos(dot(normalize(b),normalize(c)));
-        norm += angle * cross(c,b);
+        norm += angle * normalize(n);
     }
     norm = normalize(norm);
     (*v).norm = norm;

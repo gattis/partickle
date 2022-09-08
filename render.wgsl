@@ -48,11 +48,28 @@ struct FragIn {
     var output:VertOut;
     let vertPos = particle_mesh[vertidx];
     output.worldpos = partPos + vertPos;
-    output.position = camera.projection * camera.modelview * v4(output.worldpos, 1.0);    
+    output.position = camera.projection * camera.modelview * v4(output.worldpos, 1.0);
     output.norm = normalize(vertPos);
     output.mesh = mesh;
     output.selected = select(0u, 1u, i32(instidx) == camera.selection);
     return output;
+}
+
+@vertex fn vert_norm(@builtin(vertex_index) vertidx:u32,
+                     @location(0) vertPos:v3,
+                     @location(1) norm:v3) -> @builtin(position) v4 {
+
+    var worldPos = vertPos;
+    if (vertidx == 1u) {
+        worldPos += norm * 0.05;
+    }
+    
+    return camera.projection * camera.modelview * v4(worldPos, 1.0);
+
+}
+
+@fragment fn frag_norm() -> @location(0) v4 {
+    return v4(1,1,1,1);
 }
 
 @fragment fn frag_part(input:FragIn) -> @location(0) v4 {
