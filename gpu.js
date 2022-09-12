@@ -1,5 +1,5 @@
 const module = globalThis
-const { cos, sin, acos, asin, cbrt, sqrt, PI, random, ceil, floor, tan, max, min, log2 } = Math
+const { abs, cos, sin, acos, asin, cbrt, sqrt, PI, random, ceil, floor, tan, max, min, log2 } = Math
 import './utils.js'
 
 
@@ -34,6 +34,9 @@ module.GPU = class GPU {
     async init() {
         const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' })
         const limits = {}, features = ['timestamp-query']
+        for (const feat of adapter.features)
+            if (feat != 'multi-planar-formats')
+                features.push(feat)
         for (const prop in adapter.limits)
             limits[prop] = adapter.limits[prop]
         
@@ -142,9 +145,10 @@ module.GPU = class GPU {
 
     renderPipe(args) {
         const buffers = args.vertBufs ||= []
-        let { shader, frag, vert, vertBufs, binds, topology, depthWriteEnabled, blend } = args
+        let { shader, frag, vert, vertBufs, binds, topology, depthWriteEnabled, blend, cullMode } = args
         if (depthWriteEnabled == undefined) depthWriteEnabled = true
         topology ||= 'triangle-list'
+        cullMode ||= 'back'
         const visibility = GPUShaderStage.FRAGMENT | GPUShaderStage.VERTEX
         const entries = shader.binds.filter(b => binds.includes(b.label)).map(b => (
             { binding:b.idx, ...b.layout,
@@ -155,10 +159,9 @@ module.GPU = class GPU {
             multisample: { count: this.sampleCount },
             vertex: { module: shader.module, entryPoint:vert, buffers:vertBufs },
             fragment: { module: shader.module , entryPoint:frag, targets: [{ format: this.fmt, blend }]},
-            primitive: { topology, cullMode: 'back' },
-            depthStencil: { depthWriteEnabled , depthCompare:'less-equal', format:this.depthFmt },
+            primitive: { topology, cullMode },
+            depthStencil: { depthWriteEnabled , depthCompare:'less', format:this.depthFmt },
         }
-        console.log(pipeDesc)
         args.pipeline = this.dev.createRenderPipeline(pipeDesc)
         return args
     }
@@ -475,6 +478,8 @@ module.Vec3 = class extends Float32Array {
     set y(v) { return this[1] = v }
     set z(v) { return this[2] = v }
     abs() { return Vec3.of(abs(this[0]), abs(this[1]), abs(this[2])) }
+    copy() { return Vec3.of(this[0], this[1], this[2]) }
+    recip() { return Vec3.of(1/this[0], 1/this[1], 1/this[2]) }
     dist(b) { return sqrt(this.distsq(b)) }
     distsq(b) { return (this[0]-b[0])**2 + (this[1]-b[1])**2 + (this[2]-b[2])**2 }
     dot(b) { return this[0]*b[0] + this[1]*b[1] + this[2]*b[2] }
@@ -488,6 +493,7 @@ module.Vec3 = class extends Float32Array {
     divc(b) { return Vec3.of(this[0]/b, this[1]/b, this[2]/b) }
     div(b) { return Vec3.of(this[0]/b[0], this[1]/b[1], this[2]/b[2]) }
     mag() { return sqrt(this[0]**2 + this[1]**2 + this[2]**2) }
+    minax() { let ax = this[0] < this[1] ? 0 : 1; return this[ax] < this[2] ? ax : 2 }
     ceil() { return Vec3.of(ceil(this[0]), ceil(this[1]), ceil(this[2])) }
     floor() { return Vec3.of(floor(this[0]), floor(this[1]), floor(this[2])) }
     modc(b) { return Vec3.of(this[0] % b, this[1] % b, this[2] % b) }

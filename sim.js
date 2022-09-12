@@ -15,7 +15,7 @@ const FCOL = 0.5
 const FSHAPE = 0.01
 const FRICTION = 1.5
 
-const FOV = 70
+const FOV = 60
 let UP = Vec3.of(0,0,1)
 
 const RED = Vec4.of(0.8, 0.2, 0.4, 1.0)
@@ -24,54 +24,44 @@ const GREEN = Vec4.of(0.1, 0.5, 0.2, 1.0);
 const BLACK = Vec4.of(0.0, 0.0, 0.0, 1.0);
 const CLEAR = Vec4.of(0.0, 0.0, 0.0, 0.0);
 
-let camPos = Vec3.of(0, -2, 1.3)
+let camPos = Vec3.of(0, -4, 3)
 let camLR = 0
-let camUD = 0
+let camUD = -PI/6
 const camFwd = () => Vec3.of(sin(camLR) * cos(camUD), cos(camLR) * cos(camUD), sin(camUD))
+const showNormals = false
+const showGrads = true
+const showAxes = false
+const particleColor = Vec4.of(.3,.3,.9,1)
 
+const QUINN = { url:'quinn.obj', texUrl:'quinn.png', offset:Vec3.of(0,0,0), sample:true,
+                scale:Vec3.of(2, 2, 2), fext:Vec3.of(0, 0, -5), color:Vec4.of(1,.9,.9,0.0) }
 
-const QUINN = { url: 'quinn.obj', texUrl: 'quinn.png',
-                offset: Vec3.of(0,0,0), scale: Vec3.of(2, 2, 2), fext: Vec3.of(0, 0, -5),
-                color: Vec4.of(1,.9,.9,0.0), particleColor: RED,
-                sample: true }
-const HAND = { url: 'hand.obj', texUrl: 'hand.png', color: Vec4.of(.9,.9,.9,0), particleColor: GREEN,
-               offset: camPos.sub(Vec3.of(.4,.6,.3)), scale: Vec3.of(3.5,3.5,3.5),
-               sample: true, possess: true, fext: Vec3.of(0, 0, 0) }
+const HAND = { url:'hand.obj', texUrl:'hand.png', color:Vec4.of(.9,.9,.9,0), 
+               offset:camPos.sub(Vec3.of(.4,.6,.3)), scale:Vec3.of(3.5,3.5,3.5),
+               sample:true, possess:true, fext:Vec3.of(0, 0, 0) }
 
-const TORUS = { url: 'torus.obj', offset: Vec3.of(0,0,1), scale: Vec3.of(1,1,1),
-                color: CLEAR, particleColor: RED, fext: Vec3.of(0, 0, -5),
-                sample: true }
+const TORUS = { url:'torus.obj', offset:Vec3.of(0,0,1), scale:Vec3.of(1,1,1),
+                color:Vec4.of(0.8,0.2,0.1,0.7), sample:true }
 
-const GROUND = { url: 'ground.obj', texUrl: 'marble.png',
-                 fext: Vec3.of(0,0,0),
-                 particleColor: CLEAR, color: Vec4.of(1,1,1,1),
-                 sample:true, lock:()=>0.9 }
+const GROUND = { url:'ground.obj', texUrl:'marble.png', fext:Vec3.of(0,0,0),
+                 color:Vec4.of(1,1,1,0.7), sample:true, lock:()=>0.99 }
 
+const CUBE = { url:'cube.obj', sample:true, color:Vec4.of(.1,.5,.2,0.7), fext:Vec3.of(0), scale:Vec3.of(1) }
 
+const TRI = { url:'tri.obj', sample:true, color:Vec4.of(0.1,0.4,0.6,0.7), fext:Vec3.of(0) }
 
-const CUBE = { url: 'cube.obj', sample: true, color: Vec4.of(.1,.5,.2,0.75) }
+const WALL = { url:'wall.obj', fext:Vec3.of(0,0,0), sample:true, color:Vec4.of(.1,.1,.1,.2), lock:()=>0.9 }
 
-const WALL = { url: 'wall.obj', fext: Vec3.of(0,0,0), sample: true, color: Vec4.of(.1,.1,.1,.2), lock:()=>0.9 }
-
-/*const WALL = { url: CUBE.url, fext: Vec3.of(0,0,0), sample: true, color: Vec4.of(.1,.1,.1,.2), lock:()=>0.9 }
-const WALLS = [{ ...WALL, scale:Vec3.of(3,0.08,2), offset:Vec3.of(0.0,-1.46,1) },
-               { ...WALL, scale:Vec3.of(3,0.08,2), offset:Vec3.of(0.0,1.46,1) },
-               { ...WALL, scale:Vec3.of(0.08,3-.16,2), offset:Vec3.of(-1.46,0,1) },
-               { ...WALL, scale:Vec3.of(0.08,3-.16,2), offset:Vec3.of(1.46,0,1) }]*/
-
-const TETRA = { url: 'tetra.obj', fext: Vec3.of(0,0,0),
-                particleColor: CLEAR, color: Vec4.of(1,1,1,1), fshape: 0,
+const TETRA = { url:'tetra.obj', fext:Vec3.of(0,0,0), color:Vec4.of(1,1,1,1), fshape:0,
                 sample:true, lock:()=>0.9 }
 
-const KNOT = { url: 'knot.obj', color: Vec4.of(.5,.5,.5,1), offset: Vec3.of(0,0,1),
-               particleColor: Vec4.of(.5,.5,.5,0.3), sample:true, fext:Vec3.of(0)}
+const KNOT = { url:'knot.obj', color:Vec4.of(.6,.3,.3,.5), offset:Vec3.of(0,0,1), sample:true }
 
 const HELPER = { url: 'helper.obj', scale: Vec3.of(2,2,2), sample: false, fext: Vec3.of(0) }
 
 const MESHES = [
-    KNOT,
-    GROUND,
-    WALL,
+    TORUS,
+    GROUND
     
 ]
 
@@ -81,16 +71,16 @@ module.Mesh = GPU.struct({
     name: 'Mesh',
     fields: [
         ['c0', Vec3],
-        ['ci', Vec3],
-        ['color', Vec4],
-        ['pcolor', Vec4],
-        ['fext', Vec3],
         ['tex', i32],
+        ['ci', Vec3],
         ['pi', u32],
+        ['pcolor', Vec4],
         ['pf', u32],
-        ['rot', Mat3],
+        ['fext', Vec3],
         ['fshape', f32],
-        ['padding', GPU.array({ type: u32, length: 27 })]        
+        ['color', Vec4],        
+        ['rot', Mat3],
+        ['padding', GPU.array({ type: u32, length: 28 })]        
     ]
 })
 
@@ -98,12 +88,13 @@ module.Vertex = GPU.struct({
     name: 'Vertex',
     fields: [
         ['pos', Vec3],
-        ['q', Vec3],
         ['mesh', u32],
+        ['q', Vec3],
+        ['particle', i32],
         ['norm', Vec3],
         ['nedges', u32],
-        ['particle', i32],
         ['edges', GPU.array({ type: u32, length: MAXEDGES })]
+        
     ]
 })
         
@@ -134,7 +125,8 @@ module.Camera = GPU.struct({
         ['pos', Vec3],
         ['selection', i32],
         ['forward', Vec3],
-        ['d', f32]
+        ['d', f32],
+        ['ratio', f32],
     ]
 })
 
@@ -224,6 +216,10 @@ module.Sim = class Sim {
                 mesh.tex = bitmaps.length
                 bitmaps.push(obj.bitmap)
             }
+            let nn
+            if (obj.sample) {
+                //nn = new NN(obj.virts)
+            }
             for (const i of range(obj.verts.length)) {
                 const v = verts[cnts.verts++]
                 v.pos = obj.verts[i]
@@ -284,10 +280,10 @@ module.Sim = class Sim {
         params.friction = FRICTION
 
         const camera = Camera.alloc()
-        const lights = GPU.array({ type: Light, length: 3 }).alloc(3)
-        lights[0].color.x = lights[1].color.y = lights[2].color.z = 1
-        lights[0].pos.z = lights[1].pos.z = lights[2].pos.z = 2
-        lights[0].power = lights[1].power = lights[2].power = 5
+        const lights = GPU.array({ type: Light, length: 1 }).alloc(1)
+        lights[0].color = Vec3.of(1,.85,.6); //lights[1].color.y = lights[2].color.z = 1
+        lights[0].pos.z = 3; //lights[1].pos.z = lights[2].pos.z = 2
+        lights[0].power = 5; //lights[1].power = lights[2].power = 5
 
         const threads = gpu.threads
         const pd = ceil(particles.length/gpu.threads)
@@ -320,12 +316,12 @@ module.Sim = class Sim {
     async loadObj(opt) {
         const obj = {
             offset: Vec3.of(0), scale: Vec3.of(1),            
-            color: Vec4.of(1), particleColor: CLEAR,
+            color: Vec4.of(1), particleColor,
             sample: false, fext: FEXT, lock: ()=>0, fshape: 1.0
         }
         Object.assign(obj, opt)
         const data = await (await fetch(obj.url)).text()
-        const lines = data.split(/[\r\n]/).map(line => line.split(/\s/))
+        const lines = data.split(/[\r\n]/).map(line => line.split(/\s/)).filter(l=>l[0] != '#')
         obj.verts = lines.filter(l=>l[0] == 'v').map(ts => {
             let coords = Vec3.of(...ts.slice(1,4).map(parseFloat))
             return coords.mul(obj.scale).add(obj.offset)
@@ -367,6 +363,7 @@ class Compute {
 
     async setup() {
         const {gpu, verts, particles, meshes, params, bufs, pd, vd, td} = this.sim
+        if (particles.length == 0) return
         const threads = gpu.threads
         
         const wgsl = (await fetchtext('./compute.wgsl')).interp({threads, MAXNN, T, D})
@@ -457,6 +454,7 @@ class Compute {
     }
 
     async stats() {
+        if (!this.batch) return {}
         const data = new BigInt64Array(await this.sim.gpu.read(this.batch.stampBuf))
         const labels = this.batch.stampLabels
         const ret = { stamps: data, labels, tstart: this.tstart, tlast: this.tlast, frames: this.frames, tsim: this.tsim }
@@ -474,7 +472,8 @@ class Compute {
     }
 
     async step() {
-        const { gpu, bufs, meshes, possessed, params } = this.sim
+        const { gpu, particles, bufs, meshes, possessed, params } = this.sim
+        if (particles.length == 0) return
         if (!this.paused || this.fwdstep) {
             for (const idx of possessed) {
                 gpu.write({ buf:bufs.meshes, data: meshes, arrayIdx: idx, field: Mesh.ci})
@@ -522,7 +521,7 @@ class Render {
 
         const partDraws = partMesh.length
         for (const i of range(partDraws))
-            partMesh[i] = partMesh[i].mulc(D/2)
+            partMesh[i] = partMesh[i].mulc(D/2 * 0.995)
         const partWgsl = partMesh.map(v=>`v3(${v.x}, ${v.y}, ${v.z})`).join(',')
         let wgsl = (await fetchtext('./render.wgsl'))
         wgsl = wgsl.interp({partWgsl, partDraws, numLights: lights.length })
@@ -538,7 +537,6 @@ class Render {
             if (mesh.pcolor[3] > 0)
                 showParticles = true
 
-        console.log('partPipe')
         const partPipe = gpu.renderPipe({
             shader, vert:'vert_part', frag:'frag_part', binds: ['meshes', 'camera', 'lights'],
             vertBufs: [{ buf:bufs.particles, arrayStride:Particles.stride, stepMode: 'instance',
@@ -554,20 +552,29 @@ class Render {
                                       { shaderLocation:2, offset:TriVert.mesh.off, format:'uint32' },
                                       { shaderLocation:3, offset:TriVert.uv.off, format:'float32x2' }]}]
         }
-        console.log('surfPipeOpaque')
-        const surfPipeOpaque = gpu.renderPipe({ ...surfPipeDesc, frag:'frag_surf_opaque' })
-        console.log('surfPipeTransp')
-        const surfPipeTransp = gpu.renderPipe({ ...surfPipeDesc, frag:'frag_surf_transp', depthWriteEnabled: false,
-                                                blend: { color: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
-                                                         alpha: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' }}})
-        console.log('normPipe')
+
+        const transp = { depthWriteEnabled: false,
+                         blend: { color: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+                                  alpha: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' } }}
+                         
+        
+        const surfPipeOpaque = gpu.renderPipe({ ...surfPipeDesc, frag:'frag_surf_opaque', cullMode:'none'})
+        const surfPipeTransp = gpu.renderPipe({ ...surfPipeDesc, frag:'frag_surf_transp', ...transp, cullMode:'none' })
         const normPipe = gpu.renderPipe({
             shader, vert:'vert_norm', frag:'frag_norm', binds: ['camera'], topology: 'line-list',
             vertBufs: [{ buf:bufs.tris, arrayStride:Triangle.stride, stepMode: 'instance',
                          attributes: [{ shaderLocation:0, offset:TriVert.pos.off, format:'float32x3' },
                                       { shaderLocation:1, offset:TriVert.norm.off, format:'float32x3' }]}]
         })
-
+        const gradPipe = gpu.renderPipe({
+            shader, vert:'vert_norm', frag:'frag_norm', binds: ['camera'], topology: 'line-list',
+            vertBufs: [{ buf:bufs.particles, arrayStride:Particles.stride, stepMode: 'instance',
+                         attributes: [{ shaderLocation:0, offset:Particle.si.off, format:'float32x3' },
+                                      { shaderLocation:1, offset:Particle.grad.off, format:'float32x3' }]}]
+        })
+        
+        const axisPipe = gpu.renderPipe({ shader, vert:'vert_axis', frag:'frag_axis', binds:['camera'], topology:'line-list' })
+        const lightPipe = gpu.renderPipe({ shader, vert:'vert_light', frag:'frag_light', binds: ['camera','lights'], ...transp, cullMode:'none' })
 
 
         let tex = gpu.texture(bitmaps)
@@ -575,9 +582,15 @@ class Render {
         const binds = {meshes:bufs.meshes, camera:bufs.camera, lights:bufs.lights}
         const draws = []
         draws.push(gpu.draw({ pipe:surfPipeOpaque, dispatch:tris.length*3, binds:{ ...binds, tex, samp }}))
-        draws.push(gpu.draw({ pipe:normPipe, dispatch:[2, tris.length*3], binds:{ camera:bufs.camera }}))
+        if (showAxes)
+            draws.push(gpu.draw({ pipe:axisPipe, dispatch:[2, 3], binds:{ camera:bufs.camera }}))
+        if (showNormals)
+            draws.push(gpu.draw({ pipe:normPipe, dispatch:[2, tris.length*3], binds:{ camera:bufs.camera }}))
+        if (showGrads)
+            draws.push(gpu.draw({ pipe:gradPipe, dispatch:[2, particles.length], binds:{ camera:bufs.camera }}))
         if (showParticles)
             draws.push(gpu.draw({ pipe:partPipe, dispatch:[partDraws, particles.length], binds }))
+        draws.push(gpu.draw({ pipe:lightPipe, dispatch:[3, lights.length], binds:{ camera:bufs.camera, lights:bufs.lights} }))
         draws.push(gpu.draw({ pipe:surfPipeTransp, dispatch:tris.length*3, binds:{ ...binds, tex, samp }}))
 
         
@@ -597,17 +610,18 @@ class Render {
     async step() {
         const { camera, lights, canvas, gpu, bufs } = this.sim
         camera.pos = camPos
-        camera.projection = Mat4.perspective(FOV, canvas.width/canvas.height, .01, 200)
+        camera.ratio = canvas.width/canvas.height
+        camera.projection = Mat4.perspective(FOV, camera.ratio, .01, 200)
         camera.forward = camFwd()
         camera.modelview = Mat4.look(camPos, camera.forward, UP)
         gpu.write({ buf:bufs.camera, data: camera})
-        let offset = 0
-        for (const i of range(3)) {
+        
+        /*for (const i of range(lights.length)) {
             const theta = offset + performance.now()/1000
             lights[i].pos.x = 2*cos(theta)
             lights[i].pos.y = 2*sin(theta)
             offset += 2*PI/3
-        }
+        }*/
         gpu.write({ buf:bufs.lights, data: lights})
 
         /*await gpu.dev.queue.onSubmittedWorkDone()
@@ -770,13 +784,18 @@ class App {
     async updateInfo() {
         const {compute, render} = this.sim
         let { tstart, tlast, frames, stamps, labels, tsim } = await compute.stats()
-        const profile = Array.from(range(1,labels.length)).map(i => `${labels[i]}: ${(stamps[i] - stamps[i-1])/1000n} &mu;s`)
-        if (labels.length) profile.push(`total: ${(stamps[labels.length-1] - stamps[0])/1000n} &mu;s`)
-        const trel = `compute trel:${((tlast - tsim)*1000).toFixed(2)} ms`
-        const computeFps = `compute fps:${(frames/(tlast-tstart)).toFixed(2)}`
-        ;({ tstart, tlast, frames } = await render.stats())
-        const renderFps = `render fps:${(frames/(tlast-tstart)).toFixed(2)}`
-        this.info.innerHTML = [trel, computeFps, renderFps, ...profile].join('<br/>')
+        const lines = []
+        if (frames != undefined) {
+            lines.push(`compute trel:${((tlast - tsim)*1000).toFixed(2)} ms`)
+            lines.push(`compute fps:${(frames/(tlast-tstart)).toFixed(2)}`)
+            if (labels.length) {
+                lines.push(...Array.from(range(1,labels.length)).map(i => `${labels[i]}: ${(stamps[i] - stamps[i-1])/1000n} &mu;s`))
+                lines.push(`total: ${(stamps[labels.length-1] - stamps[0])/1000n} &mu;s`)
+            }
+        }
+        ({ tstart, tlast, frames } = await render.stats());
+        lines.push(`render fps:${(frames/(tlast-tstart)).toFixed(2)}`)
+        this.info.innerHTML = lines.join('<br/>')
         this.nav.innerText = `cam: pos=${camPos.toString()} fwd=${camFwd().toString()}`
         setTimeout(() => { this.updateInfo() }, 500)
     }

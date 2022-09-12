@@ -2,13 +2,14 @@ type v2 = vec2<f32>;
 type v4 = vec4<f32>;
 type v3 = vec3<f32>;
 type m3 = mat3x3<f32>;
+type m4 = mat4x4<f32>;
 
 const specColor = v3(1,1,1);
 const shininess = 4.0;
-const ambient = 0.1f;
+const ambient = 0.5f;
 const particle_mesh = array<v3, ${partDraws}>(${partWgsl});
 
-struct VertOut {
+struct IO {
     @builtin(position) position: v4,
     @location(0) worldpos:v3,
     @location(1) norm:v3,
@@ -17,62 +18,35 @@ struct VertOut {
     @location(4) @interpolate(flat) mesh:u32,
 };
 
-struct FragIn {
-    @builtin(front_facing) front: bool,
-    @location(0) worldpos:v3,
-    @location(1) norm:v3,
-    @location(2) uv:v2,
-    @location(3) @interpolate(flat) selected:u32,
-    @location(4) @interpolate(flat) mesh:u32,
-}
-
-
 
 @vertex fn vert_surf(@location(0) pos:v3,
                      @location(1) norm:v3,
                      @location(2) mesh:u32,
-                     @location(3) uv:v2) -> VertOut {
-    var output:VertOut;
-    output.worldpos = pos;
-    output.position = camera.projection * camera.modelview * v4(output.worldpos, 1.0);
-    output.norm = norm;
-    output.uv = uv;
-    output.mesh = mesh;
-    return output;
+                     @location(3) uv:v2) -> IO {
+    var out:IO;
+    out.worldpos = pos;
+    out.position = camera.projection * camera.modelview * v4(out.worldpos, 1.0);
+    out.norm = norm;
+    out.uv = uv;
+    out.mesh = mesh;
+    return out;
 }
 
 @vertex fn vert_part(@builtin(vertex_index) vertidx:u32,
                      @builtin(instance_index) instidx:u32,
                      @location(0) partPos:v3,
-                     @location(1) mesh:u32) -> VertOut {
-    var output:VertOut;
+                     @location(1) mesh:u32) -> IO {
+    var out:IO;
     let vertPos = particle_mesh[vertidx];
-    output.worldpos = partPos + vertPos;
-    output.position = camera.projection * camera.modelview * v4(output.worldpos, 1.0);
-    output.norm = normalize(vertPos);
-    output.mesh = mesh;
-    output.selected = select(0u, 1u, i32(instidx) == camera.selection);
-    return output;
+    out.worldpos = partPos + vertPos;
+    out.position = camera.projection * camera.modelview * v4(out.worldpos, 1.0);
+    out.norm = normalize(vertPos);
+    out.mesh = mesh;
+    out.selected = select(0u, 1u, i32(instidx) == camera.selection);
+    return out;
 }
 
-@vertex fn vert_norm(@builtin(vertex_index) vertidx:u32,
-                     @location(0) vertPos:v3,
-                     @location(1) norm:v3) -> @builtin(position) v4 {
-
-    var worldPos = vertPos;
-    if (vertidx == 1u) {
-        worldPos += norm * 0.05;
-    }
-    
-    return camera.projection * camera.modelview * v4(worldPos, 1.0);
-
-}
-
-@fragment fn frag_norm() -> @location(0) v4 {
-    return v4(1,1,1,1);
-}
-
-@fragment fn frag_part(input:FragIn) -> @location(0) v4 {
+@fragment fn frag_part(input:IO) -> @location(0) v4 {
     var color = meshes[input.mesh].pcolor;
     if (color.a < 0.5) { discard; }
     color.a = 1.0;
@@ -83,15 +57,15 @@ struct FragIn {
 }
 
 
-@fragment fn frag_surf_opaque(input:FragIn) -> @location(0) v4 {
+@fragment fn frag_surf_opaque(input:IO) -> @location(0) v4 {
     return frag_surf(input, false);
 }
 
-@fragment fn frag_surf_transp(input:FragIn) -> @location(0) v4 {
+@fragment fn frag_surf_transp(input:IO) -> @location(0) v4 {
     return frag_surf(input, true);
 }
 
-fn frag_surf(input:FragIn, transp:bool) -> v4 {
+fn frag_surf(input:IO, transp:bool) -> v4 {
     let m = &meshes[input.mesh];
     let color = (*m).color * select(textureSample(tex, samp, input.uv, (*m).tex), vec4(1), (*m).tex < 0);
     if (transp && color.a >= 0.9999) { discard; }
@@ -101,8 +75,7 @@ fn frag_surf(input:FragIn, transp:bool) -> v4 {
 }
 
 
-fn frag(input:FragIn, color:v4) -> v4 {
-    if (!input.front) { discard; }
+fn frag(input:IO, color:v4) -> v4 {
     var mix = color.rgb * ambient;
     for (var i = 0; i < ${numLights}; i += 1) {
         let light = &lights[i];
@@ -127,3 +100,56 @@ fn frag(input:FragIn, color:v4) -> v4 {
 
 }
 
+@vertex fn vert_axis(@builtin(vertex_index) vertidx:u32,
+                     @builtin(instance_index) instidx:u32) -> @builtin(position) v4 {
+    var worldPos = v3(0);
+    worldPos[instidx] = f32(2*i32(vertidx) - 1);
+    return camera.projection * camera.modelview * v4(worldPos, 1.0);
+}
+
+@fragment fn frag_axis() -> @location(0) v4 {
+    return v4(1,1,1,1);
+}
+
+@vertex fn vert_norm(@builtin(vertex_index) vertidx:u32,
+                     @location(0) vertPos:v3,
+                     @location(1) norm:v3) -> @builtin(position) v4 {
+    var worldPos = vertPos;
+    if (vertidx == 1u) {
+        worldPos += norm * camera.d;
+    }    
+    return camera.projection * camera.modelview * v4(worldPos, 1.0);
+}
+
+@fragment fn frag_norm() -> @location(0) v4 {
+    return v4(1,1,1,1);
+}
+
+const decalR = 0.17321;
+const decal = array<v2, 3>(v2(-.3,-.17321), v2(0,0.34641), v2(.3,-.17321));
+
+struct LightIO {
+    @builtin(position) position:v4,
+    @location(1) vertpos:v2,
+    @location(2) color:v3
+};
+
+@vertex fn vert_light(@builtin(vertex_index) vertidx:u32,
+                      @builtin(instance_index) instidx:u32) -> LightIO {
+    let l = &lights[instidx];
+    let vp = decal[vertidx];
+    let mv = transpose(camera.modelview);
+    let pos = (*l).pos + mv[0].xyz*vp.x + mv[1].xyz*vp.y;
+    var out:LightIO;
+    out.position = camera.projection * camera.modelview * v4(pos, 1);
+    out.vertpos = decal[vertidx];
+    out.color = (*l).color + v3(.5,.5,.5);
+    return out;
+}
+
+@fragment fn frag_light(input:LightIO) -> @location(0) v4 {
+    let r = length(input.vertpos);
+    if (r > decalR) { discard; }
+    let mag = exp(-8*r/decalR);
+    return v4(input.color*mag,mag);
+}
