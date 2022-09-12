@@ -16,6 +16,7 @@ module.intersectRayAABB = (start, dir, lower, upper) => {
     return tmin
 }
 
+const tolerance = 0.01
 
 module.voxelize = (verts, tris, D) => {
     let tstart = performance.now()
@@ -40,33 +41,38 @@ module.voxelize = (verts, tris, D) => {
         tidxs.push(tidx)
         triMap.set(hash, tidxs)
     }
-    const addPoint = (v,tidx) => addVox(floor(v.x/D), floor(v.y/D), floor(v.z/D), tidx)
-    const cross = (a,b) => a.x*b.y-a.y*b.x
+    const cross = (a,b) => a[0]*b[1]-a[1]*b[0]
+    const normals = []
     for (const [tidx,tri] of enumerate(tris)) {            
-        let [A,B,C] = [0,1,2].map(i=>relverts[tri[i].vidx].copy())
-        addPoint(A,tidx); addPoint(B,tidx); addPoint(C,tidx);
-        let tlo = A.min(B).min(C), thi = A.max(B).max(C)
-        const ax = thi.sub(tlo).minax()       
+        const [A,B,C] = [0,1,2].map(i=>relverts[tri[i].vidx])
+        const N = B.sub(A).cross(C.sub(A)).normalized()
+        normals.push(N)
+        const axis = N.abs().maxaxis()
         for (const P of [A,B,C])
-            [P[ax],P.z] = [P.z,P[ax]];
-        tlo[ax] = tlo.z; thi[ax] = thi.z
-        const axb = cross(A,B), cxa = cross(C,A)
-        const area = cross(B,C) + axb + cxa
+            addVox(floor(P.x/D), floor(P.y/D), floor(P.z/D), tidx)
+        const [a,b,c] = [A.toarray(), B.toarray(), C.toarray()]
+        const [az] = a.splice(axis,1), [bz] = b.splice(axis,1), [cz] = c.splice(axis,1)
+        const axb = cross(a,b), cxa = cross(c,a)
+        const area = cross(b,c) + axb + cxa
         let u,v,w
-        let P = Vec3.of(0)
-        let [xi, yi, xf, yf] = [floor(tlo.x/D), floor(tlo.y/D), floor(thi.x/D), floor(thi.y/D)]        
+        const [xi, yi] = [floor(min(a[0],b[0],c[0])/D), floor(min(a[1],b[1],c[1])/D)]
+        const [xf, yf] = [floor(max(a[0],b[0],c[0])/D), floor(max(a[1],b[1],c[1])/D)]
         for (let x = xi; x <= xf; x++)
             for (let y = yi; y <= yf; y++) {
-                const P = Vec3.of(x*D, y*D, 0)
-                if ((v = (cxa + cross(P,C) + cross(A,P))/area) < 0) continue
-                if ((w = (axb + cross(P,A) + cross(B,P))/area) < 0) continue
-                if ((u = 1 - v - w) < 0) continue
-                const p = [x,y,floor((u*A.z + v*B.z + w*C.z)/D)]
-                ;[p[ax],p[2]] = [p[2],p[ax]];
-                addVox(...p, tidx)
+                const p = [x*D, y*D]
+                if ((v = (cxa + cross(p,c) + cross(a,p))/area) < -tolerance) continue
+                if ((w = (axb + cross(p,a) + cross(b,p))/area) < -tolerance) continue
+                if ((u = 1 - v - w) < -tolerance) continue
+                const s = [x,y]
+                s.splice(axis,0,floor((u*az + v*bz + w*cz)/D))
+                addVox(...s, tidx)
             }
     }
     
+    
+
+
+
     const samples = [], gradients = []
     for (const x of range(xdim))
          for (const y of range(ydim))
@@ -76,19 +82,13 @@ module.voxelize = (verts, tris, D) => {
                      samples.push(Vec3.of(xlo + x*D+R, ylo + y*D+R, zlo + z*D+R))
                      const tidxs = triMap.get(hash)
                      let N = Vec3.of(0)
-                     for (const tidx of tidxs) {
-                         let [A,B,C] = [0,1,2].map(i=>verts[tris[tidx][i].vidx])
-                         let AB = B.sub(A)
-                         let AC = C.sub(A)
-                         N = N.add(AB.cross(AC).normalized())
-                     }
+                     for (const tidx of tidxs)
+                         N = N.add(normals[tidx])
                      gradients.push(N.divc(tidxs.length))
+                     
                  }
              }
 
-    console.log('nsamples',samples.length)
-    //for (const s of samples)
-    //    console.log(s.toString())
                 
     //const sdf = SDF(voxels, dim)
     //const gradients = voxels.map(([x,y,z]) => sdfGrad(sdf, dim, x, y, z).normalized())

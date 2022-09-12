@@ -110,28 +110,6 @@ fn grid_collide(@builtin(global_invocation_id) gid:vec3<u32>) {
 }
 
 
-@compute @workgroup_size(${threads})
-fn collisions(@builtin(global_invocation_id) gid:vec3<u32>) {
-    let pid:u32 = gid.x;
-    if (pid >= arrayLength(&particles)) { return; }
-    let p = &particles[pid];
-
-    let k = min(MAXNN, (*p).k);
-    var ds = v3(0.0, 0.0, 0.0);
-    for (var i = 0u; i < k; i++) {
-        let p2 = &particles[(*p).nn[i]];
-        let d = length((*p).si - (*p2).si);
-        let c = max(0.0, D - d);
-        ds -= params.fcol * c * (*p2).grad;
-        
-    }  
-    if (k > 0) {
-        ds = ds / f32(k);
-        (*p).si = (*p).si + ds;
-        (*p).sp = (*p).sp + ds;
-    }
-}
-
 
 fn quat2Mat(q:vec4<f32>) -> m3 {
     let qx = 2 * q.x * q;
@@ -295,7 +273,39 @@ fn shapematch(@builtin(local_invocation_id) lid:vec3<u32>,
     (*m).rot = quat2Mat(quat);
 
 }
-    
+
+@compute @workgroup_size(${threads})
+fn grads(@builtin(global_invocation_id) gid:vec3<u32>) {
+    let pid:u32 = gid.x;
+    let nparticles = arrayLength(&particles);
+    if (pid >= nparticles) { return; }
+    let p = &particles[pid];
+    let m = &meshes[(*p).mesh];
+    (*p).grad = normalize((*m).rot*(*p).grad0);
+}
+
+@compute @workgroup_size(${threads})
+fn collisions(@builtin(global_invocation_id) gid:vec3<u32>) {
+    let pid:u32 = gid.x;
+    if (pid >= arrayLength(&particles)) { return; }
+    let p = &particles[pid];
+
+    let k = min(MAXNN, (*p).k);
+    var ds = v3(0.0, 0.0, 0.0);
+    for (var i = 0u; i < k; i++) {
+        let p2 = &particles[(*p).nn[i]];
+        let d = length((*p).si - (*p2).si);
+        let c = max(0.0, D - d);
+        ds -= params.fcol * c * (*p2).grad / f32(k);
+    }  
+    if (k > 0) {
+        ds = ds / f32(k);
+        (*p).si = (*p).si + ds;
+        (*p).sp = (*p).sp + ds;
+    }
+}
+
+
 @compute @workgroup_size(${threads})
 fn project(@builtin(global_invocation_id) gid:vec3<u32>) {
     let pid:u32 = gid.x;
@@ -308,9 +318,10 @@ fn project(@builtin(global_invocation_id) gid:vec3<u32>) {
     let k = min(MAXNN, (*p).k);
     for (var i = 0u; i < k; i++) {
         let p2 = &particles[(*p).nn[i]];
+        let m2 = &meshes[(*p).mesh];
         let d = length((*p).sp - (*p2).sp);
         let c = max(0.0, D - d);
-        sf -= params.fcol * c * (*p2).grad;
+        sf -= params.fcol * c * (*p2).grad / f32(k);
     }
 
 
@@ -376,8 +387,8 @@ fn normals(@builtin(global_invocation_id) gid:vec3<u32>) {
     norm = normalize(norm);
     (*v).norm = norm;
     let pid = (*v).particle;
-    if (pid >= 0) {
-        particles[pid].grad = norm;
-    }
+    //if (pid >= 0) {
+    //    particles[pid].grad = norm;
+    //}
 }
 

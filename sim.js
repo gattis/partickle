@@ -5,8 +5,7 @@ import './geometry.js'
 import './ico80.js'
 
 const D = 0.05
-const FPS = 180
-const T = 1/FPS
+const FRAMERATIO = 5
 const SPEED = 1
 const FEXT = Vec3.of(0, 0, -9.8)
 const MAXNN = 24
@@ -43,7 +42,7 @@ const HAND = { url:'hand.obj', texUrl:'hand.png', color:Vec4.of(.9,.9,.9,0),
 const TORUS = { url:'torus.obj', offset:Vec3.of(0,0,1), scale:Vec3.of(1,1,1),
                 color:Vec4.of(0.8,0.2,0.1,0.7), sample:true }
 
-const GROUND = { url:'ground.obj', texUrl:'marble.png', fext:Vec3.of(0,0,0),
+const GROUND = { url:'ground.obj', texUrl:'marble.png', fext:Vec3.of(0,0,0), scale:Vec3.of(1,1,1.5),
                  color:Vec4.of(1,1,1,0.7), sample:true, lock:()=>0.99 }
 
 const CUBE = { url:'cube.obj', sample:true, color:Vec4.of(.1,.5,.2,0.7), fext:Vec3.of(0), scale:Vec3.of(1) }
@@ -60,7 +59,7 @@ const KNOT = { url:'knot.obj', color:Vec4.of(.6,.3,.3,.5), offset:Vec3.of(0,0,1)
 const HELPER = { url: 'helper.obj', scale: Vec3.of(2,2,2), sample: false, fext: Vec3.of(0) }
 
 const MESHES = [
-    TORUS,
+    TORUS, //{url:'particle.obj', sample:true, offset:Vec3.of(0,0,1)},
     GROUND
     
 ]
@@ -111,6 +110,7 @@ module.Particle = GPU.struct({
         ['q', Vec3],
         ['lock',f32],
         ['s0', Vec3],
+        ['grad0', Vec3],
         ['grad', Vec3],
         ['nn', GPU.array({ type: u32, length: MAXNN })],
     ]
@@ -174,6 +174,14 @@ module.Vec3Array = GPU.array({ type: Vec3 })
 module.Sim = class Sim {
 
     async init(canvas) {
+        this.refreshRate = await new Promise(resolve => {
+            const stamps = []
+            requestAnimationFrame(function callback(stamp) {
+                if (stamps.push(stamp) < 10) requestAnimationFrame(callback)
+                else resolve((stamps.length-1)*1000/(stamps[stamps.length-1] - stamps[0]))
+            })
+        })
+        console.log(`refresh rate: ${this.refreshRate}`)
         const gpu = new GPU(canvas)
         await gpu.init()
 
@@ -231,7 +239,7 @@ module.Sim = class Sim {
                 p.si = p.s0 = pos
                 p.mesh = meshidx
                 p.lock = obj.lock(pos)
-                if (obj.virtgrads) p.grad = obj.virtgrads[i]
+                if (obj.virtgrads) p.grad0 = p.grad = obj.virtgrads[i]
             }
             mesh.pf = cnts.particles
             for (const tri of obj.faces) {
@@ -307,7 +315,7 @@ module.Sim = class Sim {
 
         this.compute = new Compute(this)
         this.render = new Render(this)
-
+        
         await this.compute.setup()
         await this.render.setup()
 
@@ -343,12 +351,13 @@ module.Sim = class Sim {
 
     run() {
         const { gpu, compute, render } = this
+        
+        
         const loop = async () => {
             if (!gpu.okay) return;
             await render.step()
-            await compute.step()
-            await compute.step()
-            await compute.step()
+            for (let i of range(FRAMERATIO))
+                await compute.step()
             requestAnimationFrame(loop);
         }
         requestAnimationFrame(loop);
@@ -362,11 +371,11 @@ class Compute {
     }
 
     async setup() {
-        const {gpu, verts, particles, meshes, params, bufs, pd, vd, td} = this.sim
+        const {gpu, verts, particles, meshes, params, bufs, pd, vd, td, refreshRate} = this.sim
         if (particles.length == 0) return
         const threads = gpu.threads
-        
-        const wgsl = (await fetchtext('./compute.wgsl')).interp({threads, MAXNN, T, D})
+        this.T = 1/refreshRate/FRAMERATIO
+        const wgsl = (await fetchtext('./compute.wgsl')).interp({threads, MAXNN, T:this.T, D})
 
         const shader = gpu.shader({ compute: true, wgsl: wgsl, defs: [Vertex, Particle, Mesh, Params, TriVert],
                                     storage: { particles:Particles, meshes:Meshes, vertices:Vertices, sorted:u32array, centroidwork:Vec3Array,
@@ -378,11 +387,12 @@ class Compute {
         const prefsum_up = gpu.computePipe({ shader, entryPoint:'prefsum_up', binds: ['cnts','work'] })
         const cntsort_sort = gpu.computePipe({ shader, entryPoint:'cntsort_sort', binds: ['particles','cnts_atomic','sorted'] })
         const grid_collide = gpu.computePipe({ shader, entryPoint:'grid_collide', binds: ['particles','cnts','sorted'] })
-        const collisions = gpu.computePipe({ shader, entryPoint:'collisions', binds: ['particles','params'] })
         const centroid_init = gpu.computePipe({ shader, entryPoint:'centroid_init', binds: ['meshes','particles','centroidwork'] })
         const centroid = gpu.computePipe({ shader, entryPoint:'centroid', binds: ['meshes','centroidwork'] })
         const shapematch_init = gpu.computePipe({ shader, entryPoint:'shapematch_init', binds: ['meshes','particles','shapework'] })
         const shapematch = gpu.computePipe({ shader, entryPoint:'shapematch', binds: ['meshes','shapework'] })
+        const grads = gpu.computePipe({ shader, entryPoint:'grads', binds: ['particles','meshes'] })
+        const collisions = gpu.computePipe({ shader, entryPoint:'collisions', binds: ['particles','params'] })
         const project = gpu.computePipe({ shader, entryPoint:'project', binds: ['particles','meshes','params'] })
         const vertpos = gpu.computePipe({ shader, entryPoint:'vertpos', binds: ['vertices','particles','meshes'] })
         const normals = gpu.computePipe({ shader, entryPoint:'normals', binds: ['vertices','particles'] })
@@ -431,12 +441,17 @@ class Compute {
             gpu.timestamp('cntsort_sort'),
             gpu.computePass({ pipe:grid_collide, dispatch:pd, binds:{ particles:bufs.particles, cnts:bufs.cnts, sorted:bufs.sorted } }),
             gpu.timestamp('find collisions'),
+            ...shapestage,
+            gpu.timestamp('shapematch'),
+            gpu.computePass({ pipe:grads, dispatch:pd, binds:{ particles:bufs.particles, meshes:bufs.meshes }}),
+            gpu.timestamp('gradients'),
+            gpu.computePass({ pipe:collisions, dispatch:pd, binds:{ particles:bufs.particles, params:bufs.params } }),
+            gpu.computePass({ pipe:collisions, dispatch:pd, binds:{ particles:bufs.particles, params:bufs.params } }),
+            gpu.computePass({ pipe:collisions, dispatch:pd, binds:{ particles:bufs.particles, params:bufs.params } }),
             gpu.computePass({ pipe:collisions, dispatch:pd, binds:{ particles:bufs.particles, params:bufs.params } }),
             gpu.computePass({ pipe:collisions, dispatch:pd, binds:{ particles:bufs.particles, params:bufs.params } }),
             gpu.computePass({ pipe:collisions, dispatch:pd, binds:{ particles:bufs.particles, params:bufs.params } }),
             gpu.timestamp('stabilize collisions'),
-            ...shapestage,
-            gpu.timestamp('shapematch'),
             gpu.computePass({ pipe:project, dispatch:pd, binds:{ particles:bufs.particles, meshes:bufs.meshes, params:bufs.params } }),
             gpu.timestamp('project'),
             gpu.computePass({ pipe:vertpos, dispatch:vd, binds:{ vertices:bufs.vertices, particles:bufs.particles, meshes:bufs.meshes} }),
@@ -485,19 +500,19 @@ class Compute {
             gpu.write({ buf:bufs.params, data: params })
             this.batch.execute()
         }
-        this.tsim += T
+        this.tsim += this.T
         this.tlast = clock()
         this.frames++        
         
 
 
         if (this.fwdstep) {
-            gpu.read(bufs.vertices).then(buf => {
+            /*gpu.read(bufs.vertices).then(buf => {
                 module.verts = new Vertices(buf)
                 gpu.read(bufs.tris).then(buf => {
                     module.tris = new Triangles(buf)
                 })
-            })
+            })*/
             
             this.fwdstep = false        
         }
@@ -693,7 +708,7 @@ class App {
         cv.parentNode.append(nav)
         cv.parentNode.append(pedit)
 
-        inspect.innerHTML = `particle: <input id='partidx' type='number' min='0' max='${particles.length - 1}' value='0'>`
+        inspect.innerHTML = `particle: <input id='partidx' type='number' min='0' max='${particles.length - 1}' value=''>`
         const partidx = document.querySelector('#partidx')
         Object.assign(partidx.style, { width: 70, textAlign: 'right' })
         
@@ -735,7 +750,7 @@ class App {
                 const particles = new Particles(buf)
                 const p = particles[pidx]
                 console.clear()
-                console.log({particle: pidx, si: p.si.toString(), grad: p.grad.toString()})               
+                console.log({particle: pidx, si: p.si.toString(), grad: p.grad.toString(), sp:p.sp.toString(), mesh:p.mesh, v:p.v.toString(), q:p.q.toString()})
             })        
         }
 
