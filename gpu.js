@@ -25,18 +25,10 @@ module.iatomic = {...i32, name: 'atomic<i32>'}
 
 
 module.GPU = class GPU {
-
-    constructor(canvas) {
-        this.canvas = canvas
-    }
-
     
-    async init() {
+    async init(width, height, ctx) {
         const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' })
         const limits = {}, features = ['timestamp-query']
-        for (const feat of adapter.features)
-            if (feat != 'multi-planar-formats')
-                features.push(feat)
         for (const prop in adapter.limits)
             limits[prop] = adapter.limits[prop]
         
@@ -50,7 +42,7 @@ module.GPU = class GPU {
                 this.okay = false
             }
         })
-        const ctx = this.canvas.getContext('webgpu')
+
         const fmt = navigator.gpu.getPreferredCanvasFormat()      
         ctx.configure({ device: dev, format: fmt, alphaMode: 'premultiplied' })
         const threads = floor(sqrt(limits.maxComputeWorkgroupsPerDimension))
@@ -66,15 +58,13 @@ module.GPU = class GPU {
         }
         Object.assign(this, { dev, adapter, ctx, fmt, threads, colorAttachment, depthAttachment, sampleCount: 4, depthFmt: 'depth32float' })
         this.okay = true
-
-
-        this.resize()
+        this.resize(width,height)
 
     }
 
     
-    resize() {
-        const size = {width: this.canvas.width, height: this.canvas.height}
+    resize(width,height) {
+        const size = {width, height}
         this.depthAttachment.view = this.dev.createTexture(
             { size, sampleCount: this.sampleCount, format:this.depthFmt,usage: GPUTextureUsage.RENDER_ATTACHMENT }).createView()
         this.colorAttachment.view = this.dev.createTexture({

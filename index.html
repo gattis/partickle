@@ -1,6 +1,159 @@
 <html>
   <head>
     <script type='module' src="./sim.js"></script>
+    <script type='module'>
+      window.App = class App {
+          constructor() {
+              this.canvas = document.querySelector('canvas')
+              this.canvas.width = this.canvas.style.width = window.innerWidth
+              this.canvas.height = this.canvas.style.height = window.innerHeight
+              this.ctx = this.canvas.getContext('webgpu')
+              this.sim = new Sim()
+              this.sim.init(this.canvas.width,this.canvas.height,this.ctx).then(()=> {
+                  this.setup()
+                  this.sim.run()
+              })        
+          }
+
+
+          setup() {
+              const { render, compute, possessed, params, particles } = this.sim
+              const cv = this.canvas
+              
+              const nav = document.createElement('div')
+              const info = document.createElement('div')
+              const ctrls = document.createElement('div')
+              const pause = document.createElement('button')
+              const step = document.createElement('button')
+              const inspect = document.createElement('div')
+              const pedit = document.createElement('div')           
+              
+              const commonStyle = {fontFamily: 'monospace', position: 'fixed', color: 'white'}
+              Object.assign(ctrls.style, { left:5, top:5, ...commonStyle })
+              Object.assign(pedit.style, { left:5, top:35, textAlign:'right', ...commonStyle })
+              Object.assign(info.style, { right:5, top:25, textAlign:'right', ...commonStyle })
+              Object.assign(nav.style, { right:5, top:5, ...commonStyle })
+              Object.assign(inspect.style, { marginLeft: 20 })
+              
+              pause.innerHTML = "&#9199;"
+              step.innerHTML = "&#11122;"
+              step.style.display = inspect.style.display = localStorage.paused ? 'inline' : 'none'
+              ctrls.append(pause,step,inspect)
+              cv.parentNode.append(ctrls,info)
+              cv.parentNode.append(nav)
+              cv.parentNode.append(pedit)
+              
+              inspect.innerHTML = `particle: <input id='partidx' type='number' min='0' max='${particles.length - 1}' value=''>`
+              const partidx = document.querySelector('#partidx')
+              Object.assign(partidx.style, { width: 70, textAlign: 'right' })
+              
+              pedit.innerHTML = Params.fields.map(field => {
+                  const name = field.name
+                  const val = localStorage[name] == undefined ? params[name] : parseFloat(localStorage[name])
+                  const lo = params[name] * 0.002, hi = params[name] * 4.9
+                  return `${name} <input style='vertical-align:middle;width:200px' type='range' name='${name}' value='${val}' `+
+                      `min='${lo}' max='${hi}' step='0.001' ` +
+                      `oninput='${name}.value=parseFloat(this.value).toFixed(3); localStorage.${name} = this.value'/> ` +
+                      `<output id='${name}'>${val.toFixed(3)}</output>`
+              }).join('<br/>')
+              
+              
+              this.move = false
+              cv.onmouseup = cv.onmouseout = cv.onmousedown = cv.onmousemove = cv.onwheel = cv.oncontextmenu =
+                  pause.onclick = step.onclick = window.onresize = partidx.oninput = (ev) => { this.handle(ev) }
+              
+              setTimeout(()=>{ this.updateInfo() }, 500)
+              
+              Object.assign(this, {nav, info, ctrls, pause, step, inspect, partidx })
+          }
+
+          handle(ev) {
+              const { compute, render, gpu, bufs, possessed, camera } = this.sim
+              if (ev.target == this.pause && ev.type == 'click') {
+                  compute.paused = !compute.paused
+                  this.step.style.display = this.inspect.style.display = compute.paused ? 'inline' : 'none'
+              }
+              
+              if (ev.target == this.step && ev.type == 'click') {
+                  compute.fwdstep = true
+              }
+              
+              if (ev.target == this.partidx && ev.type == 'input') {
+                  const pidx = parseInt(this.partidx.value)
+                  camera.selection = pidx
+                  gpu.read(bufs.particles).then(buf => {
+                      const particles = new Particles(buf)
+                      const p = particles[pidx]
+                      console.clear()
+                      console.log({particle: pidx, si: p.si.toString(), grad: p.grad.toString(), sp:p.sp.toString(), mesh:p.mesh, v:p.v.toString(), q:p.q.toString()})
+                  })        
+              }
+              
+              if (ev.type == 'mousedown') {
+                  this.move = {x: ev.x, y: ev.y, btn: ev.button}
+              }
+              
+              if (ev.type == 'mouseout' || ev.type == 'mouseup') {
+                  this.move = false;
+              }
+              
+              if (ev.type == 'mousemove') {
+                  if (!this.move) return
+                  const dx = .01*(ev.x - this.move.x), dy = .01*(this.move.y - ev.y)
+                  this.move.x = ev.x
+                  this.move.y = ev.y
+                  if (this.move.btn == 0) {
+                      sim.camLR += dx
+                      sim.camUD = clamp(sim.camUD + dy,-PI/2, PI/2)
+                  } else if (this.move.btn == 1) {
+                      const delta = Vec3.of( -dx * cos(sim.camLR), dx * sin(sim.camLR), -dy);
+                      sim.camPos = sim.camPos.add(delta)
+                  }
+              }
+              
+              if (ev.type == 'wheel') {
+                  const dy = -.001 * ev.deltaY
+                  const camDir = sim.camFwd()
+                  sim.camPos.x += dy * sim.camDir.x
+                  sim.camPos.y += dy * sim.camDir.y
+                  sim.camPos.z += dy * sim.camDir.z
+              }
+              
+              if (ev.type == 'contextmenu') {
+                  ev.preventDefault()
+              }
+              
+              if (ev.type == 'resize') {
+                  this.canvas.width = this.canvas.style.width = window.innerWidth
+                  this.canvas.height = this.canvas.style.height = window.innerHeight
+                  sim.resize(this.canvas.width, this.canvas.height)
+              }
+            
+          }
+    
+          async updateInfo() {
+              const {compute, render, camPos} = this.sim
+              let { tstart, tlast, frames, stamps, labels, tsim } = await compute.stats()
+              const lines = []
+              if (frames != undefined) {
+                  lines.push(`compute trel:${((tlast - tsim)*1000).toFixed(2)} ms`)
+                  lines.push(`compute fps:${(frames/(tlast-tstart)).toFixed(2)}`)
+                  if (labels.length) {
+                      lines.push(...Array.from(range(1,labels.length)).map(i => `${labels[i]}: ${(stamps[i] - stamps[i-1])/1000n} &mu;s`))
+                      lines.push(`total: ${(stamps[labels.length-1] - stamps[0])/1000n} &mu;s`)
+                  }
+              }
+              ({ tstart, tlast, frames } = await render.stats());
+              lines.push(`render fps:${(frames/(tlast-tstart)).toFixed(2)}`)
+              this.info.innerHTML = lines.join('<br/>')
+              this.nav.innerText = `cam: pos=${camPos.toString()} fwd=${this.sim.camFwd().toString()}`
+              setTimeout(() => { this.updateInfo() }, 500)
+          }
+          
+      }      
+    </script>
   </head>
-  <body style='margin:0; padding:0; background-color: black; overflow:hidden;'></body>
+  <body style='margin:0; padding:0; background-color: black; overflow:hidden;' onload='window.app = new App()'>
+    <canvas></canvas>
+  </body>
 </html>

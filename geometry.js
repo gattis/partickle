@@ -16,7 +16,7 @@ module.intersectRayAABB = (start, dir, lower, upper) => {
     return tmin
 }
 
-const tolerance = 0.01
+const tolerance = 0.001
 
 module.voxelize = (verts, tris, D) => {
     let tstart = performance.now()
@@ -27,46 +27,52 @@ module.voxelize = (verts, tris, D) => {
         hi = Vec3.max(hi, v)
     }
     let axes = [0,1,2]
-    let dim = axes.map(k => max(1,floor((hi[k]-lo[k])/D)))
-    let [xdim, ydim, zdim] = dim
-    let [xmax, ymax, zmax] = axes.map(k => dim[k] - 1)
-    let [xlo, ylo, zlo] = axes.map(k => (lo[k] + hi[k] - dim[k]*D)/2)
+    let [xlo, ylo, zlo] = axes.map(k=>lo[k]) //axes.map(k => (lo[k] + hi[k] - max(1,floor((hi[k]-lo[k])/D))*D)/2)
     const relverts = verts.map(v => v.sub(Vec3.of(xlo,ylo,zlo)))
-    const voxgrid = new Uint8Array(xdim * ydim * zdim)
-    const triMap = new Map()
-    const addVox = (x,y,z,tidx) => {
-        const hash = clamp(x,0,xmax) + clamp(y,0,ymax)*xdim + clamp(z,0,zmax)*xdim*ydim
-        voxgrid[hash] = 255
-        let tidxs = triMap.get(hash) || []
-        tidxs.push(tidx)
-        triMap.set(hash, tidxs)
+    const voxs = new Map()
+    const addVox = (x,y,z,N) => {
+        x = floor(x/D); y = floor(y/D); z=floor(z/D)        
+        const hash = String([x,y,z])
+        let vox = voxs.get(hash) || [0,Vec3.of(0)]
+        vox[0]++
+        vox[1] = vox[1].add(N)
+        voxs.set(hash,vox)
     }
     const cross = (a,b) => a[0]*b[1]-a[1]*b[0]
     const normals = []
+    console.log(tris.length)
     for (const [tidx,tri] of enumerate(tris)) {            
         const [A,B,C] = [0,1,2].map(i=>relverts[tri[i].vidx])
         const N = B.sub(A).cross(C.sub(A)).normalized()
         normals.push(N)
         const axis = N.abs().maxaxis()
-        for (const P of [A,B,C])
-            addVox(floor(P.x/D), floor(P.y/D), floor(P.z/D), tidx)
+        //for (const P of [A,B,C])
+        //    addVox(floor((P.x+R)/D), floor((P.y+R)/D), floor((P.z+R)/D), N)
         const [a,b,c] = [A.toarray(), B.toarray(), C.toarray()]
-        const [az] = a.splice(axis,1), [bz] = b.splice(axis,1), [cz] = c.splice(axis,1)
+        const [az] = a.splice(axis,1), [bz] = b.splice(axis,1), [cz] = c.splice(axis,1), nz = N[axis]
         const axb = cross(a,b), cxa = cross(c,a)
         const area = cross(b,c) + axb + cxa
         let u,v,w
-        const [xi, yi] = [floor(min(a[0],b[0],c[0])/D), floor(min(a[1],b[1],c[1])/D)]
-        const [xf, yf] = [floor(max(a[0],b[0],c[0])/D), floor(max(a[1],b[1],c[1])/D)]
-        for (let x = xi; x <= xf; x++)
-            for (let y = yi; y <= yf; y++) {
-                const p = [x*D, y*D]
+        let [xi, yi] = [min(a[0],b[0],c[0]), min(a[1],b[1],c[1])]
+        let [xf, yf] = [max(a[0],b[0],c[0]), max(a[1],b[1],c[1])]
+        const [xm, ym] = [min(R,(xf-xi)/2), min(R,(yf-yi)/2)]
+        xi += xm; xf -= xm;
+        yi += ym; yf -= ym;
+        //console.log(`${xi}..${xf} ${yi}..${yf}`)
+        const [xstep,ystep] = [clamp((xf-xi)/3,0.0001,D), clamp((yf-yi)/3,0.0001,D)]
+        let added = 0
+        for (let x = xi; x <= xf; x += xstep)
+            for (let y = yi; y <= yf; y += ystep) {
+                const p = [x,y]
                 if ((v = (cxa + cross(p,c) + cross(a,p))/area) < -tolerance) continue
                 if ((w = (axb + cross(p,a) + cross(b,p))/area) < -tolerance) continue
                 if ((u = 1 - v - w) < -tolerance) continue
-                const s = [x,y]
-                s.splice(axis,0,floor((u*az + v*bz + w*cz)/D))
-                addVox(...s, tidx)
+                let z = u*az + v*bz + w*cz + (nz >= 0 ? -R : R)
+                p.splice(axis,0,z)
+                addVox(...p, N)
+                added++
             }
+        if (added == 0) console.log(`${A.toString()} ${B.toString()} ${C.toString()} ${axis} x:${xi}..${xf} y:${yi}..${yf}`)
     }
     
     
@@ -74,20 +80,11 @@ module.voxelize = (verts, tris, D) => {
 
 
     const samples = [], gradients = []
-    for (const x of range(xdim))
-         for (const y of range(ydim))
-             for (const z of range(zdim)) {
-                 const hash = x + y*xdim + z*xdim*ydim
-                 if (voxgrid[hash]) {
-                     samples.push(Vec3.of(xlo + x*D+R, ylo + y*D+R, zlo + z*D+R))
-                     const tidxs = triMap.get(hash)
-                     let N = Vec3.of(0)
-                     for (const tidx of tidxs)
-                         N = N.add(normals[tidx])
-                     gradients.push(N.divc(tidxs.length))
-                     
-                 }
-             }
+    for (const [key,vox] of voxs) {
+        const [x,y,z] = key.split(',').map(i=>parseInt(i))
+        samples.push(Vec3.of(xlo + x*D+R, ylo + y*D+R, zlo + z*D+R))
+        gradients.push(vox[1].divc(vox[0]))
+    }
 
                 
     //const sdf = SDF(voxels, dim)

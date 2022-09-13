@@ -23,10 +23,7 @@ const GREEN = Vec4.of(0.1, 0.5, 0.2, 1.0);
 const BLACK = Vec4.of(0.0, 0.0, 0.0, 1.0);
 const CLEAR = Vec4.of(0.0, 0.0, 0.0, 0.0);
 
-let camPos = Vec3.of(0, -4, 3)
-let camLR = 0
-let camUD = -PI/6
-const camFwd = () => Vec3.of(sin(camLR) * cos(camUD), cos(camLR) * cos(camUD), sin(camUD))
+
 const showNormals = false
 const showGrads = true
 const showAxes = false
@@ -36,14 +33,14 @@ const QUINN = { url:'quinn.obj', texUrl:'quinn.png', offset:Vec3.of(0,0,0), samp
                 scale:Vec3.of(2, 2, 2), fext:Vec3.of(0, 0, -5), color:Vec4.of(1,.9,.9,0.0) }
 
 const HAND = { url:'hand.obj', texUrl:'hand.png', color:Vec4.of(.9,.9,.9,0), 
-               offset:camPos.sub(Vec3.of(.4,.6,.3)), scale:Vec3.of(3.5,3.5,3.5),
+               offset:Vec3.of(.4,.6,.3), scale:Vec3.of(3.5,3.5,3.5),
                sample:true, possess:true, fext:Vec3.of(0, 0, 0) }
 
 const TORUS = { url:'torus.obj', offset:Vec3.of(0,0,1), scale:Vec3.of(1,1,1),
                 color:Vec4.of(0.8,0.2,0.1,0.7), sample:true }
 
-const GROUND = { url:'ground.obj', texUrl:'marble.png', fext:Vec3.of(0,0,0), scale:Vec3.of(1,1,1.5),
-                 color:Vec4.of(1,1,1,0.7), sample:true, lock:()=>0.99 }
+const GROUND = { url:'ground.obj', texUrl:'marble.png', fext:Vec3.of(0,0,0),
+                 color:Vec4.of(1,1,1,0.5), sample:true, lock:()=>0.99 }
 
 const CUBE = { url:'cube.obj', sample:true, color:Vec4.of(.1,.5,.2,0.7), fext:Vec3.of(0), scale:Vec3.of(1) }
 
@@ -173,7 +170,7 @@ module.Vec3Array = GPU.array({ type: Vec3 })
 
 module.Sim = class Sim {
 
-    async init(canvas) {
+    async init(width, height, ctx) {
         this.refreshRate = await new Promise(resolve => {
             const stamps = []
             requestAnimationFrame(function callback(stamp) {
@@ -182,9 +179,13 @@ module.Sim = class Sim {
             })
         })
         console.log(`refresh rate: ${this.refreshRate}`)
-        const gpu = new GPU(canvas)
-        await gpu.init()
+        const gpu = new GPU()
+        await gpu.init(width,height,ctx)
 
+        this.camPos = Vec3.of(0, -4, 3)
+        this.camLR = 0
+        this.camUD = -PI/6        
+        
         const objs = []
         for (const opt of MESHES) {
             const obj = await this.loadObj(opt)
@@ -311,7 +312,7 @@ module.Sim = class Sim {
             sorted: gpu.buf({ type:GPU.array({ type:u32, length: particles.length}), usage: 'STORAGE' }),
             lights: gpu.buf({ data: lights, usage: 'UNIFORM|FRAGMENT|COPY_DST' })
         }
-        Object.assign(this, {gpu, objs, meshes, verts, particles, tris, bitmaps, camera, lights, bufs, possessed, canvas, params, pd, vd, td})
+        Object.assign(this, {gpu, objs, meshes, verts, particles, tris, bitmaps, camera, lights, bufs, possessed, ctx, width, height, params, pd, vd, td})
 
         this.compute = new Compute(this)
         this.render = new Render(this)
@@ -319,6 +320,16 @@ module.Sim = class Sim {
         await this.compute.setup()
         await this.render.setup()
 
+    }
+
+    resize(width, height) {
+        this.width = width
+        this.height = height
+        this.gpu.resize(width,height)
+    }
+
+    camFwd() {
+        return Vec3.of(sin(this.camLR) * cos(this.camUD), cos(this.camLR) * cos(this.camUD), sin(this.camUD))
     }
     
     async loadObj(opt) {
@@ -623,11 +634,11 @@ class Render {
     }
     
     async step() {
-        const { camera, lights, canvas, gpu, bufs } = this.sim
+        const { camera, lights, ctx, width, height, gpu, bufs, camPos } = this.sim
         camera.pos = camPos
-        camera.ratio = canvas.width/canvas.height
+        camera.ratio = width/height
         camera.projection = Mat4.perspective(FOV, camera.ratio, .01, 200)
-        camera.forward = camFwd()
+        camera.forward = this.sim.camFwd()
         camera.modelview = Mat4.look(camPos, camera.forward, UP)
         gpu.write({ buf:bufs.camera, data: camera})
         
@@ -667,159 +678,9 @@ class Render {
 }
 
 
-class App {
-    constructor() {
-        this.canvas = document.createElement('canvas')
-        document.body.append(this.canvas)
-        this.canvas.width = this.canvas.style.width = window.innerWidth
-        this.canvas.height = this.canvas.style.height = window.innerHeight
-        this.sim = new Sim(this)
-        this.sim.init(this.canvas).then(()=> {
-            this.setup()
-            this.sim.run()
-        })        
-    }
-
-
-    setup() {
-        const { render, compute, possessed, params, particles } = this.sim
-        const cv = this.canvas
-        
-        const nav = document.createElement('div')
-        const info = document.createElement('div')
-        const ctrls = document.createElement('div')
-        const pause = document.createElement('button')
-        const step = document.createElement('button')
-        const inspect = document.createElement('div')
-        const pedit = document.createElement('div')           
-
-        const commonStyle = {fontFamily: 'monospace', position: 'fixed', color: 'white'}
-        Object.assign(ctrls.style, { left:5, top:5, ...commonStyle })
-        Object.assign(pedit.style, { left:5, top:35, textAlign:'right', ...commonStyle })
-        Object.assign(info.style, { right:5, top:25, textAlign:'right', ...commonStyle })
-        Object.assign(nav.style, { right:5, top:5, ...commonStyle })
-        Object.assign(inspect.style, { marginLeft: 20 })
-        
-        pause.innerHTML = "&#9199;"
-        step.innerHTML = "&#11122;"
-        step.style.display = inspect.style.display = localStorage.paused ? 'inline' : 'none'
-        ctrls.append(pause,step,inspect)
-        cv.parentNode.append(ctrls,info)
-        cv.parentNode.append(nav)
-        cv.parentNode.append(pedit)
-
-        inspect.innerHTML = `particle: <input id='partidx' type='number' min='0' max='${particles.length - 1}' value=''>`
-        const partidx = document.querySelector('#partidx')
-        Object.assign(partidx.style, { width: 70, textAlign: 'right' })
-        
-        pedit.innerHTML = Params.fields.map(field => {
-            const name = field.name
-            const val = localStorage[name] == undefined ? params[name] : parseFloat(localStorage[name])
-            const lo = params[name] * 0.002, hi = params[name] * 4.9
-            return `${name} <input style='vertical-align:middle;width:200px' type='range' name='${name}' value='${val}' `+
-                `min='${lo}' max='${hi}' step='0.001' ` +
-                `oninput='${name}.value=parseFloat(this.value).toFixed(3); localStorage.${name} = this.value'/> ` +
-                `<output id='${name}'>${val.toFixed(3)}</output>`
-        }).join('<br/>')
-                                           
-
-        this.move = false
-        cv.onmouseup = cv.onmouseout = cv.onmousedown = cv.onmousemove = cv.onwheel = cv.oncontextmenu =
-            pause.onclick = step.onclick = window.onresize = partidx.oninput = (ev) => { this.handle(ev) }
-
-        setTimeout(()=>{ this.updateInfo() }, 500)
-        
-        Object.assign(this, {nav, info, ctrls, pause, step, inspect, partidx })
-    }
-
-    handle(ev) {
-        const { compute, render, gpu, bufs, possessed, camera } = this.sim
-        if (ev.target == this.pause && ev.type == 'click') {
-            compute.paused = !compute.paused
-            this.step.style.display = this.inspect.style.display = compute.paused ? 'inline' : 'none'
-        }
-    
-        if (ev.target == this.step && ev.type == 'click') {
-            compute.fwdstep = true
-        }
-
-        if (ev.target == this.partidx && ev.type == 'input') {
-            const pidx = parseInt(this.partidx.value)
-            camera.selection = pidx
-            gpu.read(bufs.particles).then(buf => {
-                const particles = new Particles(buf)
-                const p = particles[pidx]
-                console.clear()
-                console.log({particle: pidx, si: p.si.toString(), grad: p.grad.toString(), sp:p.sp.toString(), mesh:p.mesh, v:p.v.toString(), q:p.q.toString()})
-            })        
-        }
-
-        if (ev.type == 'mousedown') {
-            this.move = {x: ev.x, y: ev.y, btn: ev.button}
-        }
-
-        if (ev.type == 'mouseout' || ev.type == 'mouseup') {
-            this.move = false;
-        }
-        
-        if (ev.type == 'mousemove') {
-            if (!this.move) return
-            const dx = .01*(ev.x - this.move.x), dy = .01*(this.move.y - ev.y)
-            this.move.x = ev.x
-            this.move.y = ev.y
-            if (this.move.btn == 0) {
-                camLR += dx
-                camUD = clamp(camUD + dy,-PI/2, PI/2)
-            } else if (this.move.btn == 1) {
-                const delta = Vec3.of( -dx * cos(camLR), dx * sin(camLR), -dy);
-                camPos = camPos.add(delta)
-            }
-        }
-
-        if (ev.type == 'wheel') {
-            const dy = -.001 * ev.deltaY
-            const camDir = camFwd()
-            camPos.x += dy * camDir.x
-            camPos.y += dy * camDir.y
-            camPos.z += dy * camDir.z
-        }
-
-        if (ev.type == 'contextmenu') {
-            ev.preventDefault()
-        }
-
-        if (ev.type == 'resize') {
-            this.canvas.width = this.canvas.style.width = window.innerWidth
-            this.canvas.height = this.canvas.style.height = window.innerHeight
-            gpu.resize()
-        }
-            
-    }
-    
-    async updateInfo() {
-        const {compute, render} = this.sim
-        let { tstart, tlast, frames, stamps, labels, tsim } = await compute.stats()
-        const lines = []
-        if (frames != undefined) {
-            lines.push(`compute trel:${((tlast - tsim)*1000).toFixed(2)} ms`)
-            lines.push(`compute fps:${(frames/(tlast-tstart)).toFixed(2)}`)
-            if (labels.length) {
-                lines.push(...Array.from(range(1,labels.length)).map(i => `${labels[i]}: ${(stamps[i] - stamps[i-1])/1000n} &mu;s`))
-                lines.push(`total: ${(stamps[labels.length-1] - stamps[0])/1000n} &mu;s`)
-            }
-        }
-        ({ tstart, tlast, frames } = await render.stats());
-        lines.push(`render fps:${(frames/(tlast-tstart)).toFixed(2)}`)
-        this.info.innerHTML = lines.join('<br/>')
-        this.nav.innerText = `cam: pos=${camPos.toString()} fwd=${camFwd().toString()}`
-        setTimeout(() => { this.updateInfo() }, 500)
-    }
-    
-}
 
 
 
-module.app = new App()
 
 
 
