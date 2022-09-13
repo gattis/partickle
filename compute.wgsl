@@ -1,13 +1,10 @@
 type v3 = vec3<f32>;
-type m3 = mat3x3<f32>;
 type v3i = vec3<i32>;
 
 const MAXNN = ${MAXNN}u;
 const D = ${D}f;
 const Dplus = ${D*1.5};
 const T = ${T}f;
-const v3zero = v3(0.0);
-const m3zero = m3(0f,0f,0f,0f,0f,0f,0f,0f,0f);
 
 @compute @workgroup_size(${threads})
 fn predict(@builtin(global_invocation_id) gid:vec3<u32>) {
@@ -111,23 +108,23 @@ fn grid_collide(@builtin(global_invocation_id) gid:vec3<u32>) {
 
 
 
-fn quat2Mat(q:vec4<f32>) -> m3 {
-    let qx = 2 * q.x * q;
-    let qy = 2 * q.y * q;
-    let qz = 2 * q.z * q;
-    return m3(1 - qy.y - qz.z,
+fn quat2Mat(q:vec4<f32>) -> mat3x3<f32> {
+    let qx = 2.0f * q.x * q;
+    let qy = 2.0f * q.y * q;
+    let qz = 2.0f * q.z * q;
+    return mat3x3<f32>(1.0f - qy.y - qz.z,
               qx.y + qz.w,
               qx.z - qy.w,
               qx.y - qz.w,
-              1 - qx.x - qz.z,
+              1.0f - qx.x - qz.z,
               qy.z + qx.w,
               qx.z + qy.w,
               qy.z - qx.w,
-              1 - qx.x - qy.y);
+              1.0f - qx.x - qy.y);
     
 }
 
-fn mat2Quat(m:m3) -> vec4<f32> {
+fn mat2Quat(m:mat3x3<f32>) -> vec4<f32> {
     let tr = m[0][0] + m[1][1] + m[2][2];
     var out:vec4<f32>;
     if (tr > 0.0) {
@@ -140,7 +137,7 @@ fn mat2Quat(m:m3) -> vec4<f32> {
     } else {
         var i = 0;
         if (m[1][1] > m[0][0]) { i = 1; }
-        if (m[2][2] > m[(i*4)/3][(i*4)%3]) { i = 2; }
+        if (m[2][2] > m[(u32(i)*4u)/3u][(u32(i)*4u)%3u]) { i = 2; }
         var j = (i+1) % 3;
         var k = (i+2) % 3;
         let i4 = i*4; let j4 = j*4; let k4 = k*4;
@@ -174,7 +171,7 @@ fn centroid_init(@builtin(global_invocation_id) gid:vec3<u32>) {
 }
 
 @compute @workgroup_size(${threads})
-fn centroid(@builtin(local_invocation_id) lid:vec3<u32>,
+fn getcentroid(@builtin(local_invocation_id) lid:vec3<u32>,
             @builtin(workgroup_id) wgid:vec3<u32>,
             @builtin(num_workgroups) wgs:vec3<u32>) {  
     let N = arrayLength(&centroidwork);
@@ -219,7 +216,7 @@ fn shapematch_init(@builtin(global_invocation_id) gid:vec3<u32>) {
         let part = &particles[i];
         let p = (*part).sp - (*m).ci;
         let q = (*part).q;
-        shapework[gid.x] = m3(p.x*q, p.y*q, p.z*q);
+        shapework[gid.x] = mat3x3<f32>(p.x*q, p.y*q, p.z*q);
     }
 }
 

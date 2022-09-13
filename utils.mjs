@@ -1,13 +1,12 @@
-const module = globalThis
 const { cos, sin, acos, asin, cbrt, sqrt, PI, random, ceil, floor, tan, max, min, log2 } = Math
 
-module.I32MIN = -(2**31)
-module.I32MAX = 2**31-1
-module.MB = 2**20
-module.GB = 2**30
+globalThis.I32MIN = -(2**31)
+globalThis.I32MAX = 2**31-1
+globalThis.MB = 2**20
+globalThis.GB = 2**30
 
-module.roundUp = (n,k) => ceil(n/k)*k
-module.range = function* (a,b,step) {
+globalThis.roundUp = (n,k) => ceil(n/k)*k
+globalThis.range = function* (a,b,step) {
     const [start,stop] = b == undefined ? [0,a] : [a,b]
     step ||= 1
     let val = start
@@ -17,12 +16,12 @@ module.range = function* (a,b,step) {
         for (let val = start; val > stop; val += step) yield val
 }
 
-module.enumerate = function* (arr) {
+globalThis.enumerate = function* (arr) {
     for (const i of range(arr.length))
         yield [i,arr[i]]
 }
 
-module.BitField = class BitField {
+globalThis.BitField = class BitField {
     constructor(nbits) {
         this.nbits = nbits
         this.nbytes = ceil(nbits/8)
@@ -57,7 +56,7 @@ Array.prototype.sum = function(fn) {
 }
 
 
-module.coroutine = f => {
+globalThis.coroutine = f => {
     var o = f();
     o.next();
     return function(x) {
@@ -65,15 +64,15 @@ module.coroutine = f => {
     }
 }
 
-module.clamp = (x,lo,hi) => x < lo ? lo : (x > hi ? hi : x)
+globalThis.clamp = (x,lo,hi) => x < lo ? lo : (x > hi ? hi : x)
 
 
-module.sleep = (s) => {
+globalThis.sleep = (s) => {
     return new Promise(done => setTimeout(done, s*1000))
 }
 
 
-module.rand = {
+globalThis.rand = {
     seed: Math.floor(Math.random()*(2**32-1)),
     next:  () => {
         let t = rand.seed += 0x6D2B79F5;
@@ -86,12 +85,12 @@ module.rand = {
 }
 
 
-module.fetchtext = async (url) => {
+globalThis.fetchtext = async (url) => {
     return await (await fetch(url)).text()
 }
 
 
-module.Heap = class Heap {
+globalThis.Heap = class Heap {
     constructor(cmp) {
         const items = this.items = []
         this.cmp = (i, j) => cmp(items[i], items[j])

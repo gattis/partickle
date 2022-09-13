@@ -4,10 +4,13 @@ type v3 = vec3<f32>;
 type m3 = mat3x3<f32>;
 type m4 = mat4x4<f32>;
 
-const specColor = v3(1,1,1);
+const specColor = v3(1.0f,1.0f,1.0f);
 const shininess = 4.0;
 const ambient = 0.5f;
 const particle_mesh = array<v3, ${partDraws}>(${partWgsl});
+const decalR = 0.17321;
+const decal = array<v2, 3>(v2(-.3,-.17321), v2(0,0.34641), v2(.3,-.17321));
+
 
 struct IO {
     @builtin(position) position: v4,
@@ -46,35 +49,6 @@ struct IO {
     return out;
 }
 
-@fragment fn frag_part(input:IO) -> @location(0) v4 {
-    var color = meshes[input.mesh].pcolor;
-    if (color.a < 0.5) { discard; }
-    color.a = 1.0;
-    if (input.selected == 1u) {
-        color.r = 1 - color.r;
-    }
-    return frag(input, color);
-}
-
-
-@fragment fn frag_surf_opaque(input:IO) -> @location(0) v4 {
-    return frag_surf(input, false);
-}
-
-@fragment fn frag_surf_transp(input:IO) -> @location(0) v4 {
-    return frag_surf(input, true);
-}
-
-fn frag_surf(input:IO, transp:bool) -> v4 {
-    let m = &meshes[input.mesh];
-    let color = (*m).color * select(textureSample(tex, samp, input.uv, (*m).tex), vec4(1), (*m).tex < 0);
-    if (transp && color.a >= 0.9999) { discard; }
-    if (!transp && color.a < 0.9999) { discard; }
-    if (color.a < 0.0001) { discard; }
-    return frag(input, color);
-}
-
-
 fn frag(input:IO, color:v4) -> v4 {
     var mix = color.rgb * ambient;
     for (var i = 0; i < ${numLights}; i += 1) {
@@ -98,6 +72,34 @@ fn frag(input:IO, color:v4) -> v4 {
     
     return v4(mix, color.a);
 
+}
+
+
+@fragment fn frag_part(input:IO) -> @location(0) v4 {
+    var color = meshes[input.mesh].pcolor;
+    if (color.a < 0.5) { discard; }
+    color.a = 1.0;
+    if (input.selected == 1u) {
+        color.r = 1 - color.r;
+    }
+    return frag(input, color);
+}
+
+fn frag_surf(input:IO, transp:bool) -> v4 {
+    let m = &meshes[input.mesh];
+    let color = (*m).color * select(textureSample(tex, samp, input.uv, (*m).tex), vec4(1), (*m).tex < 0);
+    if (transp && color.a >= 0.9999) { discard; }
+    if (!transp && color.a < 0.9999) { discard; }
+    if (color.a < 0.0001) { discard; }
+    return frag(input, color);
+}
+
+@fragment fn frag_surf_opaque(input:IO) -> @location(0) v4 {
+    return frag_surf(input, false);
+}
+
+@fragment fn frag_surf_transp(input:IO) -> @location(0) v4 {
+    return frag_surf(input, true);
 }
 
 @vertex fn vert_axis(@builtin(vertex_index) vertidx:u32,
@@ -124,9 +126,6 @@ fn frag(input:IO, color:v4) -> v4 {
 @fragment fn frag_norm() -> @location(0) v4 {
     return v4(1,1,1,1);
 }
-
-const decalR = 0.17321;
-const decal = array<v2, 3>(v2(-.3,-.17321), v2(0,0.34641), v2(.3,-.17321));
 
 struct LightIO {
     @builtin(position) position:v4,

@@ -1,49 +1,59 @@
-const module = globalThis
+
 const { abs, cos, sin, acos, asin, cbrt, sqrt, PI, random, ceil, floor, tan, max, min, log2 } = Math
-import './utils.js'
+import './utils.mjs'
 
 
-module.f32 = {name:'f32', conv:'Float32', align: 4, size: 4, getset: (off) => ({
+globalThis.f32 = {name:'f32', conv:'Float32', align: 4, size: 4, getset: (off) => ({
     get() { return this.getFloat32(off,true) },
     set(v) { return this.setFloat32(off,v,true) }
 })}
-module.u32 = {name:'u32', conv:'Uint32', align: 4, size: 4, getset: (off) => ({
+globalThis.u32 = {name:'u32', conv:'Uint32', align: 4, size: 4, getset: (off) => ({
     get() { return this.getUint32(off,true) },
     set(v) { return this.setUint32(off,v,true)}
 })}
-module.u64 = {name:'u64', conv:'Uint32', size: 8, getset: (off) => ({
+globalThis.u64 = {name:'u64', conv:'Uint32', size: 8, getset: (off) => ({
     get() { return this.getBigUInt64(off,true) },
     set(v) { return this.setBigUInt64(off,v,true) }
 })}
-module.i32 = {name:'i32', conv:'Int32', align: 4, size: 4, getset: (off) => ({
+globalThis.i32 = {name:'i32', conv:'Int32', align: 4, size: 4, getset: (off) => ({
     get() { return this.getInt32(off,true) },
     set(v) { return this.setInt32(off,v,true)}
 })}
-module.uatomic = {...u32, name: 'atomic<u32>'}
-module.iatomic = {...i32, name: 'atomic<i32>'}
+globalThis.uatomic = {...u32, name: 'atomic<u32>'}
+globalThis.iatomic = {...i32, name: 'atomic<i32>'}
 
+const FF = Boolean(navigator.userAgent.match(/Firefox/))
 
-
-module.GPU = class GPU {
+globalThis.GPU = class GPU {
     
     async init(width, height, ctx) {
         const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' })
-        const limits = {}, features = ['timestamp-query']
-        for (const prop in adapter.limits)
-            limits[prop] = adapter.limits[prop]
-        
-        const dev = await adapter.requestDevice({
-            requiredFeatures: features,
-            requiredLimits: limits
-        })
-        dev.addEventListener('uncapturederror', ev => {
-            if (this.okay) {
-                console.error(ev.error.message)
-                this.okay = false
+        const limits = {}, features = []
+        for (const feature of adapter.features)
+            if (feature != 'multi-planar-formats' && feature != 'clear-texture')
+                features.push(feature)        
+        for (const prop of Object.getOwnPropertyNames(adapter.limits.constructor.prototype)) {
+            const val = adapter.limits[prop]
+            if (prop != 'constructor' && val != undefined) {
+                limits[prop] = val
             }
-        })
+        }
+        const desc = { requiredFeatures: features }
+        if (!FF) desc.requiredLimits = limits
+        const dev = await adapter.requestDevice(desc)
 
-        const fmt = navigator.gpu.getPreferredCanvasFormat()      
+        if (features.includes('timestamp-query')) this.ts = true
+
+        try{
+            dev.addEventListener('uncapturederror', ev => {
+                if (this.okay) {
+                    console.error(ev.error.message)
+                    this.okay = false
+                }
+            })
+        } catch (err) {}
+
+        const fmt = navigator.gpu.getPreferredCanvasFormat ? navigator.gpu.getPreferredCanvasFormat() : 'rgba8unorm-srgb'
         ctx.configure({ device: dev, format: fmt, alphaMode: 'premultiplied' })
         const threads = floor(sqrt(limits.maxComputeWorkgroupsPerDimension))
         const colorAttachment = {
@@ -98,7 +108,7 @@ module.GPU = class GPU {
         return { ...buf, resource }
     }
 
-    shader(args) {
+    async shader(args) {
         const { compute, wgsl, defs, storage, uniform, textures, samplers } = args
         const binds = []
         for (const [label,type] of Object.entries(storage||{}))
@@ -116,8 +126,13 @@ module.GPU = class GPU {
             args.wgsl
         ].join('\n\n')
         if (!compute) code = code.replaceAll('atomic<u32>', 'u32').replaceAll('atomic<i32>','i32')
-        args.module = this.dev.createShaderModule({ code })
+        if (FF) code = code.replaceAll('const','let')
         args.binds = binds
+        args.module = this.dev.createShaderModule({ code })
+        const info = await args.module.compilationInfo()
+        for (let msg of info.messages)
+            console.warn(msg.message)
+
         return args
     }
     
@@ -223,7 +238,7 @@ module.GPU = class GPU {
         
     clearBuffer(buf) {
         return (encoder) => {
-            encoder.clearBuffer(buf.buffer)
+            encoder.clearBuffer(buf.buffer, 0, buf.size)
         }            
     }
 
@@ -236,8 +251,10 @@ module.GPU = class GPU {
     
     encode(cmds) {
         const dev = this.dev
-        const querySet = dev.createQuerySet({ type: 'timestamp', count: 64 }) 
-        const queryBuf = this.buf({ type: u64, length: 64, usage: 'QUERY_RESOLVE|COPY_SRC' })
+        const querySet = this.ts ? dev.createQuerySet({ type: 'timestamp', count: 64 }) : null
+        let queryBuf
+        try { queryBuf = this.buf({ type: u64, length: 64, usage: 'QUERY_RESOLVE|COPY_SRC' }) }
+        catch (err) { queryBuf = this.buf({ type: u64, length: 64, usage: 'COPY_SRC' }) }
         return {
             stampLabels: [],
             stampBuf: queryBuf,
@@ -296,10 +313,8 @@ module.GPU = class GPU {
             }
             get table() {
                 const obj = {}
-                for (const [i, { name, type }] of enumerate(cls.fields)) {
-                    console.log(type)
+                for (const [i, { name, type }] of enumerate(cls.fields))
                     obj[name] = this[i].toString()
-                }
                 return obj
             }
             [Symbol.iterator]() {
@@ -413,32 +428,32 @@ module.GPU = class GPU {
 }
 
 
-module.i32array = GPU.array({ type: i32 })
-module.u32array = GPU.array({ type: u32 })
-module.iatomicarray = GPU.array({ type: iatomic })
-module.uatomicarray = GPU.array({ type: uatomic })
+globalThis.i32array = GPU.array({ type: i32 })
+globalThis.u32array = GPU.array({ type: u32 })
+globalThis.iatomicarray = GPU.array({ type: iatomic })
+globalThis.uatomicarray = GPU.array({ type: uatomic })
 
 
-module.Vec2 = GPU.struct({
+globalThis.Vec2 = GPU.struct({
     name: 'vec2<f32>',
     fields: [['x', f32], ['y', f32]],
     size: 8, align: 8
 })
 
-module.uVec2 = GPU.struct({
+globalThis.uVec2 = GPU.struct({
     name: 'vec2<u32>',
     fields: [['x', u32], ['y', u32]],
     size: 8, align: 8
 })
 
-module.iVec3 = GPU.struct({
+globalThis.iVec3 = GPU.struct({
     name: 'vec3<i32>',
     fields: [['x', i32], ['y', i32], ['z', i32]],
     size: 12,
     align: 16
 })
 
-module.Vec3 = class extends Float32Array {
+globalThis.Vec3 = class extends Float32Array {
     static name = 'vec3<f32>'
     static isStruct = true
     static align = 16
@@ -505,7 +520,7 @@ module.Vec3 = class extends Float32Array {
 }
 
 
-module.Vec4 = GPU.struct({
+globalThis.Vec4 = GPU.struct({
     name: 'vec4<f32>',
     fields: [['x', f32], ['y', f32], ['z', f32], ['w', f32]],
     size: 16, align: 16,
@@ -517,7 +532,7 @@ module.Vec4 = GPU.struct({
     }
 })
 
-module.Mat3 = GPU.array({
+globalThis.Mat3 = GPU.array({
     name: 'mat3x3<f32>',
     type: Vec3,
     length: 3,
@@ -550,7 +565,7 @@ module.Mat3 = GPU.array({
 // left-handed
 // row-vector-Matrix product pre-mult v*M
 // v*M1*M1*M3 = v*(M1*M2*M3)
-module.Mat4 = GPU.array({   
+globalThis.Mat4 = GPU.array({   
     name: 'mat4x4<f32>',
     type: Vec4,
     length: 4,

@@ -1,8 +1,7 @@
-const module = globalThis
 const { cos, sin, acos, asin, cbrt, sqrt, PI, random, ceil, floor, tan, max, min, log2,round,atan } = Math
-import './gpu.js'
-import './geometry.js'
-import './ico80.js'
+import './gpu.mjs'
+import './geometry.mjs'
+import './ico80.mjs'
 
 const D = 0.05
 const FRAMERATIO = 5
@@ -57,13 +56,13 @@ const HELPER = { url: 'helper.obj', scale: Vec3.of(2,2,2), sample: false, fext: 
 
 const MESHES = [
     TORUS, //{url:'particle.obj', sample:true, offset:Vec3.of(0,0,1)},
-    GROUND
+    //GROUND
     
 ]
 
 const clock = () => SPEED*performance.now()/1000
 
-module.Mesh = GPU.struct({
+globalThis.Mesh = GPU.struct({
     name: 'Mesh',
     fields: [
         ['c0', Vec3],
@@ -80,7 +79,7 @@ module.Mesh = GPU.struct({
     ]
 })
 
-module.Vertex = GPU.struct({
+globalThis.Vertex = GPU.struct({
     name: 'Vertex',
     fields: [
         ['pos', Vec3],
@@ -95,7 +94,7 @@ module.Vertex = GPU.struct({
 })
         
 
-module.Particle = GPU.struct({
+globalThis.Particle = GPU.struct({
     name: 'Particle',
     fields: [
         ['sp', Vec3],
@@ -114,7 +113,7 @@ module.Particle = GPU.struct({
 })
 
 
-module.Camera = GPU.struct({
+globalThis.Camera = GPU.struct({
     name: 'Camera',
     fields: [
         ['projection', Mat4],
@@ -127,7 +126,7 @@ module.Camera = GPU.struct({
     ]
 })
 
-module.Light = GPU.struct({
+globalThis.Light = GPU.struct({
     name: 'Light',
     fields: [
         ['pos', Vec3],
@@ -137,7 +136,7 @@ module.Light = GPU.struct({
     ]
 })
 
-module.Params = GPU.struct({
+globalThis.Params = GPU.struct({
     name: 'Params',
     fields: [
         ['fcol', f32],
@@ -147,7 +146,7 @@ module.Params = GPU.struct({
 })
 
 
-module.TriVert = GPU.struct({
+globalThis.TriVert = GPU.struct({
     name: 'TriVert',
     fields: [
         ['pos', Vec3],
@@ -157,18 +156,18 @@ module.TriVert = GPU.struct({
         ['uv', Vec2],        
     ]
 })
-module.Triangle = GPU.array({ type: TriVert, length: 3 })
+globalThis.Triangle = GPU.array({ type: TriVert, length: 3 })
 
 
-module.Meshes = GPU.array({ type: Mesh })
-module.Vertices = GPU.array({ type: Vertex })
-module.Particles = GPU.array({ type: Particle })
-module.Triangles = GPU.array({ type: Triangle })
-module.Mat3Array = GPU.array({ type: Mat3 })
-module.Vec3Array = GPU.array({ type: Vec3 })
+globalThis.Meshes = GPU.array({ type: Mesh })
+globalThis.Vertices = GPU.array({ type: Vertex })
+globalThis.Particles = GPU.array({ type: Particle })
+globalThis.Triangles = GPU.array({ type: Triangle })
+globalThis.Mat3Array = GPU.array({ type: Mat3 })
+globalThis.Vec3Array = GPU.array({ type: Vec3 })
 
 
-module.Sim = class Sim {
+globalThis.Sim = class Sim {
 
     async init(width, height, ctx) {
         this.refreshRate = await new Promise(resolve => {
@@ -388,7 +387,7 @@ class Compute {
         this.T = 1/refreshRate/FRAMERATIO
         const wgsl = (await fetchtext('./compute.wgsl')).interp({threads, MAXNN, T:this.T, D})
 
-        const shader = gpu.shader({ compute: true, wgsl: wgsl, defs: [Vertex, Particle, Mesh, Params, TriVert],
+        const shader = await gpu.shader({ compute: true, wgsl: wgsl, defs: [Vertex, Particle, Mesh, Params, TriVert],
                                     storage: { particles:Particles, meshes:Meshes, vertices:Vertices, sorted:u32array, centroidwork:Vec3Array,
                                                cnts:i32array, cnts_atomic:iatomicarray, work:i32array, shapework:Mat3Array, tris:Triangles },
                                     uniform: { params:Params } })
@@ -399,7 +398,7 @@ class Compute {
         const cntsort_sort = gpu.computePipe({ shader, entryPoint:'cntsort_sort', binds: ['particles','cnts_atomic','sorted'] })
         const grid_collide = gpu.computePipe({ shader, entryPoint:'grid_collide', binds: ['particles','cnts','sorted'] })
         const centroid_init = gpu.computePipe({ shader, entryPoint:'centroid_init', binds: ['meshes','particles','centroidwork'] })
-        const centroid = gpu.computePipe({ shader, entryPoint:'centroid', binds: ['meshes','centroidwork'] })
+        const centroid = gpu.computePipe({ shader, entryPoint:'getcentroid', binds: ['meshes','centroidwork'] })
         const shapematch_init = gpu.computePipe({ shader, entryPoint:'shapematch_init', binds: ['meshes','particles','shapework'] })
         const shapematch = gpu.computePipe({ shader, entryPoint:'shapematch', binds: ['meshes','shapework'] })
         const grads = gpu.computePipe({ shader, entryPoint:'grads', binds: ['particles','meshes'] })
@@ -519,9 +518,9 @@ class Compute {
 
         if (this.fwdstep) {
             /*gpu.read(bufs.vertices).then(buf => {
-                module.verts = new Vertices(buf)
+                globalThis.verts = new Vertices(buf)
                 gpu.read(bufs.tris).then(buf => {
-                    module.tris = new Triangles(buf)
+                    globalThis.tris = new Triangles(buf)
                 })
             })*/
             
@@ -551,7 +550,7 @@ class Render {
         const partWgsl = partMesh.map(v=>`v3(${v.x}, ${v.y}, ${v.z})`).join(',')
         let wgsl = (await fetchtext('./render.wgsl'))
         wgsl = wgsl.interp({partWgsl, partDraws, numLights: lights.length })
-        const shader = gpu.shader({ wgsl, defs:[Vertex, Particle, Mesh, Camera, Light],
+        const shader = await gpu.shader({ wgsl, defs:[Vertex, Particle, Mesh, Camera, Light],
                                     storage:{ particles:Particles, meshes:Meshes, vertices:Vertices },
                                     uniform:{ camera:Camera, lights:lights.constructor },
                                     textures:{ tex:{ name:'texture_2d_array<f32>' } },

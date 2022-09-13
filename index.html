@@ -1,7 +1,8 @@
 <html>
   <head>
-    <script type='module' src="./sim.js"></script>
+    <script type='module' src="./sim.mjs"></script>
     <script type='module'>
+      const { cos, sin, acos, asin, cbrt, sqrt, PI, random, ceil, floor, tan, max, min, log2,round,atan } = Math
       window.App = class App {
           constructor() {
               this.canvas = document.querySelector('canvas')
@@ -68,7 +69,8 @@
           }
 
           handle(ev) {
-              const { compute, render, gpu, bufs, possessed, camera } = this.sim
+              const sim = this.sim
+              const { compute, render, gpu, bufs, possessed, camera } = sim
               if (ev.target == this.pause && ev.type == 'click') {
                   compute.paused = !compute.paused
                   this.step.style.display = this.inspect.style.display = compute.paused ? 'inline' : 'none'

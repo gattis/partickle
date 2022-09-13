@@ -1,12 +1,12 @@
-const module = globalThis
+
 const { abs,cos,sin,acos,asin,cbrt,sqrt,pow,PI,random,round,ceil,floor,tan,max,min,log2 } = Math
-import './gpu.js'
+import './gpu.mjs'
 
 
 
 
 
-module.intersectRayAABB = (start, dir, lower, upper) => {
+globalThis.intersectRayAABB = (start, dir, lower, upper) => {
     const df = dir.recip()
     const tlo = lower.sub(start).mul(df)
     const thi = upper.sub(start).mul(df)
@@ -18,7 +18,7 @@ module.intersectRayAABB = (start, dir, lower, upper) => {
 
 const tolerance = 0.001
 
-module.voxelize = (verts, tris, D) => {
+globalThis.voxelize = (verts, tris, D) => {
     let tstart = performance.now()
     let R = D/2
     let lo = Vec3.of(Infinity), hi = Vec3.of(-Infinity)
@@ -94,7 +94,7 @@ module.voxelize = (verts, tris, D) => {
 }
 
 
-module.sdfGrad = (sdf, dim, x, y, z) => {
+globalThis.sdfGrad = (sdf, dim, x, y, z) => {
     const dx = sampleGrid(sdf, dim, min(x + 1, dim.x - 1), y, z) - sampleGrid(sdf, dim, max(x - 1, 0), y, z)
     const dy = sampleGrid(sdf, dim, x, min(y + 1, dim.y - 1), z) - sampleGrid(sdf, dim, x, max(y - 1, 0), z)
     const dz = sampleGrid(sdf, dim, x, y, min(z + 1, dim.z - 1)) - sampleGrid(sdf, dim, x, y, max(z - 1, 0))
@@ -104,11 +104,11 @@ module.sdfGrad = (sdf, dim, x, y, z) => {
 
 
 
-module.sampleGrid = (voxgrid, dim, x, y, z) => {
+globalThis.sampleGrid = (voxgrid, dim, x, y, z) => {
     return voxgrid[clamp(x, 0, dim.x-1) + clamp(y, 0, dim.y-1)*dim.x + clamp(z, 0, dim.z-1)*dim.x*dim.y]
 }
 
-module.edgeDetect = (voxgrid, dim, x, y, z) => {
+globalThis.edgeDetect = (voxgrid, dim, x, y, z) => {
     const center = sampleGrid(voxgrid, dim, x, y, z)
     let dist = Infinity
     for (const k of [z - 1, z, z + 1])
@@ -119,7 +119,7 @@ module.edgeDetect = (voxgrid, dim, x, y, z) => {
     return dist
 }
 
-module.SDF = (voxels, dim) => {
+globalThis.SDF = (voxels, dim) => {
 
     for (const [x,y,z] of voxels)
         voxgrid[x + y*dim.x + z*dim.x*dim.y] = 1
