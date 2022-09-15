@@ -1,5 +1,5 @@
 
-const { abs, cos, sin, acos, asin, cbrt, sqrt, PI, random, ceil, floor, tan, max, min, log2 } = Math
+const { abs, cos, sin, acos, asin, cbrt, sqrt, PI, random, round, ceil, floor, tan, max, min, log2 } = Math
 import './utils.mjs'
 
 
@@ -23,20 +23,21 @@ globalThis.uatomic = {...u32, name: 'atomic<u32>'}
 globalThis.iatomic = {...i32, name: 'atomic<i32>'}
 
 const FF = Boolean(navigator.userAgent.match(/Firefox/))
+const NODE = globalThis.process && process.release.name == 'node'
 
 globalThis.GPU = class GPU {
     
     async init(width, height, ctx) {
         const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' })
         const limits = {}, features = []
-        for (const feature of adapter.features)
+        for (const feature of adapter.features.keys())
             if (feature != 'multi-planar-formats' && feature != 'clear-texture')
                 features.push(feature)        
         for (const prop of Object.getOwnPropertyNames(adapter.limits.constructor.prototype)) {
+            if (prop == 'maxInterStageShaderVariables') continue
             const val = adapter.limits[prop]
-            if (prop != 'constructor' && val != undefined) {
+            if (prop != 'constructor' && val != undefined)
                 limits[prop] = val
-            }
         }
         const desc = { requiredFeatures: features }
         if (!FF) desc.requiredLimits = limits
@@ -53,7 +54,7 @@ globalThis.GPU = class GPU {
             })
         } catch (err) {}
 
-        const fmt = navigator.gpu.getPreferredCanvasFormat ? navigator.gpu.getPreferredCanvasFormat() : 'rgba8unorm-srgb'
+        const fmt = navigator.gpu.getPreferredCanvasFormat ? navigator.gpu.getPreferredCanvasFormat() : 'rgba8unorm'
         ctx.configure({ device: dev, format: fmt, alphaMode: 'premultiplied' })
         const threads = floor(sqrt(limits.maxComputeWorkgroupsPerDimension))
         const colorAttachment = {
@@ -498,8 +499,8 @@ globalThis.Vec3 = class extends Float32Array {
     divc(b) { return Vec3.of(this[0]/b, this[1]/b, this[2]/b) }
     div(b) { return Vec3.of(this[0]/b[0], this[1]/b[1], this[2]/b[2]) }
     mag() { return sqrt(this[0]**2 + this[1]**2 + this[2]**2) }
-    minaxis() { let ax = this[0] < this[1] ? 0 : 1; return this[ax] < this[2] ? ax : 2 }
-    maxaxis() { let ax = this[0] > this[1] ? 0 : 1; return this[ax] > this[2] ? ax : 2 }
+    majorAxis() { let ax = abs(this[0]) > abs(this[1]) ? 0 : 1; return abs(this[ax]) > abs(this[2]) ? ax : 2 }
+    round() { return [round(this[0]), round(this[1]), round(this[2])] }
     toarray() { return [this[0], this[1], this[2]] }
     ceil() { return Vec3.of(ceil(this[0]), ceil(this[1]), ceil(this[2])) }
     floor() { return Vec3.of(floor(this[0]), floor(this[1]), floor(this[2])) }

@@ -4,7 +4,7 @@ import './geometry.mjs'
 import './ico80.mjs'
 
 const D = 0.05
-const FRAMERATIO = 5
+const FRAMERATIO = 3
 const SPEED = 1
 const FEXT = Vec3.of(0, 0, -9.8)
 const MAXNN = 24
@@ -35,11 +35,11 @@ const HAND = { url:'hand.obj', texUrl:'hand.png', color:Vec4.of(.9,.9,.9,0),
                offset:Vec3.of(.4,.6,.3), scale:Vec3.of(3.5,3.5,3.5),
                sample:true, possess:true, fext:Vec3.of(0, 0, 0) }
 
-const TORUS = { url:'torus.obj', offset:Vec3.of(0,0,1), scale:Vec3.of(1,1,1),
-                color:Vec4.of(0.8,0.2,0.1,0.7), sample:true }
+const TORUS = { url:'torus.obj', offset:Vec3.of(0,0,1), scale:Vec3.of(1),
+                color:CLEAR, particleColor:Vec4.of(.7,.7,.1,1), sample:true, fext:Vec3.of(0,0,-5) }
 
 const GROUND = { url:'ground.obj', texUrl:'marble.png', fext:Vec3.of(0,0,0),
-                 color:Vec4.of(1,1,1,0.5), sample:true, lock:()=>0.99 }
+                 color:CLEAR, sample:true, lock:()=>0.99 }
 
 const CUBE = { url:'cube.obj', sample:true, color:Vec4.of(.1,.5,.2,0.7), fext:Vec3.of(0), scale:Vec3.of(1) }
 
@@ -50,14 +50,14 @@ const WALL = { url:'wall.obj', fext:Vec3.of(0,0,0), sample:true, color:Vec4.of(.
 const TETRA = { url:'tetra.obj', fext:Vec3.of(0,0,0), color:Vec4.of(1,1,1,1), fshape:0,
                 sample:true, lock:()=>0.9 }
 
-const KNOT = { url:'knot.obj', color:Vec4.of(.6,.3,.3,.5), offset:Vec3.of(0,0,1), sample:true }
+const KNOT = { url:'knot.obj', color:Vec4.of(.6,.3,.3,.5), offset:Vec3.of(0,0,1), sample:true, scale:Vec3.of(2)}
 
 const HELPER = { url: 'helper.obj', scale: Vec3.of(2,2,2), sample: false, fext: Vec3.of(0) }
 
 const MESHES = [
-    TORUS, //{url:'particle.obj', sample:true, offset:Vec3.of(0,0,1)},
-    //GROUND
-    
+    TORUS,//GROUND//{url:'particle.obj', sample:true, offset:Vec3.of(0,0,1)},
+    //WALL
+    //CUBE
 ]
 
 const clock = () => SPEED*performance.now()/1000
@@ -142,6 +142,7 @@ globalThis.Params = GPU.struct({
         ['fcol', f32],
         ['fshape', f32],
         ['friction', f32],
+        ['t',f32]
     ]
 })
 
@@ -170,14 +171,6 @@ globalThis.Vec3Array = GPU.array({ type: Vec3 })
 globalThis.Sim = class Sim {
 
     async init(width, height, ctx) {
-        this.refreshRate = await new Promise(resolve => {
-            const stamps = []
-            requestAnimationFrame(function callback(stamp) {
-                if (stamps.push(stamp) < 10) requestAnimationFrame(callback)
-                else resolve((stamps.length-1)*1000/(stamps[stamps.length-1] - stamps[0]))
-            })
-        })
-        console.log(`refresh rate: ${this.refreshRate}`)
         const gpu = new GPU()
         await gpu.init(width,height,ctx)
 
@@ -361,14 +354,17 @@ globalThis.Sim = class Sim {
 
     run() {
         const { gpu, compute, render } = this
-        
-        
-        const loop = async () => {
+        let lastStamp = null
+        const loop = (stamp) => {
             if (!gpu.okay) return;
-            await render.step()
-            for (let i of range(FRAMERATIO))
-                await compute.step()
-            requestAnimationFrame(loop);
+            requestAnimationFrame(loop);           
+            render.step()
+            if (lastStamp != null) {
+                const tstep = (stamp - lastStamp) / 1000 / FRAMERATIO
+                for (let i of range(FRAMERATIO))
+                    compute.step(tstep)
+            }
+            lastStamp = stamp
         }
         requestAnimationFrame(loop);
     }
@@ -381,11 +377,10 @@ class Compute {
     }
 
     async setup() {
-        const {gpu, verts, particles, meshes, params, bufs, pd, vd, td, refreshRate} = this.sim
+        const { gpu, verts, particles, meshes, params, bufs, pd, vd, td } = this.sim
         if (particles.length == 0) return
         const threads = gpu.threads
-        this.T = 1/refreshRate/FRAMERATIO
-        const wgsl = (await fetchtext('./compute.wgsl')).interp({threads, MAXNN, T:this.T, D})
+        const wgsl = (await fetchtext('./compute.wgsl')).interp({threads, MAXNN, D})
 
         const shader = await gpu.shader({ compute: true, wgsl: wgsl, defs: [Vertex, Particle, Mesh, Params, TriVert],
                                     storage: { particles:Particles, meshes:Meshes, vertices:Vertices, sorted:u32array, centroidwork:Vec3Array,
@@ -458,9 +453,6 @@ class Compute {
             gpu.computePass({ pipe:collisions, dispatch:pd, binds:{ particles:bufs.particles, params:bufs.params } }),
             gpu.computePass({ pipe:collisions, dispatch:pd, binds:{ particles:bufs.particles, params:bufs.params } }),
             gpu.computePass({ pipe:collisions, dispatch:pd, binds:{ particles:bufs.particles, params:bufs.params } }),
-            gpu.computePass({ pipe:collisions, dispatch:pd, binds:{ particles:bufs.particles, params:bufs.params } }),
-            gpu.computePass({ pipe:collisions, dispatch:pd, binds:{ particles:bufs.particles, params:bufs.params } }),
-            gpu.computePass({ pipe:collisions, dispatch:pd, binds:{ particles:bufs.particles, params:bufs.params } }),
             gpu.timestamp('stabilize collisions'),
             gpu.computePass({ pipe:project, dispatch:pd, binds:{ particles:bufs.particles, meshes:bufs.meshes, params:bufs.params } }),
             gpu.timestamp('project'),
@@ -475,6 +467,7 @@ class Compute {
         this.fwdstep = false
         this.tstart = this.tsim = this.tlast = clock()
         this.frames = 0
+        this.tsteps = []
 
     }
 
@@ -496,9 +489,15 @@ class Compute {
         localStorage.paused = val ? 'true' : ''
     }
 
-    async step() {
+    step(tstep) {
         const { gpu, particles, bufs, meshes, possessed, params } = this.sim
         if (particles.length == 0) return
+
+        if (this.tsteps.length > 10)
+            this.tsteps.shift()
+        this.tsteps.push(tstep)
+        const tsmooth = this.tsteps.sum()/this.tsteps.length
+
         if (!this.paused || this.fwdstep) {
             for (const idx of possessed) {
                 gpu.write({ buf:bufs.meshes, data: meshes, arrayIdx: idx, field: Mesh.ci})
@@ -507,15 +506,17 @@ class Compute {
             params.fcol = localStorage.fcol == undefined ? FCOL : parseFloat(localStorage.fcol)
             params.fshape = localStorage.fshape == undefined ? FSHAPE : parseFloat(localStorage.fshape)
             params.friction = localStorage.friction == undefined ? FRICTION : parseFloat(localStorage.friction)
+
+
+           
+            params.t = tsmooth
             gpu.write({ buf:bufs.params, data: params })
             this.batch.execute()
         }
-        this.tsim += this.T
+        this.tsim += tsmooth
         this.tlast = clock()
         this.frames++        
         
-
-
         if (this.fwdstep) {
             /*gpu.read(bufs.vertices).then(buf => {
                 globalThis.verts = new Vertices(buf)
@@ -546,7 +547,7 @@ class Render {
 
         const partDraws = partMesh.length
         for (const i of range(partDraws))
-            partMesh[i] = partMesh[i].mulc(D/2 * 0.995)
+            partMesh[i] = partMesh[i].mulc(D/2 * 0.9)
         const partWgsl = partMesh.map(v=>`v3(${v.x}, ${v.y}, ${v.z})`).join(',')
         let wgsl = (await fetchtext('./render.wgsl'))
         wgsl = wgsl.interp({partWgsl, partDraws, numLights: lights.length })
@@ -632,7 +633,7 @@ class Render {
         return ret
     }
     
-    async step() {
+    step() {
         const { camera, lights, ctx, width, height, gpu, bufs, camPos } = this.sim
         camera.pos = camPos
         camera.ratio = width/height

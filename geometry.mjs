@@ -1,10 +1,5 @@
-
 const { abs,cos,sin,acos,asin,cbrt,sqrt,pow,PI,random,round,ceil,floor,tan,max,min,log2 } = Math
 import './gpu.mjs'
-
-
-
-
 
 globalThis.intersectRayAABB = (start, dir, lower, upper) => {
     const df = dir.recip()
@@ -16,77 +11,86 @@ globalThis.intersectRayAABB = (start, dir, lower, upper) => {
     return tmin
 }
 
-const tolerance = 0.001
+
+
 
 globalThis.voxelize = (verts, tris, D) => {
     let tstart = performance.now()
-    let R = D/2
-    let lo = Vec3.of(Infinity), hi = Vec3.of(-Infinity)
-    for (const v of verts) {
-        lo = Vec3.min(lo, v)
-        hi = Vec3.max(hi, v)
+    let grid = new Map()
+    const addPoint = (p,n) => {
+        const v = p.divc(D*0.9999).floor()
+        let hash = String([v.x,v.y,v.z])
+        let entry = grid.get(hash) || Vec3.of(0)
+        entry = entry.add(n)
+        grid.set(hash,entry)
     }
-    let axes = [0,1,2]
-    let [xlo, ylo, zlo] = axes.map(k=>lo[k]) //axes.map(k => (lo[k] + hi[k] - max(1,floor((hi[k]-lo[k])/D))*D)/2)
-    const relverts = verts.map(v => v.sub(Vec3.of(xlo,ylo,zlo)))
-    const voxs = new Map()
-    const addVox = (x,y,z,N) => {
-        x = floor(x/D); y = floor(y/D); z=floor(z/D)        
-        const hash = String([x,y,z])
-        let vox = voxs.get(hash) || [0,Vec3.of(0)]
-        vox[0]++
-        vox[1] = vox[1].add(N)
-        voxs.set(hash,vox)
-    }
-    const cross = (a,b) => a[0]*b[1]-a[1]*b[0]
-    const normals = []
-    console.log(tris.length)
+    const lim = D*sqrt(2)/2 //*sqrt(3)/2    
     for (const [tidx,tri] of enumerate(tris)) {            
-        const [A,B,C] = [0,1,2].map(i=>relverts[tri[i].vidx])
-        const N = B.sub(A).cross(C.sub(A)).normalized()
-        normals.push(N)
-        const axis = N.abs().maxaxis()
-        //for (const P of [A,B,C])
-        //    addVox(floor((P.x+R)/D), floor((P.y+R)/D), floor((P.z+R)/D), N)
-        const [a,b,c] = [A.toarray(), B.toarray(), C.toarray()]
-        const [az] = a.splice(axis,1), [bz] = b.splice(axis,1), [cz] = c.splice(axis,1), nz = N[axis]
-        const axb = cross(a,b), cxa = cross(c,a)
-        const area = cross(b,c) + axb + cxa
-        let u,v,w
-        let [xi, yi] = [min(a[0],b[0],c[0]), min(a[1],b[1],c[1])]
-        let [xf, yf] = [max(a[0],b[0],c[0]), max(a[1],b[1],c[1])]
-        const [xm, ym] = [min(R,(xf-xi)/2), min(R,(yf-yi)/2)]
-        xi += xm; xf -= xm;
-        yi += ym; yf -= ym;
-        //console.log(`${xi}..${xf} ${yi}..${yf}`)
-        const [xstep,ystep] = [clamp((xf-xi)/3,0.0001,D), clamp((yf-yi)/3,0.0001,D)]
-        let added = 0
-        for (let x = xi; x <= xf; x += xstep)
-            for (let y = yi; y <= yf; y += ystep) {
-                const p = [x,y]
-                if ((v = (cxa + cross(p,c) + cross(a,p))/area) < -tolerance) continue
-                if ((w = (axb + cross(p,a) + cross(b,p))/area) < -tolerance) continue
-                if ((u = 1 - v - w) < -tolerance) continue
-                let z = u*az + v*bz + w*cz + (nz >= 0 ? -R : R)
-                p.splice(axis,0,z)
-                addVox(...p, N)
-                added++
+        const ps = [0,1,2].map(i=>verts[tri[i].vidx])
+        const N = ps[1].sub(ps[0]).cross(ps[2].sub(ps[0])).normalized()
+        const ls = [ps[1].sub(ps[2]).mag(), ps[0].sub(ps[2]).mag(), ps[0].sub(ps[1]).mag()]
+        const order = [0,1,2]
+        order.sort((a,b) =>  ls[a]-ls[b])
+        const [A,B,C] = [1,2,0].map(k => ps[order[k]])
+        //console.log('A',A,'B',B,'C',C)
+        const AB = B.sub(A), AC = C.sub(A)
+        const b = AC.mag()
+        const n = AC.cross(AB).normalized()
+        const i = AC.normalized()
+        const j = n.cross(i).normalized()
+        const height = j.dot(AB)
+        const split = i.dot(AB)
+        const lslope = split/height
+        const rslope = (b-split)/height
+        const nj = ceil(height/lim)
+        const dj = height / nj
+        for (let row = 0; row <= nj; row++) {
+            const jpos = row * dj
+            const istart = jpos * lslope
+            const li = b - jpos * rslope - istart
+            const ni = ceil(li/lim)
+            const di = ni == 0 ? 0 : li/ni
+            for (let col = 0; col <= ni; col++) {
+                const ipos = istart + col*di
+                addPoint(A.add(i.mulc(ipos)).add(j.mulc(jpos)), N)
             }
-        if (added == 0) console.log(`${A.toString()} ${B.toString()} ${C.toString()} ${axis} x:${xi}..${xf} y:${yi}..${yf}`)
+        }
     }
+    console.log('hi')
+    let iter = 0
+    while (true) {
+        const newsamples = []
+        for (let [v,n] of grid) {
+            const coord = v.split(',').map(i => parseInt(i))
+            let axis = n.majorAxis()
+            
+            let dir = n[axis] < 0 ? 1 : -1
+            coord[axis] += dir
+            let hash = String(coord)
+            let entry = grid.get(hash)
+            if (entry) continue
+            newsamples.push([hash,n])
+        }
+        if (newsamples.length == 0) break
+        for (let [hash,n] of newsamples) {
+            let entry = grid.get(hash) || Vec3.of(0)
+            entry = entry.add(n)
+            grid.set(hash,entry)
+        }        
+        if (iter++ > 100) break
+    } 
+    console.log('voxelize iters:', iter)
     
     
-
-
-
-    const samples = [], gradients = []
-    for (const [key,vox] of voxs) {
-        const [x,y,z] = key.split(',').map(i=>parseInt(i))
-        samples.push(Vec3.of(xlo + x*D+R, ylo + y*D+R, zlo + z*D+R))
-        gradients.push(vox[1].divc(vox[0]))
+    const R = D/2
+    const samples = [], gradients = []    
+    for (const [v,n] of grid) {
+        const [x,y,z] = v.split(',').map(i => parseInt(i))
+        samples.push(Vec3.of(x*D, y*D, z*D))
+        gradients.push(n.normalized())
     }
 
-                
+
     //const sdf = SDF(voxels, dim)
     //const gradients = voxels.map(([x,y,z]) => sdfGrad(sdf, dim, x, y, z).normalized())
     console.log(`voxelize took ${performance.now() - tstart}ms`)

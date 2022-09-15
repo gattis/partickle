@@ -4,7 +4,7 @@ type v3i = vec3<i32>;
 const MAXNN = ${MAXNN}u;
 const D = ${D}f;
 const Dplus = ${D*1.5};
-const T = ${T}f;
+
 
 @compute @workgroup_size(${threads})
 fn predict(@builtin(global_invocation_id) gid:vec3<u32>) {
@@ -18,8 +18,8 @@ fn predict(@builtin(global_invocation_id) gid:vec3<u32>) {
     var fext = (*m).fext;
     fext = fext - params.friction * (*p).v;
  
-    (*p).v = (*p).v + fext * T;
-    (*p).sp += (*p).v * T;
+    (*p).v = (*p).v + fext * params.t;
+    (*p).sp += (*p).v * params.t;
 
     
 
@@ -326,7 +326,7 @@ fn project(@builtin(global_invocation_id) gid:vec3<u32>) {
     sf += params.fshape * (*m).fshape * (goal - (*p).sp);
     sf += (*p).lock * ((*p).s0 - (*p).sp);
 
-    let v = (sf - (*p).si) / T;
+    let v = (sf - (*p).si) / params.t;
  
     (*p).v = v;
     (*p).si = sf;
