@@ -622,7 +622,7 @@ export class Render {
             draws.push(gpu.draw({ pipe:normPipe, dispatch:[2, tris.length*3], binds:{ camera:bufs.camera }}))
         if (showGrads)
             draws.push(gpu.draw({ pipe:gradPipe, dispatch:[2, particles.length], binds:{ camera:bufs.camera }}))
-        draws.push(gpu.draw({ pipe:lightPipe, dispatch:[3, lights.length],
+        draws.push(gpu.draw({ pipe:lightPipe, dispatch:[12, lights.length],
                               binds: { camera:bufs.camera, lights:bufs.lights } }))
         draws.push(gpu.draw({ pipe:surfPipeTransp, dispatch:tris.length*3,
                               binds:{ meshes: bufs.meshes, camera:bufs.camera, lights:bufs.lights, tex, samp }}))
