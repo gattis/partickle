@@ -1,7 +1,9 @@
 const { abs,cos,sin,acos,asin,cbrt,sqrt,pow,PI,random,round,ceil,floor,tan,max,min,log2 } = Math
-import './gpu.mjs'
+import * as util from './utils.mjs'
+import * as gpu from './gpu.mjs'
+Object.assign(globalThis, gpu, util)
 
-globalThis.intersectRayAABB = (start, dir, lower, upper) => {
+export const intersectRayAABB = (start, dir, lower, upper) => {
     const df = dir.recip()
     const tlo = lower.sub(start).mul(df)
     const thi = upper.sub(start).mul(df)
@@ -14,16 +16,17 @@ globalThis.intersectRayAABB = (start, dir, lower, upper) => {
 
 
 
-globalThis.voxelize = (verts, tris, D) => {
+export const voxelize = (verts, tris, D) => {
     let tstart = performance.now()
     let grid = new Map()
     const addPoint = (p,n) => {
-        const v = p.divc(D*0.9999).floor()
+        const v = p.divc(D*1.0001).floor()
         let hash = String([v.x,v.y,v.z])
-        let entry = grid.get(hash) || Vec3.of(0)
+        let entry = grid.get(hash) || v3(0)
         entry = entry.add(n)
         grid.set(hash,entry)
     }
+    
     const lim = D*sqrt(2)/2 //*sqrt(3)/2    
     for (const [tidx,tri] of enumerate(tris)) {            
         const ps = [0,1,2].map(i=>verts[tri[i].vidx])
@@ -32,7 +35,6 @@ globalThis.voxelize = (verts, tris, D) => {
         const order = [0,1,2]
         order.sort((a,b) =>  ls[a]-ls[b])
         const [A,B,C] = [1,2,0].map(k => ps[order[k]])
-        //console.log('A',A,'B',B,'C',C)
         const AB = B.sub(A), AC = C.sub(A)
         const b = AC.mag()
         const n = AC.cross(AB).normalized()
@@ -58,7 +60,7 @@ globalThis.voxelize = (verts, tris, D) => {
     }
     console.log('hi')
     let iter = 0
-    while (true) {
+    while (false) {
         const newsamples = []
         for (let [v,n] of grid) {
             const coord = v.split(',').map(i => parseInt(i))
@@ -73,11 +75,11 @@ globalThis.voxelize = (verts, tris, D) => {
         }
         if (newsamples.length == 0) break
         for (let [hash,n] of newsamples) {
-            let entry = grid.get(hash) || Vec3.of(0)
+            let entry = grid.get(hash) || v3(0)
             entry = entry.add(n)
             grid.set(hash,entry)
         }        
-        if (iter++ > 100) break
+        if (++iter >= 5) break
     } 
     console.log('voxelize iters:', iter)
     
@@ -86,7 +88,7 @@ globalThis.voxelize = (verts, tris, D) => {
     const samples = [], gradients = []    
     for (const [v,n] of grid) {
         const [x,y,z] = v.split(',').map(i => parseInt(i))
-        samples.push(Vec3.of(x*D, y*D, z*D))
+        samples.push(v3(x*D+R, y*D+R, z*D+R))
         gradients.push(n.normalized())
     }
 
@@ -98,21 +100,21 @@ globalThis.voxelize = (verts, tris, D) => {
 }
 
 
-globalThis.sdfGrad = (sdf, dim, x, y, z) => {
+export const sdfGrad = (sdf, dim, x, y, z) => {
     const dx = sampleGrid(sdf, dim, min(x + 1, dim.x - 1), y, z) - sampleGrid(sdf, dim, max(x - 1, 0), y, z)
     const dy = sampleGrid(sdf, dim, x, min(y + 1, dim.y - 1), z) - sampleGrid(sdf, dim, x, max(y - 1, 0), z)
     const dz = sampleGrid(sdf, dim, x, y, min(z + 1, dim.z - 1)) - sampleGrid(sdf, dim, x, y, max(z - 1, 0))
-    const grad = Vec3.of(dx,dy,dz)
+    const grad = v3(dx,dy,dz)
     return dim.divc(2).mul(grad)
 }
 
 
 
-globalThis.sampleGrid = (voxgrid, dim, x, y, z) => {
+export const sampleGrid = (voxgrid, dim, x, y, z) => {
     return voxgrid[clamp(x, 0, dim.x-1) + clamp(y, 0, dim.y-1)*dim.x + clamp(z, 0, dim.z-1)*dim.x*dim.y]
 }
 
-globalThis.edgeDetect = (voxgrid, dim, x, y, z) => {
+export const edgeDetect = (voxgrid, dim, x, y, z) => {
     const center = sampleGrid(voxgrid, dim, x, y, z)
     let dist = Infinity
     for (const k of [z - 1, z, z + 1])
@@ -123,7 +125,7 @@ globalThis.edgeDetect = (voxgrid, dim, x, y, z) => {
     return dist
 }
 
-globalThis.SDF = (voxels, dim) => {
+export const SDF = (voxels, dim) => {
 
     for (const [x,y,z] of voxels)
         voxgrid[x + y*dim.x + z*dim.x*dim.y] = 1
@@ -162,9 +164,6 @@ globalThis.SDF = (voxels, dim) => {
 }
 
 
-function assert(cond) {
-    if (!cond) throw new Error()
-}
 
 
 

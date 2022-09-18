@@ -1,31 +1,32 @@
 
 const { abs, cos, sin, acos, asin, cbrt, sqrt, PI, random, round, ceil, floor, tan, max, min, log2 } = Math
-import './utils.mjs'
+import * as util from './utils.mjs'
+Object.assign(globalThis, util)
 
 
-globalThis.f32 = {name:'f32', conv:'Float32', align: 4, size: 4, getset: (off) => ({
+export const f32 = {name:'f32', conv:'Float32', align: 4, size: 4, getset: (off) => ({
     get() { return this.getFloat32(off,true) },
     set(v) { return this.setFloat32(off,v,true) }
 })}
-globalThis.u32 = {name:'u32', conv:'Uint32', align: 4, size: 4, getset: (off) => ({
+export const u32 = {name:'u32', conv:'Uint32', align: 4, size: 4, getset: (off) => ({
     get() { return this.getUint32(off,true) },
     set(v) { return this.setUint32(off,v,true)}
 })}
-globalThis.u64 = {name:'u64', conv:'Uint32', size: 8, getset: (off) => ({
+export const u64 = {name:'u64', conv:'Uint32', size: 8, getset: (off) => ({
     get() { return this.getBigUInt64(off,true) },
     set(v) { return this.setBigUInt64(off,v,true) }
 })}
-globalThis.i32 = {name:'i32', conv:'Int32', align: 4, size: 4, getset: (off) => ({
+export const i32 = {name:'i32', conv:'Int32', align: 4, size: 4, getset: (off) => ({
     get() { return this.getInt32(off,true) },
     set(v) { return this.setInt32(off,v,true)}
 })}
-globalThis.uatomic = {...u32, name: 'atomic<u32>'}
-globalThis.iatomic = {...i32, name: 'atomic<i32>'}
+export const uatomic = {...u32, name: 'atomic<u32>'}
+export const iatomic = {...i32, name: 'atomic<i32>'}
 
-const FF = Boolean(navigator.userAgent.match(/Firefox/))
+const FF = Boolean(globalThis.navigator && navigator.userAgent.match(/Firefox/))
 const NODE = globalThis.process && process.release.name == 'node'
 
-globalThis.GPU = class GPU {
+export const GPU = class GPU {
     
     async init(width, height, ctx) {
         const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' })
@@ -95,7 +96,7 @@ globalThis.GPU = class GPU {
         let flags = 0
         args.usage.split('|').forEach(flag => { flags = (flags | GPUBufferUsage[flag]) >>> 0 })
         const mappedAtCreation = 'data' in args
-        args.buffer = this.dev.createBuffer({ size: args.size, mappedAtCreation, usage: flags })
+        args.buffer = this.dev.createBuffer({ label: args.label, size: args.size, mappedAtCreation, usage: flags })
         if (mappedAtCreation) {
             new Uint8Array(args.buffer.getMappedRange()).set(new Uint8Array(args.data.buffer))
             args.buffer.unmap()
@@ -254,8 +255,7 @@ globalThis.GPU = class GPU {
         const dev = this.dev
         const querySet = this.ts ? dev.createQuerySet({ type: 'timestamp', count: 64 }) : null
         let queryBuf
-        try { queryBuf = this.buf({ type: u64, length: 64, usage: 'QUERY_RESOLVE|COPY_SRC' }) }
-        catch (err) { queryBuf = this.buf({ type: u64, length: 64, usage: 'COPY_SRC' }) }
+        queryBuf = this.buf({ label:'query', type: u64, length: 64, usage: 'QUERY_RESOLVE|COPY_SRC' })
         return {
             stampLabels: [],
             stampBuf: queryBuf,
@@ -270,13 +270,6 @@ globalThis.GPU = class GPU {
                 this.stampLabels = labels
             }
         }
-    }
-
-
-    render(args) {
-        const cmds = this.dev.createCommandEncoder()
-
-        this.dev.queue.submit([cmds.finish()])
     }
 
     async read(buf) {
@@ -429,32 +422,34 @@ globalThis.GPU = class GPU {
 }
 
 
-globalThis.i32array = GPU.array({ type: i32 })
-globalThis.u32array = GPU.array({ type: u32 })
-globalThis.iatomicarray = GPU.array({ type: iatomic })
-globalThis.uatomicarray = GPU.array({ type: uatomic })
+export const i32array = GPU.array({ type: i32 })
+export const u32array = GPU.array({ type: u32 })
+export const iatomicarray = GPU.array({ type: iatomic })
+export const uatomicarray = GPU.array({ type: uatomic })
 
 
-globalThis.Vec2 = GPU.struct({
+export const V2 = GPU.struct({
     name: 'vec2<f32>',
     fields: [['x', f32], ['y', f32]],
     size: 8, align: 8
 })
 
-globalThis.uVec2 = GPU.struct({
+export const v2 = (...args) => V2.of(...args)
+
+export const V2U = GPU.struct({
     name: 'vec2<u32>',
     fields: [['x', u32], ['y', u32]],
     size: 8, align: 8
 })
 
-globalThis.iVec3 = GPU.struct({
+export const V3U = GPU.struct({
     name: 'vec3<i32>',
     fields: [['x', i32], ['y', i32], ['z', i32]],
     size: 12,
     align: 16
 })
 
-globalThis.Vec3 = class extends Float32Array {
+export const V3 = class extends Float32Array {
     static name = 'vec3<f32>'
     static isStruct = true
     static align = 16
@@ -468,10 +463,10 @@ globalThis.Vec3 = class extends Float32Array {
         const phi = 2 * PI * rand.f(0,1)
         const theta = acos(rand.f(-1,1))
         const r = cbrt(rand.f(0,1))
-        return Vec3.of(r * sin(theta) * cos(phi), r * sin(theta) * sin(phi), r * cos(theta)).normalized()
+        return v3(r * sin(theta) * cos(phi), r * sin(theta) * sin(phi), r * cos(theta)).normalized()
     }
-    static max(a,b) { return Vec3.of(a.x >= b.x ? a.x : b.x, a.y >= b.y ? a.y : b.y, a.z >= b.z ? a.z : b.z) }
-    static min(a,b) { return Vec3.of(a.x <= b.x ? a.x : b.x, a.y <= b.y ? a.y : b.y, a.z <= b.z ? a.z : b.z) }
+    static max(a,b) { return v3(a.x >= b.x ? a.x : b.x, a.y >= b.y ? a.y : b.y, a.z >= b.z ? a.z : b.z) }
+    static min(a,b) { return v3(a.x <= b.x ? a.x : b.x, a.y <= b.y ? a.y : b.y, a.z <= b.z ? a.z : b.z) }
     static alloc() { return new this(3) }
     static of(x,y,z) {
         if (y == undefined) y = z = x
@@ -483,45 +478,46 @@ globalThis.Vec3 = class extends Float32Array {
     set x(v) { return this[0] = v }
     set y(v) { return this[1] = v }
     set z(v) { return this[2] = v }
-    abs() { return Vec3.of(abs(this[0]), abs(this[1]), abs(this[2])) }
-    copy() { return Vec3.of(this[0], this[1], this[2]) }
-    recip() { return Vec3.of(1/this[0], 1/this[1], 1/this[2]) }
+    abs() { return v3(abs(this[0]), abs(this[1]), abs(this[2])) }
+    copy() { return v3(this[0], this[1], this[2]) }
+    recip() { return v3(1/this[0], 1/this[1], 1/this[2]) }
     dist(b) { return sqrt(this.distsq(b)) }
     distsq(b) { return (this[0]-b[0])**2 + (this[1]-b[1])**2 + (this[2]-b[2])**2 }
     dot(b) { return this[0]*b[0] + this[1]*b[1] + this[2]*b[2] }
-    cross(b) { return Vec3.of(this[1]*b[2]-this[2]*b[1], this[2]*b[0]-this[0]*b[2], this[0]*b[1]-this[1]*b[0]) }
-    addc(b) { return Vec3.of(this[0]+b, this[1]+b, this[2]+b) }
-    add(b) { return Vec3.of(this[0]+b[0], this[1]+b[1], this[2]+b[2]) }
-    subc(b) { return Vec3.of(this[0]-b, this[1]-b, this[2]-b) }
-    sub(b) { return Vec3.of(this[0]-b[0], this[1]-b[1], this[2]-b[2]) }
-    mulc(b) { return Vec3.of(this[0]*b, this[1]*b, this[2]*b) }
-    mul(b) { return Vec3.of(this[0]*b[0], this[1]*b[1], this[2]*b[2]) }
-    divc(b) { return Vec3.of(this[0]/b, this[1]/b, this[2]/b) }
-    div(b) { return Vec3.of(this[0]/b[0], this[1]/b[1], this[2]/b[2]) }
+    cross(b) { return v3(this[1]*b[2]-this[2]*b[1], this[2]*b[0]-this[0]*b[2], this[0]*b[1]-this[1]*b[0]) }
+    addc(b) { return v3(this[0]+b, this[1]+b, this[2]+b) }
+    add(b) { return v3(this[0]+b[0], this[1]+b[1], this[2]+b[2]) }
+    subc(b) { return v3(this[0]-b, this[1]-b, this[2]-b) }
+    sub(b) { return v3(this[0]-b[0], this[1]-b[1], this[2]-b[2]) }
+    mulc(b) { return v3(this[0]*b, this[1]*b, this[2]*b) }
+    mul(b) { return v3(this[0]*b[0], this[1]*b[1], this[2]*b[2]) }
+    divc(b) { return v3(this[0]/b, this[1]/b, this[2]/b) }
+    div(b) { return v3(this[0]/b[0], this[1]/b[1], this[2]/b[2]) }
     mag() { return sqrt(this[0]**2 + this[1]**2 + this[2]**2) }
     majorAxis() { let ax = abs(this[0]) > abs(this[1]) ? 0 : 1; return abs(this[ax]) > abs(this[2]) ? ax : 2 }
     round() { return [round(this[0]), round(this[1]), round(this[2])] }
     toarray() { return [this[0], this[1], this[2]] }
-    ceil() { return Vec3.of(ceil(this[0]), ceil(this[1]), ceil(this[2])) }
-    floor() { return Vec3.of(floor(this[0]), floor(this[1]), floor(this[2])) }
-    modc(b) { return Vec3.of(this[0] % b, this[1] % b, this[2] % b) }
-    round() { return Vec3.of(round(this[0]), round(this[1]), round(this[2])) }
-    normalized() { const m = this.mag(); return m == 0 ? Vec3.of(0) : this.divc(m) }
+    ceil() { return v3(ceil(this[0]), ceil(this[1]), ceil(this[2])) }
+    floor() { return v3(floor(this[0]), floor(this[1]), floor(this[2])) }
+    modc(b) { return v3(this[0] % b, this[1] % b, this[2] % b) }
+    round() { return v3(round(this[0]), round(this[1]), round(this[2])) }
+    normalized() { const m = this.mag(); return m == 0 ? v3(0) : this.divc(m) }
     maxc() { return max(this[0],this[1],this[2]) }
     minc() { return min(this[0],this[1],this[2]) }
-    max(b) { return Vec3.of(max(this[0],b[0]), max(this[1],b[1]), max(this[2],b[2])) }
-    min(b) { return Vec3.of(min(this[0],b[0]), min(this[1],b[1]), min(this[2],b[2])) }
+    max(b) { return v3(max(this[0],b[0]), max(this[1],b[1]), max(this[2],b[2])) }
+    min(b) { return v3(min(this[0],b[0]), min(this[1],b[1]), min(this[2],b[2])) }
     toString() { return '['+[0,1,2].map(i => this[i].toFixed(5).replace(/\.?0+$/g, '').replace(/^-0$/,'0')).join(' ')+']' }
 
     static getset = (off, type) => ({
-        get() { return new Vec3(this.buffer, this.byteOffset + off, type.size) },
+        get() { return new V3(this.buffer, this.byteOffset + off, type.size) },
         set(v) { return new Int8Array(this.buffer,this.byteOffset+off,type.size).set(new Int8Array(v.buffer,v.byteOffset,type.size)) }   
     })
     
 }
 
+export const v3 = (...args) => V3.of(...args)
 
-globalThis.Vec4 = GPU.struct({
+export const V4 = GPU.struct({
     name: 'vec4<f32>',
     fields: [['x', f32], ['y', f32], ['z', f32], ['w', f32]],
     size: 16, align: 16,
@@ -533,14 +529,16 @@ globalThis.Vec4 = GPU.struct({
     }
 })
 
-globalThis.Mat3 = GPU.array({
+export const v4 = (...args) => V4.of(...args)
+
+export const M3 = GPU.array({
     name: 'mat3x3<f32>',
-    type: Vec3,
+    type: V3,
     length: 3,
     align: 16, size: 48,
     statics: {
         of: (arrmat) => {
-            const m = Mat3.alloc()
+            const m = M3.alloc()
             for (const i of range(3))
                 for (const j of range(3))
                     m[i][j] = arrmat[i][j]
@@ -549,7 +547,7 @@ globalThis.Mat3 = GPU.array({
     },
     members: {
         mulc: function(c) {
-            const m = Mat3.alloc()
+            const m = M3.alloc()
             for (const i of range(3))
                 for (const j of range(3))
                     m[i][j] = this[i][j] * c
@@ -562,54 +560,56 @@ globalThis.Mat3 = GPU.array({
     
 })
 
+export const m3 = (...args) => M3.of(...args)
+
 // row-major
 // left-handed
 // row-vector-Matrix product pre-mult v*M
 // v*M1*M1*M3 = v*(M1*M2*M3)
-globalThis.Mat4 = GPU.array({   
+export const M4 = GPU.array({   
     name: 'mat4x4<f32>',
-    type: Vec4,
+    type: V4,
     length: 4,
     align: 16, size: 64,
     statics: {
         of: (arrmat) => {
-            const m = Mat4.alloc()
+            const m = M4.alloc()
             for (const i of range(4))
                 for (const j of range(4))
                     m[i][j] = arrmat[i][j]
             return m
         },
-        I: () => Mat4.of(
+        I: () => m4(
             [[1,0,0,0],
              [0,1,0,0],
              [0,0,1,0],
              [0,0,0,1]]
         ),
-        translate: (v) => Mat4.of(
+        translate: (v) => m4(
             [[  1,   0,   0, 0],
              [  0,   1,   0, 0],
              [  0,   0,   1, 0],
              [v.x, v.y, v.z, 1]]
         ),
-        xrot: (a) => Mat4.of(   
+        xrot: (a) => m4(   
             [[1,       0,      0, 0],
              [0,  cos(a), sin(a), 0],
              [0, -sin(a), cos(a), 0],
              [0,       0,      0, 1]]
         ),
-        yrot: (b) => Mat4.of(
+        yrot: (b) => m4(
             [[cos(b), 0, -sin(b), 0],
              [     0, 1,       0, 0],
              [sin(b), 0,  cos(b), 0],
              [     0, 0,       0, 1]]
         ),
-        zrot: (g) => Mat4.of(
+        zrot: (g) => m4(
             [[ cos(g), sin(g), 0, 0],
              [-sin(g), cos(g), 0, 0],
              [      0,      0, 1, 0],
              [      0,      0, 0, 1]]
         ),
-        scale: (v) => Mat4.of(
+        scale: (v) => m4(
             [[v.x,   0,   0, 0],
              [  0, v.y,   0, 0],
              [  0,   0, v.z, 0],
@@ -619,7 +619,7 @@ globalThis.Mat4 = GPU.array({
             const z = dir.normalized().mulc(-1)
             const x = up.cross(z).normalized()
             const y = z.cross(x).normalized()
-            return Mat4.of(
+            return m4(
                 [[        x.x,         y.x,         z.x, 0],
                  [        x.y,         y.y,         z.y, 0],
                  [        x.z,         y.z,         z.z, 0],
@@ -629,7 +629,7 @@ globalThis.Mat4 = GPU.array({
         perspective: (deg, aspect, near, far) => {
             const f = 1 / tan(deg * PI / 360)
             const Q = far / (near - far)
-            return Mat4.of(
+            return m4(
                 [[f/aspect, 0,       0,  0],
                  [0,        f,       0,  0],
                  [0,        0,       Q, -1],
@@ -639,7 +639,7 @@ globalThis.Mat4 = GPU.array({
     },
     members: {
         transposed: function() {
-            const m = Mat4.alloc()
+            const m = M4.alloc()
             for (const i of range(4))
                 for (const j of range(4))
                     m[i][j] = this[j][i]
@@ -649,52 +649,52 @@ globalThis.Mat4 = GPU.array({
             return this[i]
         },
         col: function(j) {
-            return Vec4.of(this[0][j], this[1][j], this[2][j], this[3][j])
+            return v4(this[0][j], this[1][j], this[2][j], this[3][j])
         },
         mul: function(b) {
-            const c = Mat4.alloc()
+            const c = M4.alloc()
             for (const i of range(4))
                 for (const j of range(4))
                     c[i][j] = this.row(i).dot(b.col(j))
             return c
         },
         mulc: function(c) {
-            const m = Mat4.alloc()
+            const m = M4.alloc()
             for (const i of range(4))
                 for (const j of range(4))
                     m[i][j] = this[i][j] * c
             return m
         },
         invdet: function() {
-            const m0 = this[0], m1 = this[1], m2 = this[2], m3 = this[3]
-            const b = [m0[0]*m1[1] - m0[1]*m1[0], m0[0]*m1[2] - m0[2]*m1[0],
-                       m0[0]*m1[3] - m0[3]*m1[0], m0[1]*m1[2] - m0[2]*m1[1],
-                       m0[1]*m1[3] - m0[3]*m1[1], m0[2]*m1[3] - m0[3]*m1[2],
-                       m2[0]*m3[1] - m2[1]*m3[0], m2[0]*m3[2] - m2[2]*m3[0],
-                       m2[0]*m3[3] - m2[3]*m3[0], m2[1]*m3[2] - m2[2]*m3[1],
-                       m2[1]*m3[3] - m2[3]*m3[1], m2[2]*m3[3] - m2[3]*m3[2]]
+            const u = this[0], v = this[1], w = this[2], t = this[3]
+            const b = [u[0]*v[1] - u[1]*v[0], u[0]*v[2] - u[2]*v[0],
+                       u[0]*v[3] - u[3]*v[0], u[1]*v[2] - u[2]*v[1],
+                       u[1]*v[3] - u[3]*v[1], u[2]*v[3] - u[3]*v[2],
+                       w[0]*t[1] - w[1]*t[0], w[0]*t[2] - w[2]*t[0],
+                       w[0]*t[3] - w[3]*t[0], w[1]*t[2] - w[2]*t[1],
+                       w[1]*t[3] - w[3]*t[1], w[2]*t[3] - w[3]*t[2]]
             let det = 1 / (b[0]*b[11] - b[1]*b[10] + b[2]*b[9] + b[3]*b[8] - b[4]*b[7] + b[5] * b[6]);
-            return [m0,m1,m2,m3,b,det]
+            return [u,v,w,t,b,det]
         },
         inverse: function() {
-            const [m0,m1,m2,m3,b,det] = this.invdet()
-            return Mat4.of(
-                [[m1.y*b[11]-m1.z*b[10]+m1.w*b[9],m0.z*b[10]-m0.y*b[11]-m0.w*b[9],m3.y*b[5]-m3.z*b[4]+m3.w*b[3],m2.z*b[4]-m2.y*b[5]-m2.w*b[3]],
-                 [m1.z*b[8]-m1.x*b[11]-m1.w*b[7],m0.x*b[11]-m0.z*b[8]+m0.w*b[7],m3.z*b[2]-m3.x*b[5]-m3.w*b[1],m2.x*b[5]-m2.z*b[2]+m2.w*b[1]],
-                 [m1.x*b[10]-m1.y*b[8]+m1.w*b[6],m0.y*b[8]-m0.x*b[10]-m0.w*b[6],m3.x*b[4]-m3.y*b[2]+m3.w*b[0],m2.y*b[2]-m2.x*b[4]-m2.w*b[0]],
-                 [m1.y*b[7]-m1.x*b[9]-m1.z*b[6],m0.x*b[9]-m0.y*b[7]+m0.z*b[6],m3.y*b[1]-m3.x*b[3]-m3.z*b[0],m2.x*b[3]-m2.y*b[1]+m2.z*b[0]]]
+            const [u,v,t,b,det] = this.invdet()
+            return m4(
+                [[v.y*b[11]-v.z*b[10]+v.w*b[9],u.z*b[10]-u.y*b[11]-u.w*b[9],t.y*b[5]-t.z*b[4]+t.w*b[3],w.z*b[4]-w.y*b[5]-w.w*b[3]],
+                 [v.z*b[8]-v.x*b[11]-v.w*b[7],u.x*b[11]-u.z*b[8]+u.w*b[7],t.z*b[2]-t.x*b[5]-t.w*b[1],w.x*b[5]-w.z*b[2]+w.w*b[1]],
+                 [v.x*b[10]-v.y*b[8]+v.w*b[6],u.y*b[8]-u.x*b[10]-u.w*b[6],t.x*b[4]-t.y*b[2]+t.w*b[0],w.y*b[2]-w.x*b[4]-w.w*b[0]],
+                 [v.y*b[7]-v.x*b[9]-v.z*b[6],u.x*b[9]-u.y*b[7]+u.z*b[6],t.y*b[1]-t.x*b[3]-t.z*b[0],w.x*b[3]-w.y*b[1]+w.z*b[0]]]
             ).mulc(det)
         },
         normal: function() {
-            const [m0,m1,m2,m3,b,det] = this.invdet()
-            return Mat3.of(
-                [[m1[1]*b[11] - m1[2]*b[10] + m1[3]*b[9], m1[2]*b[8] - m1[0]*b[11] - m1[3]*b[7], m1[0]*b[10] - m1[1]*b[8] + m1[3]*b[6]],
-                 [m0[2]*b[10] - m0[1]*b[11] - m0[3]*b[9], m0[0]*b[11] - m0[2]*b[8] + m0[3]*b[7], m0[1]*b[8] - m0[0]*b[10] - m0[3]*b[6]],
-                 [m3[1]*b[5] - m3[2]*b[4] + m3[3]*b[3], m3[2]*b[2] - m3[0]*b[5] - m3[3]*b[1], m3[0]*b[4] - m3[1]*b[2] + m3[3]*b[0]]]
+            const [u,v,w,t,b,det] = this.invdet()
+            return m3(
+                [[v[1]*b[11] - v[2]*b[10] + v[3]*b[9], v[2]*b[8] - v[0]*b[11] - v[3]*b[7], v[0]*b[10] - v[1]*b[8] + v[3]*b[6]],
+                 [u[2]*b[10] - u[1]*b[11] - u[3]*b[9], u[0]*b[11] - u[2]*b[8] + u[3]*b[7], u[1]*b[8] - u[0]*b[10] - u[3]*b[6]],
+                 [t[1]*b[5] - t[2]*b[4] + t[3]*b[3], t[2]*b[2] - t[0]*b[5] - t[3]*b[1], t[0]*b[4] - t[1]*b[2] + t[3]*b[0]]]
             ).mulc(det)
         },
         transform: function(v) {
-            const out = Vec4.alloc()
+            const out = V4.alloc()
             for (const i of range(4))
                 out[i] = this.col(i).dot(v)
             return out
@@ -705,5 +705,9 @@ globalThis.Mat4 = GPU.array({
     }
 })
 
-
+export const m4 = (...args) => M4.of(...args)
     
+
+
+            
+

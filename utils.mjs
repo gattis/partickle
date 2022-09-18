@@ -1,12 +1,14 @@
-const { cos, sin, acos, asin, cbrt, sqrt, PI, random, ceil, floor, tan, max, min, log2 } = Math
 
-globalThis.I32MIN = -(2**31)
-globalThis.I32MAX = 2**31-1
-globalThis.MB = 2**20
-globalThis.GB = 2**30
+for (const prop of Object.getOwnPropertyNames(Math))
+    globalThis[prop] = Math[prop]
 
-globalThis.roundUp = (n,k) => ceil(n/k)*k
-globalThis.range = function* (a,b,step) {
+export const I32MIN = -(2**31)
+export const I32MAX = 2**31-1
+export const MB = 2**20
+export const GB = 2**30
+
+export const roundUp = (n,k) => ceil(n/k)*k
+export const range = function* (a,b,step) {
     const [start,stop] = b == undefined ? [0,a] : [a,b]
     step ||= 1
     let val = start
@@ -16,12 +18,12 @@ globalThis.range = function* (a,b,step) {
         for (let val = start; val > stop; val += step) yield val
 }
 
-globalThis.enumerate = function* (arr) {
+export const enumerate = function* (arr) {
     for (const i of range(arr.length))
         yield [i,arr[i]]
 }
 
-globalThis.BitField = class BitField {
+export const BitField = class BitField {
     constructor(nbits) {
         this.nbits = nbits
         this.nbytes = ceil(nbits/8)
@@ -56,7 +58,7 @@ Array.prototype.sum = function(fn) {
 }
 
 
-globalThis.coroutine = f => {
+export const coroutine = f => {
     var o = f();
     o.next();
     return function(x) {
@@ -64,15 +66,15 @@ globalThis.coroutine = f => {
     }
 }
 
-globalThis.clamp = (x,lo,hi) => x < lo ? lo : (x > hi ? hi : x)
+export const clamp = (x,lo,hi) => x < lo ? lo : (x > hi ? hi : x)
 
 
-globalThis.sleep = (s) => {
+export const sleep = (s) => {
     return new Promise(done => setTimeout(done, s*1000))
 }
 
 
-globalThis.rand = {
+export const rand = {
     seed: Math.floor(Math.random()*(2**32-1)),
     next:  () => {
         let t = rand.seed += 0x6D2B79F5;
@@ -85,12 +87,12 @@ globalThis.rand = {
 }
 
 
-globalThis.fetchtext = async (url) => {
+export const fetchtext = async (url) => {
     return await (await fetch(url)).text()
 }
 
 
-globalThis.Heap = class Heap {
+export const Heap = class Heap {
     constructor(cmp) {
         const items = this.items = []
         this.cmp = (i, j) => cmp(items[i], items[j])
