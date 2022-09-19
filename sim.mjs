@@ -25,7 +25,6 @@ const GREEN = v4(0.1, 0.5, 0.2, 1.0);
 const BLACK = v4(0.0, 0.0, 0.0, 1.0);
 const CLEAR = v4(0.0, 0.0, 0.0, 0.0);
 
-
 const showNormals = false
 const showGrads = false
 const showAxes = false
@@ -38,7 +37,7 @@ const HAND = { url:'hand.obj', texUrl:'hand.png', color:v4(.9,.9,.9,0),
                offset:v3(.4,.6,.3), scale:v3(3.5,3.5,3.5),
                sample:true, possess:true, fext:v3(0, 0, 0) }
 
-const TORUS = { url:'torus.obj', offset:v3(0,0,1), scale:v3(1),
+const TORUS = { url:'torus.obj', offset:v3(0,0,1), scale:v3(2),
                 color:RED, particleColor:v4(.7,.7,.1,1), sample:true, fext:v3(0,0,0) }
 
 const GROUND = { url:'ground.obj', texUrl:'marble.png', fext:v3(0,0,0),
@@ -375,6 +374,7 @@ export class Sim {
             lastStamp = stamp
         }
         requestAnimationFrame(loop);
+        return new Promise(resolve=>{})
     }
 }
 
@@ -575,11 +575,12 @@ export class Render {
                                   alpha: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' } }}
 
         const partPipe = gpu.renderPipe({
-            shader, vert:'vert_part', frag:'frag_part', binds: ['meshes', 'camera', 'lights'],
+            shader, vert:'vert_part', frag:'frag_part', binds: ['meshes', 'camera', 'lights'], topology: 'triangle-strip',
             vertBufs: [{ buf:bufs.particles, arrayStride:Particles.stride, stepMode: 'instance',
                          attributes: [{ shaderLocation:0, offset:Particle.si.off, format:'float32x3' },
                                       { shaderLocation:1, offset:Particle.mesh.off, format:'uint32' }]}] })
-        const lightPipe = gpu.renderPipe({ shader, vert:'vert_light', frag:'frag_light', binds: ['camera','lights'], ...transp })
+        const lightPipe = gpu.renderPipe({ shader, vert:'vert_light', frag:'frag_light', binds: ['camera','lights'],
+                                           topology: 'triangle-strip', ...transp })
         
         const surfPipeDesc = {
             shader, vert:'vert_surf', binds: ['meshes', 'camera', 'lights', 'tex', 'samp'],
@@ -590,7 +591,7 @@ export class Render {
                                       { shaderLocation:3, offset:TriVert.uv.off, format:'float32x2' }]}]
         }
                              
-        const surfPipeOpaque = gpu.renderPipe({ ...surfPipeDesc, frag:'frag_surf_opaque', cullMode:'none'})
+        const surfPipeOpaque = gpu.renderPipe({ ...surfPipeDesc, frag:'frag_surf_opaque', })
         const surfPipeTransp = gpu.renderPipe({ ...surfPipeDesc, frag:'frag_surf_transp', ...transp, cullMode:'none' })
 
         const axisPipe = gpu.renderPipe({ shader, vert:'vert_axis', frag:'frag_axis', binds:['camera'], topology:'line-list' })
@@ -613,7 +614,7 @@ export class Render {
         
         draws.push(gpu.draw({ pipe:surfPipeOpaque, dispatch:tris.length*3,
                               binds:{ meshes: bufs.meshes, camera:bufs.camera, lights:bufs.lights, tex, samp }}))
-        draws.push(gpu.draw({ pipe:partPipe, dispatch:[12, particles.length],
+        draws.push(gpu.draw({ pipe:partPipe, dispatch:[8, particles.length],
                               binds:{ meshes: bufs.meshes, camera:bufs.camera, lights:bufs.lights } }))
 
         if (showAxes)
@@ -622,7 +623,7 @@ export class Render {
             draws.push(gpu.draw({ pipe:normPipe, dispatch:[2, tris.length*3], binds:{ camera:bufs.camera }}))
         if (showGrads)
             draws.push(gpu.draw({ pipe:gradPipe, dispatch:[2, particles.length], binds:{ camera:bufs.camera }}))
-        draws.push(gpu.draw({ pipe:lightPipe, dispatch:[12, lights.length],
+        draws.push(gpu.draw({ pipe:lightPipe, dispatch:[8, lights.length],
                               binds: { camera:bufs.camera, lights:bufs.lights } }))
         draws.push(gpu.draw({ pipe:surfPipeTransp, dispatch:tris.length*3,
                               binds:{ meshes: bufs.meshes, camera:bufs.camera, lights:bufs.lights, tex, samp }}))
