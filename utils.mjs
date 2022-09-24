@@ -8,6 +8,8 @@ export const MB = 2**20
 export const GB = 2**30
 
 export const roundUp = (n,k) => ceil(n/k)*k
+export const roundUpPow = (n,e) => e ** ceil(log(n)/log(e))
+
 export const range = function* (a,b,step) {
     const [start,stop] = b == undefined ? [0,a] : [a,b]
     step ||= 1
@@ -52,9 +54,10 @@ String.prototype.interp = function(args) {
     return eval(`((${keys.join(',')}) => \`${this}\`)(${vals.join(',')})`)
 }
 
-Array.prototype.sum = function(fn) {
+Array.prototype.sum = function(fn, init) {
     fn ||= x=>x
-    return this.reduce((a,b) => a + fn(b), 0)
+    if (init == undefined) init = 0
+    return this.reduce((a,b) => a + fn(b), init)
 }
 
 
@@ -129,6 +132,9 @@ export const Heap = class Heap {
 }
 
 
+export const hijack = (cls, meth, replacement) => {
+    cls.prototype[meth] = new Proxy(cls.prototype[meth], { apply: replacement })
+}
 
 
 

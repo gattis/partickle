@@ -4,37 +4,17 @@ type v3 = vec3<f32>;
 type m3 = mat3x3<f32>;
 type m4 = mat4x4<f32>;
 
-const shininess = 4.0;
+const shininess = 64.0;
 const ambient = 0.2f;
-
 
 
 const tetrahedron = array<v3,8>(v3( 1, 1, 1), v3( 1,-1,-1), v3(-1, 1,-1), v3(-1,-1, 1),
                                 v3( 1, 1, 1), v3(-1,-1, 1), v3( 1,-1,-1), v3(-1, 1,-1));
-
-const bb = array<v2,3>(v2(-1.7321,-1), v2(0,2), v2(1.7321,-1));
-
-struct IO {
-    @builtin(position) position: v4,
-    @location(0) worldpos:v3,
-    @location(1) norm:v3,
-    @location(2) uv:v2,
-    @location(3) @interpolate(flat) mesh:u32,
-};
+const cube = array<v3,14>(v3(-1,1,-1), v3(1,1,-1), v3(-1,-1,-1), v3(1,-1,-1), v3(1,-1,1),
+                         v3(1,1,-1), v3(1,1,1), v3(-1,1,-1), v3(-1,1,1), v3(-1,-1,-1),
+                         v3(-1,-1,1), v3(1,-1,1), v3(-1,1,1), v3(1,1,1));
 
 
-@vertex fn vert_surf(@location(0) pos:v3,
-                     @location(1) norm:v3,
-                     @location(2) mesh:u32,
-                     @location(3) uv:v2) -> IO {
-    var out:IO;
-    out.worldpos = pos;
-    out.position = camera.projection * camera.modelview * v4(out.worldpos, 1.0);
-    out.norm = norm;
-    out.uv = uv;
-    out.mesh = mesh;
-    return out;
-}
 
 
 fn frag(worldpos:v3, norm:v3, color:v4) -> v4 {
@@ -43,7 +23,7 @@ fn frag(worldpos:v3, norm:v3, color:v4) -> v4 {
         let light = &lights[i];
         var lightdir = (*light).pos - worldpos;
         let distance = length(lightdir);
-        let lightmag = (*light).color * (*light).power / (0.5 + (distance*distance));
+        let lightmag = (*light).color * (*light).power / (1.0 + distance);
         lightdir = normalize(lightdir);
         
             
@@ -58,26 +38,59 @@ fn frag(worldpos:v3, norm:v3, color:v4) -> v4 {
         mix += lightmag * (color.rgb*lambertian + specular);
     }
     
-    return v4(mix, color.a);
+    return v4(clamp(mix,v3(0),v3(1)), color.a);
 
 }
 
-fn frag_surf(input:IO, transp:bool) -> v4 {
+
+
+struct SurfOut {
+    @builtin(position) position: v4,
+    @location(0) worldpos:v3,
+    @location(1) norm:v3,
+    @location(2) uv:v2,
+    @location(3) @interpolate(flat) mesh:u32,
+};
+
+@vertex fn vert_surf(@location(0) pos:v3,
+                     @location(1) norm:v3,
+                     @location(2) mesh:u32,
+                     @location(3) uv:v2) -> SurfOut {
+    var out:SurfOut;
+    out.worldpos = pos;
+    out.position = camera.projection * camera.modelview * v4(out.worldpos, 1.0);
+    out.norm = norm;
+    out.uv = uv;
+    out.mesh = mesh;
+    return out;
+}
+
+struct SurfIn {
+    @builtin(position) position: v4,
+    @builtin(front_facing) front:bool,
+    @location(0) worldpos:v3,
+    @location(1) norm:v3,
+    @location(2) uv:v2,
+    @location(3) @interpolate(flat) mesh:u32,
+}
+
+struct FragDepth {
+    @location(0) color: v4,
+    @builtin(frag_depth) depth:f32
+};
+
+fn ranger(x:f32, inlo:f32, inhi:f32, outlo:f32, outhi:f32) -> f32 {
+    return (outhi - outlo) * (x - inlo) / (inhi - inlo) + outlo;
+}
+
+
+@fragment fn frag_surf(input:SurfIn) -> @location(0) v4 {
     let m = &meshes[input.mesh];
-    let color = (*m).color * select(textureSample(tex, samp, input.uv, (*m).tex), vec4(1), (*m).tex < 0);
-    if (transp && color.a >= 0.9999) { discard; }
-    if (!transp && color.a < 0.9999) { discard; }
-    if (color.a < 0.0001) { discard; }
-    return frag(input.worldpos, input.norm, color);
+    var color = (*m).color * select(textureSample(tex, samp, input.uv, (*m).tex), vec4(1), (*m).tex < 0);
+    color = frag(input.worldpos, input.norm, color);
+    return v4(color.rgb, color.a);
 }
 
-@fragment fn frag_surf_opaque(input:IO) -> @location(0) v4 {
-    return frag_surf(input, false);
-}
-
-@fragment fn frag_surf_transp(input:IO) -> @location(0) v4 {
-    return frag_surf(input, true);
-}
 
 @vertex fn vert_axis(@builtin(vertex_index) vertidx:u32,
                      @builtin(instance_index) instidx:u32) -> @builtin(position) v4 {
@@ -128,10 +141,6 @@ struct PartIO {
 }
 
 
-struct FragDepth {
-    @location(0) color: v4,
-    @builtin(frag_depth) depth:f32
-};
 
 @fragment fn frag_part(input:PartIO) -> FragDepth {
 
@@ -141,23 +150,25 @@ struct FragDepth {
     if (input.selected == 1u) {
         rgb = 1 - rgb;
     }
-
-    let rd = normalize(input.partpos + input.vertpos - camera.pos);
-    let oc = camera.pos - input.partpos;
-    let b = dot(oc,rd);
-    let c = b*b - dot(oc,oc) + camera.r*camera.r;
+    let pc = camera.pos;
+    let pl = input.partpos;
+        
+    let rd = normalize(pl + input.vertpos - pc);
+    let vcl = pc - pl;
+    let b = dot(vcl,rd);
+    let c = b*b - dot(vcl,vcl) + camera.r*camera.r;
     if (c < 0) { discard; }
     let t = -b - sqrt(c);
     if (t < 0) { discard; }
-    var worldpos = camera.pos + rd*t;
-    let clippos = camera.projection * camera.modelview * v4(worldpos,1);
-    let normal = normalize(worldpos - input.partpos);
-    return FragDepth(frag(worldpos, normalize(input.vertpos), v4(rgb,1.0f)), clippos.z/clippos.w);
+    var pt = pc + rd*t;
+    let clippos = camera.projection * camera.modelview * v4(pt,1);
+    let normal = normalize(pt - pl);
+    return FragDepth(frag(pt, normalize(input.vertpos), v4(rgb,1.0f)), clippos.z/clippos.w);
    
 }
 
 
-struct LightIO {
+struct LightOut {
     @builtin(position) position:v4,
     @location(0) lightpos:v3,
     @location(1) vertpos:v3,
@@ -166,41 +177,46 @@ struct LightIO {
 };
 
 @vertex fn vert_light(@builtin(vertex_index) vertidx:u32,
-                      @builtin(instance_index) instidx:u32) -> LightIO {   
+                      @builtin(instance_index) instidx:u32) -> LightOut {   
     let l = &lights[instidx];
-    var out:LightIO;
+    var out:LightOut;
 
     out.lightpos = (*l).pos;
     out.size = 0.08f * sqrt((*l).power);
-    out.vertpos = tetrahedron[vertidx] * sqrt(3) * out.size;
+    out.vertpos = cube[vertidx] * sqrt(3) * out.size;
     out.position = camera.projection * camera.modelview * v4(out.lightpos + out.vertpos,1);
     out.color = (*l).color;
     return out;
 }
 
-@fragment fn frag_light(input:LightIO) -> FragDepth {
-    let rd = normalize(input.lightpos + input.vertpos - camera.pos);
-    let oc = camera.pos - input.lightpos;
-    let b = dot(oc,rd);
-    let c = b*b - dot(oc,oc);
-    let cs = c + input.size*input.size;
-    if (cs < 0) { discard; }
-    let t = -b - sqrt(cs);
+
+struct LightIn {
+    @builtin(position) position:v4,
+    @location(0) lightpos:v3,
+    @location(1) vertpos:v3,
+    @location(2) color:v3,
+    @location(3) size:f32,
+};
+
+
+@fragment fn frag_light(input:LightIn) -> FragDepth {
+    let pc = camera.pos;
+    let pl = input.lightpos;
+    let vctnorm = normalize(pl + input.vertpos - pc);
+    let vlc = pc - pl;
+    let b = dot(vlc,vctnorm);
+    let c = b*b - dot(vlc,vlc) + input.size*input.size;
+    if (c < 0) { discard; }
+    let t = -b - sqrt(c);
     if (t < 0) { discard; }
-    var worldpos = camera.pos + rd*t;
-    let clippos = camera.projection * camera.modelview * v4(worldpos,1);
-    let vertpos = worldpos - input.lightpos;
-    let mag = pow(35*abs(cs),6);
-    return FragDepth(v4(input.color*mag,mag), clippos.z/clippos.w);
+    let vct = vctnorm*t;
+    let pt = pc + vct;
+    let vtl = -vct + -vlc;
+    
+    let ptclip = camera.projection * camera.modelview * v4(pt,1);   
+    let mag = pow(dot(normalize(vtl),vctnorm), 15);
+    return FragDepth(v4(input.color*mag,1), ptclip.z/ptclip.w);
 
 }
-
-// rd = (l+v-c) / |l+v-c| = (v-o) / |v-o| = (v-o) / (v*v - 2*v*o + o*o)
-// o = c - l
-// b = (o*v - o*o)  / (v*v - 2*v*o + o*o)
-// c = 
-//
-
-// -rd * (dot(oc,rd) + sqrt(dot(oc,rd)^2 - dot(oc,oc) + r^2)
 
 

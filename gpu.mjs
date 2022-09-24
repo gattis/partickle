@@ -23,7 +23,7 @@ export const i32 = {name:'i32', conv:'Int32', align: 4, size: 4, getset: (off) =
 export const uatomic = {...u32, name: 'atomic<u32>'}
 export const iatomic = {...i32, name: 'atomic<i32>'}
 
-const FF = Boolean(globalThis.navigator && navigator.userAgent.match(/Firefox/))
+const FF = Boolean(globalThis.navigator && navigator.userAgent.match(/(Firefox|Deno)/))
 const NODE = globalThis.process && process.release.name == 'node'
 
 export const GPU = class GPU {
@@ -43,46 +43,35 @@ export const GPU = class GPU {
         const desc = { requiredFeatures: features }
         if (!FF) desc.requiredLimits = limits
         const dev = await adapter.requestDevice(desc)
-
+        dev.onuncapturederror = ev => { this.fatal(ev.error) }
+        dev.queue.holder = dev
+        dev.holder = this
+        this.copyBufs = []
         if (features.includes('timestamp-query')) this.ts = true
-
-        try{
-            dev.addEventListener('uncapturederror', ev => {
-                if (this.okay) {
-                    console.error(ev.error.message)
-                    this.okay = false
-                }
-            })
-        } catch (err) {}
-
-        const fmt = navigator.gpu.getPreferredCanvasFormat ? navigator.gpu.getPreferredCanvasFormat() : 'rgba8unorm'
-        ctx.configure({ device: dev, format: fmt, alphaMode: 'premultiplied' })
+        
         const threads = floor(sqrt(limits.maxComputeWorkgroupsPerDimension))
-        const colorAttachment = {
-            loadOp: 'clear',
-            storeOp: 'store',
-            clearValue: { r: 0.13, g: 0.1, b: 0.10, a: 1.0 },
-        }
-        const depthAttachment = {
-            depthClearValue: 1.0,
-            depthLoadOp: 'clear',
-            depthStoreOp: 'store',
-        }
-        Object.assign(this, { dev, adapter, ctx, fmt, threads, colorAttachment, depthAttachment, sampleCount: 4, depthFmt: 'depth32float' })
-        this.okay = true
-        this.resize(width,height)
+
+        Object.assign(this, { dev, adapter, threads } )
+        
 
     }
-
     
-    resize(width,height) {
+    configure(ctx, width, height, pref) {
+        this.pref = pref = { ...pref }
+        this.ctx = ctx
+        ctx.configure({ device: this.dev, format:pref.format, alphaMode:pref.alpha_mode, colorSpace: 'srgb' })
         const size = {width, height}
-        this.depthAttachment.view = this.dev.createTexture(
-            { size, sampleCount: this.sampleCount, format:this.depthFmt,usage: GPUTextureUsage.RENDER_ATTACHMENT }).createView()
-        this.colorAttachment.view = this.dev.createTexture({
-            size, sampleCount: this.sampleCount, format: this.fmt, usage: GPUTextureUsage.RENDER_ATTACHMENT }).createView()
+        if (this.depthTex) this.depthTex.destroy()
+        if (this.colorTex) this.colorTex.destroy()
+        const usage = GPUTextureUsage.RENDER_ATTACHMENT
+        this.depthTex = this.dev.createTexture({ size, sampleCount: pref.samples, format:pref.depth_format, usage })
+        this.colorTex = this.dev.createTexture({ size, sampleCount: pref.samples, format:pref.format, usage })
     }
-  
+
+    cleanup() {
+        this.dev.destroy()
+    }
+    
     write(args) {
         let off = (args.field ? args.field.off : 0) + (args.arrayIdx ? args.arrayIdx * args.data.constructor.stride : 0)
         let size = args.field ? args.field.type.size : args.data.byteLength
@@ -131,10 +120,12 @@ export const GPU = class GPU {
         if (FF) code = code.replaceAll('const','let')
         args.binds = binds
         args.module = this.dev.createShaderModule({ code })
-        const info = await args.module.compilationInfo()
-        for (let msg of info.messages)
-            console.warn(msg.message)
 
+        try {
+            const info = await args.module.compilationInfo()
+            for (let msg of info.messages)
+                console.warn(msg.message)
+        } catch(err) {}
         return args
     }
     
@@ -151,25 +142,35 @@ export const GPU = class GPU {
     }
 
     renderPipe(args) {
+        const pref = this.pref
         const buffers = args.vertBufs ||= []
-        let { shader, frag, vert, vertBufs, binds, topology, depthWriteEnabled, blend, cullMode } = args
-        if (depthWriteEnabled == undefined) depthWriteEnabled = true
+        let { shader, frag, vert, vertBufs, binds, topology, depthWriteEnabled, depthCompare, cullMode, atc,
+              color_op, color_src, color_dst, alpha_op, alpha_src, alpha_dst } = args
+        color_op ||= pref.color_op; color_src ||= pref.color_src; color_dst ||= pref.color_dst
+        alpha_op ||= pref.alpha_op; alpha_src ||= pref.alpha_src; alpha_dst ||= pref.alpha_dst
+        
+        if (depthWriteEnabled == undefined) depthWriteEnabled = pref.depth_write
+        if (depthCompare == undefined) depthCompare = pref.depth_compare
+        if (atc == undefined) atc = pref.atc
         topology ||= 'triangle-list'
-        cullMode ||= 'back'
+        cullMode ||= pref.cull
         const visibility = GPUShaderStage.FRAGMENT | GPUShaderStage.VERTEX
         const entries = shader.binds.filter(b => binds.includes(b.label)).map(b => (
             { binding:b.idx, ...b.layout,
               visibility: GPUShaderStage.FRAGMENT | (b.label in shader.uniform ? GPUShaderStage.VERTEX : 0) }))
         args.layout = this.dev.createBindGroupLayout({ entries })
+        const blend = { color: { operation: color_op, srcFactor: color_src, dstFactor: color_dst },
+                        alpha: { operation: alpha_op, srcFactor: alpha_src, dstFactor: alpha_dst } }
         const pipeDesc = {        
             layout: this.dev.createPipelineLayout({ bindGroupLayouts: [ args.layout ] }),
-            multisample: { count: this.sampleCount },
+            multisample: { count: pref.samples, alphaToCoverageEnabled: atc },
             vertex: { module: shader.module, entryPoint:vert, buffers:vertBufs },
-            fragment: { module: shader.module , entryPoint:frag, targets: [{ format: this.fmt, blend }]},
+            fragment: { module: shader.module , entryPoint:frag, targets: [{ format: pref.format, blend }]},
             primitive: { topology, cullMode },
-            depthStencil: { depthWriteEnabled , depthCompare:'less', format:this.depthFmt },
+            depthStencil: { depthWriteEnabled , depthCompare, format:pref.depth_format },
         }
-        args.pipeline = this.dev.createRenderPipeline(pipeDesc)
+        
+        args.pipeline = this.dev.createRenderPipeline(pipeDesc)        
         return args
     }
 
@@ -179,15 +180,17 @@ export const GPU = class GPU {
             size[0] = max(size[0], bitmap.width)
             size[1] = max(size[1], bitmap.height)
         })
-        const texture = this.dev.createTexture({ size, format:this.fmt, sampleCount:1,
-                                                 usage: GPUTextureUsage.TEXTURE_BINDING|GPUTextureUsage.RENDER_ATTACHMENT|GPUTextureUsage.COPY_DST })
+        const texture = this.dev.createTexture({
+            size, format:this.pref.format, sampleCount:1,  usage: GPUTextureUsage.TEXTURE_BINDING |
+                GPUTextureUsage.RENDER_ATTACHMENT|GPUTextureUsage.COPY_DST })
         bitmaps.forEach((bitmap,z) => {
             let source = { source: bitmap, origin: {x:0, y:0, z:0}, flipY: true }
-            let destination = { texture: texture, mipLevel: 0, origin: {x:0, y:0, z:z}, aspect: 'all', colorSpace: 'srgb', premultipliedAlpha: false }
-            this.dev.queue.copyExternalImageToTexture(source, destination, [bitmap.width, bitmap.height, 1])
+            let dest = { texture, mipLevel: 0, origin: {x:0, y:0, z:z}, aspect:'all', colorSpace:'srgb', premultipliedAlpha:true }
+            this.dev.queue.copyExternalImageToTexture(source, dest, [bitmap.width, bitmap.height, 1])
         })
-        return { resource: texture.createView({ format: this.fmt, dimension: '2d-array', aspect: 'all', baseMipLevel: 0,
-                                           mipLevelCount: 1, baseArrayLayer:0, arrayLayerCount: bitmaps.length || 1 }) }
+        return { resource: texture.createView({
+            format: this.pref.format, dimension: '2d-array', aspect: 'all', baseMipLevel: 0,
+            mipLevelCount: 1, baseArrayLayer:0, arrayLayerCount: bitmaps.length || 1 }) }
     }
 
     sampler() {
@@ -204,7 +207,7 @@ export const GPU = class GPU {
         if (dispatch.length == undefined) dispatch = [dispatch]
         const bg = this.bindGroup(pipe, binds, offsets)
         return (encoder) => { 
-            const pass = encoder.beginComputePass()
+            const pass = encoder.beginComputePass()            
             pass.setPipeline(pipe.pipeline)
             pass.setBindGroup(0, bg)
             pass.dispatchWorkgroups(...dispatch)
@@ -214,10 +217,23 @@ export const GPU = class GPU {
 
     renderPass(draws) {
         return (encoder) => {
-            this.colorAttachment.resolveTarget = this.ctx.getCurrentTexture().createView()
+            const useStencil = Boolean(this.pref.depth_format.match(/stencil/))
             const pass = encoder.beginRenderPass({
-                colorAttachments: [this.colorAttachment],
-                depthStencilAttachment: this.depthAttachment
+                colorAttachments: [{              
+                    view: this.colorTex.createView(),
+                    loadOp: 'clear',
+                    storeOp: 'store',
+                    clearValue: { r: 0.13, g: 0.1, b: 0.10, a: 1.0 },
+                    resolveTarget: this.ctx.getCurrentTexture().createView()
+                }],
+                depthStencilAttachment: {
+                    depthClearValue: 1.0,
+                    depthLoadOp: 'clear',
+                    depthStoreOp: 'store',
+                    stencilLoadOp: useStencil ? 'clear' : undefined,
+                    stencilStoreOp: useStencil ? 'store' : undefined,                    
+                    view: this.depthTex.createView()
+                }
             })
             for (const draw of draws)
                 draw(pass)
@@ -255,7 +271,7 @@ export const GPU = class GPU {
         const dev = this.dev
         const querySet = this.ts ? dev.createQuerySet({ type: 'timestamp', count: 64 }) : null
         let queryBuf
-        queryBuf = this.buf({ label:'query', type: u64, length: 64, usage: 'QUERY_RESOLVE|COPY_SRC' })
+        queryBuf = this.buf({ label:'query', type: u64, length: 64, usage: 'COPY_SRC'+(FF?'':'|QUERY_RESOLVE')})
         return {
             stampLabels: [],
             stampBuf: queryBuf,
@@ -273,18 +289,18 @@ export const GPU = class GPU {
     }
 
     async read(buf) {
-        if (this.copyBuf && this.copyBuf.size < buf.size) {
-            this.copyBuf.buffer.destroy();
-            delete this.copyBuf
-        }        
-        if (!this.copyBuf)
-            this.copyBuf = this.buf({length: buf.size/4, type: u32, usage: 'MAP_READ|COPY_DST' })
+        let copyBuf = this.copyBufs.pop()
+        if (!copyBuf || copyBuf.size < buf.size) {
+            if (copyBuf) copyBuf.buffer.destroy()
+            copyBuf = this.buf({length:buf.size/4, type:u32, usage:'MAP_READ|COPY_DST' })
+        }
         const cmds = this.dev.createCommandEncoder()
-        cmds.copyBufferToBuffer(buf.buffer, 0, this.copyBuf.buffer, 0, buf.size)
+        cmds.copyBufferToBuffer(buf.buffer, 0, copyBuf.buffer, 0, buf.size)
         this.dev.queue.submit([cmds.finish()])
-        await this.copyBuf.buffer.mapAsync(GPUMapMode.READ, 0, buf.size)
-        const data = new Uint8Array(this.copyBuf.buffer.getMappedRange(0,buf.size)).slice()
-        this.copyBuf.buffer.unmap()
+        await copyBuf.buffer.mapAsync(GPUMapMode.READ, 0, buf.size)
+        const data = new Uint8Array(copyBuf.buffer.getMappedRange(0,buf.size)).slice()
+        copyBuf.buffer.unmap()
+        this.copyBufs.push(copyBuf)
         return data.buffer
     }
 
@@ -408,7 +424,7 @@ export const GPU = class GPU {
         }
         
         cls.stride = roundUp(opt.type.size, opt.type.align)
-        cls.size = cls.stride * opt.length
+        if (opt.length != undefined) cls.size = cls.stride * opt.length
         cls.align = opt.type.align
         cls.isArray = true
         cls.isStruct = true
@@ -419,6 +435,12 @@ export const GPU = class GPU {
         return cls
     }
 
+    fatal(err) {
+        if (err == null) return
+        debugger;
+        //this.cleanup()
+        //throw new Error(err.message);
+    }
 }
 
 
@@ -441,6 +463,8 @@ export const V2U = GPU.struct({
     fields: [['x', u32], ['y', u32]],
     size: 8, align: 8
 })
+
+export const v2u = (...args) => V2U.of(...args)
 
 export const V3U = GPU.struct({
     name: 'vec3<i32>',
@@ -706,8 +730,20 @@ export const M4 = GPU.array({
 })
 
 export const m4 = (...args) => M4.of(...args)
-    
 
 
-            
+for (const meth of Object.getOwnPropertyNames(GPUDevice.prototype)) {
+    if (!meth.startsWith('create') || meth == 'createCommandEncoder') continue;
+    hijack(GPUDevice, meth, (real, obj, args) => {
+        obj.pushErrorScope('validation')
+        const retval = real.apply(obj, args)
+        obj.popErrorScope().then(err => obj.holder.fatal(err))
+        return retval
+    })    
+}
 
+hijack(GPUQueue, 'submit', (real, obj, args) => {
+    obj.holder.pushErrorScope('validation')
+    real.apply(obj, args)
+    obj.holder.popErrorScope().then(err => obj.holder.holder.fatal(err))
+})

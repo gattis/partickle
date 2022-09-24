@@ -1,41 +1,18 @@
-import { createRequire } from 'module';
-const require = createRequire(import.meta.url);
-const { GPU } = require('./node-dawn.node')
-const fs = await import('fs')
 
 
 const W = 1500, H = 1500
-const gpu = new GPU(["dawn-backend=vulkan","disable-dawn-features=disallow_unsafe_apis"])
+
 let adapter, nframes = 0, tstart = 0
 
-Object.assign(globalThis, {
-    navigator: { gpu, userAgent: "nodejs" },
-    localStorage: {},   
-    async fetch(path) {
-        const text = fs.readFileSync('../particleboy/'+path, 'utf8')
-        return new Promise(resolve => {
-            resolve({ text() { return text } })
-        })
-    },
-    requestAnimationFrame(callback) {
-        queueMicrotask(() => {
-            const t = performance.now()
-            if (nframes++ == 0)
-                tstart = t
-            else if (nframes % 600 == 0)
-                console.log('fps:', nframes*1000/(t - tstart))
-            callback(t)
-            ctx.refresh()
-        })
-    }
-})
+await import('./web.mjs')
 
 const { v3 } = await import ("./gpu.mjs")
 const { Sim } = await import("./sim.mjs")
 
 let move = false
 
-const ctx = gpu.createWindow(W, H, "particleboy", (type, ...args) => {
+
+navigator.ctx = navigator.gpu.createWindow(W, H, "particleboy", (type, ...args) => {
     const { compute, render, gpu, bufs, possessed, camera } = sim
     if (type == 'quit') {
         ctx.close()
@@ -74,10 +51,11 @@ const ctx = gpu.createWindow(W, H, "particleboy", (type, ...args) => {
         sim.camPos.z += dy * camDir.z
     }
 })
-    
+
+
 
 const sim = new Sim()
-await sim.init(W,H,ctx)
+await sim.init(W,H,navigator.ctx)
 sim.run()
 
 

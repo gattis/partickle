@@ -14,91 +14,114 @@ export const intersectRayAABB = (start, dir, lower, upper) => {
 }
 
 
+export class VoxelGrid {
+    constructor(verts, tris, D) {
 
-
-export const voxelize = (verts, tris, D) => {
-    let tstart = performance.now()
-    let grid = new Map()
-    const addPoint = (p,n) => {
-        const v = p.divc(D*1.0001).floor()
-        let hash = String([v.x,v.y,v.z])
-        let entry = grid.get(hash) || v3(0)
-        entry = entry.add(n)
-        grid.set(hash,entry)
+        this.tris = tris
+        this.c = v3(0);
+        for (const vert of verts)
+            this.c = this.c.add(vert)
+        this.c = this.c.divc(verts.length)
+        this.relverts = verts.map(vert=>vert.sub(this.c))
+        this.hashmap = new Map()
+        this.normals = []
+        this.D = D
+        this.lim = D*sqrt(2)/2
     }
-    
-    const lim = D*sqrt(2)/2 //*sqrt(3)/2    
-    for (const [tidx,tri] of enumerate(tris)) {            
-        const ps = [0,1,2].map(i=>verts[tri[i].vidx])
-        const N = ps[1].sub(ps[0]).cross(ps[2].sub(ps[0])).normalized()
-        const ls = [ps[1].sub(ps[2]).mag(), ps[0].sub(ps[2]).mag(), ps[0].sub(ps[1]).mag()]
-        const order = [0,1,2]
-        order.sort((a,b) =>  ls[a]-ls[b])
-        const [A,B,C] = [1,2,0].map(k => ps[order[k]])
-        const AB = B.sub(A), AC = C.sub(A)
-        const b = AC.mag()
-        const n = AC.cross(AB).normalized()
-        const i = AC.normalized()
-        const j = n.cross(i).normalized()
-        const height = j.dot(AB)
-        const split = i.dot(AB)
-        const lslope = split/height
-        const rslope = (b-split)/height
-        const nj = ceil(height/lim)
-        const dj = height / nj
-        for (let row = 0; row <= nj; row++) {
-            const jpos = row * dj
-            const istart = jpos * lslope
-            const li = b - jpos * rslope - istart
-            const ni = ceil(li/lim)
-            const di = ni == 0 ? 0 : li/ni
-            for (let col = 0; col <= ni; col++) {
-                const ipos = istart + col*di
-                addPoint(A.add(i.mulc(ipos)).add(j.mulc(jpos)), N)
+    hash(p) {
+        const v = p.divc(this.D*1.0001).floor()
+        return String([v.x,v.y,v.z])
+    }
+    addPoint(p,n) {
+        const { hashmap, normals } = this
+        let hash = this.hash(p)
+        let id = hashmap.get(hash)
+        if (id == undefined) {
+            id = normals.length
+            normals.push(n)
+            hashmap.set(hash, id)
+        } else normals[id] = normals[id].add(n)
+    }
+    voxelize() {
+        const { tris, relverts, D, lim, hashmap, c, normals } = this
+        let tstart = performance.now()
+        for (const [tidx,tri] of enumerate(tris)) {
+            const ps = [0,1,2].map(i=>relverts[tri[i].vidx])
+            const N = ps[1].sub(ps[0]).cross(ps[2].sub(ps[0])).normalized()
+            const ls = [[1,2],[0,2],[0,1]].map(([a,b]) => ps[a].sub(ps[b]).mag())
+            const order = [0,1,2]
+            order.sort((a,b) =>  ls[a]-ls[b])
+            const [A,B,C] = [1,2,0].map(k => ps[order[k]])
+            const AB = B.sub(A), AC = C.sub(A)
+            const b = AC.mag()
+            const n = AC.cross(AB).normalized()
+            const i = AC.normalized()
+            const j = n.cross(i).normalized()
+            const height = j.dot(AB)
+            const split = i.dot(AB)
+            const lslope = split/height
+            const rslope = (b-split)/height
+            const nj = ceil(height/lim)
+            const dj = height / nj
+            for (let row = 0; row <= nj; row++) {
+                const jpos = row * dj
+                const istart = jpos * lslope
+                const li = b - jpos * rslope - istart
+                const ni = ceil(li/lim)
+                const di = ni == 0 ? 0 : li/ni
+                for (let col = 0; col <= ni; col++) {
+                    const ipos = istart + col*di
+                    this.addPoint(A.add(i.mulc(ipos)).add(j.mulc(jpos)), N)
+                }
             }
         }
-    }
-    console.log('hi')
-    let iter = 0
-    while (false) {
-        const newsamples = []
-        for (let [v,n] of grid) {
-            const coord = v.split(',').map(i => parseInt(i))
-            let axis = n.majorAxis()
+
+        this.vertidxs = relverts.map((v,i) => hashmap.get(this.hash(v)))
+        for (const idx of this.vertidxs)
+            if (idx == undefined) {
+                consle.error('all vertices should map to particles')
+                debugger;
+            }
             
-            let dir = n[axis] < 0 ? 1 : -1
-            coord[axis] += dir
-            let hash = String(coord)
-            let entry = grid.get(hash)
-            if (entry) continue
-            newsamples.push([hash,n])
+        let iter = 0
+        while (false) {
+            const newsamples = []
+            for (let [v,n] of grid) {
+                const coord = v.split(',').map(i => parseInt(i))
+                let axis = n.majorAxis()
+            
+                let dir = n[axis] < 0 ? 1 : -1
+                coord[axis] += dir
+                let hash = String(coord)
+                let entry = grid.get(hash)
+                if (entry) continue
+                newsamples.push([hash,n])
+            }
+            if (newsamples.length == 0) break
+            for (let [hash,n] of newsamples) {
+                let entry = grid.get(hash) || v3(0)
+                entry = entry.add(n)
+                grid.set(hash,entry)
+            }        
+            if (++iter >= 20) break
+        } 
+        console.log('voxelize iters:', iter)
+    
+        const R = D/2
+        this.samples = []
+        this.gradients = []
+        for (const [v,i] of hashmap) {
+            const [x,y,z] = v.split(',').map(istr => parseInt(istr))
+            this.samples.push(v3(c.x + x*D + R, c.y + y*D + R, c.z + z*D + R))
+            this.gradients.push(normals[i].normalized())
         }
-        if (newsamples.length == 0) break
-        for (let [hash,n] of newsamples) {
-            let entry = grid.get(hash) || v3(0)
-            entry = entry.add(n)
-            grid.set(hash,entry)
-        }        
-        if (++iter >= 5) break
-    } 
-    console.log('voxelize iters:', iter)
-    
-    
-    const R = D/2
-    const samples = [], gradients = []    
-    for (const [v,n] of grid) {
-        const [x,y,z] = v.split(',').map(i => parseInt(i))
-        samples.push(v3(x*D+R, y*D+R, z*D+R))
-        gradients.push(n.normalized())
+        
+        //const sdf = SDF(voxels, dim)
+        //const gradients = voxels.map(([x,y,z]) => sdfGrad(sdf, dim, x, y, z).normalized())
+        console.log(`voxelize took ${performance.now() - tstart}ms`)
+
     }
-
-
-    //const sdf = SDF(voxels, dim)
-    //const gradients = voxels.map(([x,y,z]) => sdfGrad(sdf, dim, x, y, z).normalized())
-    console.log(`voxelize took ${performance.now() - tstart}ms`)
-    return { samples, gradients }
 }
-
 
 export const sdfGrad = (sdf, dim, x, y, z) => {
     const dx = sampleGrid(sdf, dim, min(x + 1, dim.x - 1), y, z) - sampleGrid(sdf, dim, max(x - 1, 0), y, z)
@@ -162,6 +185,8 @@ export const SDF = (voxels, dim) => {
             }
     return sdf
 }
+
+
 
 
 

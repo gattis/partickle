@@ -3,8 +3,8 @@ type v3i = vec3<i32>;
 
 const MAXNN = ${MAXNN}u;
 const D = ${D}f;
-const Dplus = ${D*1.5};
-
+const Dplus = ${D*1.0};
+    
 
 @compute @workgroup_size(${threads})
 fn predict(@builtin(global_invocation_id) gid:vec3<u32>) {
@@ -293,7 +293,7 @@ fn collisions(@builtin(global_invocation_id) gid:vec3<u32>) {
         let p2 = &particles[(*p).nn[i]];
         let d = length((*p).si - (*p2).si);
         let c = max(0.0, D - d);
-        ds -= params.fcol * c * (*p2).grad / f32(k);
+        ds += params.fcol * c * (*p2).grad / f32(k);
     }  
     if (k > 0) {
         ds = ds / f32(k);
@@ -318,7 +318,7 @@ fn project(@builtin(global_invocation_id) gid:vec3<u32>) {
         let m2 = &meshes[(*p).mesh];
         let d = length((*p).sp - (*p2).sp);
         let c = max(0.0, D - d);
-        sf -= params.fcol * c * (*p2).grad / f32(k);
+        sf += params.fcol * c * (*p2).grad / f32(k);
     }
 
 
@@ -331,61 +331,5 @@ fn project(@builtin(global_invocation_id) gid:vec3<u32>) {
     (*p).v = v;
     (*p).si = sf;
     
-}
-
-@compute @workgroup_size(${threads})
-fn vertpos(@builtin(global_invocation_id) gid:vec3<u32>) {
-    let vid:u32 = gid.x;
-    let nverts = arrayLength(&vertices);
-    if (vid >= nverts) { return; }
-    let v = &vertices[vid];
-    let pid = (*v).particle;
-    if (pid >= 0) {
-        (*v).pos = particles[pid].si;
-    } else {
-        let m = &meshes[(*v).mesh];
-        (*v).pos = (*m).rot * (*v).q + (*m).ci;
-    }
-}
-
-@compute @workgroup_size(${threads})
-fn sort_tris(@builtin(global_invocation_id) gid:vec3<u32>) {
-    let tid:u32 = gid.x;
-    let ntris = arrayLength(&tris);
-    if (tid >= ntris) { return; }
-    let tri = &tris[tid];
-    for (var i = 0; i < 3; i += 1) {
-        let tv = &(*tri)[i];
-        let v = &vertices[(*tv).vidx];
-        (*tv).pos = (*v).pos;
-        (*tv).norm = (*v).norm;
-        (*tv).mesh = (*v).mesh;
-    }
-}
-
-
-@compute @workgroup_size(${threads})
-fn normals(@builtin(global_invocation_id) gid:vec3<u32>) {
-    let vid:u32 = gid.x;
-    let nverts = arrayLength(&vertices);
-    if (vid >= nverts) { return; }
-    let v = &vertices[vid];
-    let nedges = (*v).nedges;
-    let pos = (*v).pos;
-    var norm = v3(0f,0f,0f);
-    for (var i = 0u; i < nedges; i = i + 1u) {
-        let b = vertices[(*v).edges[i % nedges]].pos - pos;
-        let c = vertices[(*v).edges[(i+1u) % nedges]].pos - pos;
-        let n = cross(c,b);
-        let area = 0.5 * length(n);
-        let angle = acos(dot(normalize(b),normalize(c)));
-        norm += angle * normalize(n);
-    }
-    norm = normalize(norm);
-    (*v).norm = norm;
-    let pid = (*v).particle;
-    //if (pid >= 0) {
-    //    particles[pid].grad = norm;
-    //}
 }
 
