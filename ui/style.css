@@ -1,0 +1,97 @@
+body {
+    margin: 0;
+    padding: 0;
+    background-color: black;
+    overflow: hidden;
+}
+
+@font-face {
+    font-family: fantasque;
+    src: url('fantasque.woff') format('woff');
+    font-weight: 400;
+    font-style: normal;
+}
+
+div {
+    font-family: fantasque;
+    font-size:80%;
+    position: fixed;
+    color: white;
+    pointer-events: none;
+}
+
+output {
+    width: 25px;
+    display: inline-flex;
+    justify-content: right;
+    padding-right:5px;
+    font-size:90%;
+}
+
+
+
+#pedit {
+    left: 5px;
+    top: 10px;
+    text-align: lef;
+}
+
+#rpref {
+    left: 5px;
+    bottom: 10px;
+    text-align: left;
+}
+
+#dbg {
+    right: 5px;
+    bottom: 5px;
+}
+
+#info {
+    right: 10px;
+    top: 10px;
+    text-align: right;
+}
+
+#inspect {
+    margin-left: 20px;
+    display: none;
+}
+
+#step {
+    margin-left: 8px;
+    height: 25px;
+    width: 35px;
+}
+
+input {
+    vertical-align: middle;
+    margin-right: 8px;
+    margin-left:10px;
+    pointer-events: initial;
+}
+
+input[type='range'] {
+    vertical-align: middle;
+    width: 200px;
+    margin-left: 0px;
+}
+
+input[type=checkbox] {
+    transform: scale(1.6);
+    margin: 6px 12px 5px 15px;
+}
+
+select {
+    width: 100px;
+    margin-right: 8px;
+    text-align:right;
+    margin-left:10px;
+    pointer-events: initial;
+}
+
+option {
+    font-family: fantasque;
+    font-size: 10px;
+}
+
