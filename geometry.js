@@ -1,6 +1,5 @@
-const { abs,cos,sin,acos,asin,cbrt,sqrt,pow,PI,random,round,ceil,floor,tan,max,min,log2 } = Math
-import * as util from './utils.mjs'
-import * as gpu from './gpu.mjs'
+import * as util from './utils.js'
+import * as gpu from './gpu.js'
 Object.assign(globalThis, gpu, util)
 
 export const intersectRayAABB = (start, dir, lower, upper) => {
@@ -31,6 +30,9 @@ export class VoxelGrid {
     hash(p) {
         const v = p.divc(this.D*1.0001).floor()
         return String([v.x,v.y,v.z])
+    }
+    nearHash(x,y,z) {
+        return [[x+1,y,z],[x,y+1,z],[x,y,z+1],[x-1,y,z],[x,y-1,z],[x,y,z-1]]
     }
     addPoint(p,n) {
         const { hashmap, normals } = this
@@ -77,19 +79,35 @@ export class VoxelGrid {
         }
 
         this.vertidxs = relverts.map((v,i) => hashmap.get(this.hash(v)))
-        for (const idx of this.vertidxs)
-            if (idx == undefined) {
-                consle.error('all vertices should map to particles')
-                debugger;
+                
+        const R = D/2
+        this.samples = []
+        this.gradients = []
+        this.edges = []
+        for (const [v,i] of hashmap) {
+            const [x,y,z] = v.split(',').map(istr => parseInt(istr))
+            const edges = []
+            for (const [xi,yi,zi] of this.nearHash(x,y,z)) {
+                const id = hashmap.get(String([xi,yi,zi]))
+                if (id != undefined) edges.push(id)
             }
-            
-        let iter = 0
+            this.edges.push(edges)            
+            this.samples.push(v3(c.x + x*D + R, c.y + y*D + R, c.z + z*D + R))
+            this.gradients.push(normals[i].normalized())
+        }
+        
+        console.log(`voxelize took ${performance.now() - tstart}ms`)
+
+    }
+}
+
+
+/*        let iter = 0
         while (false) {
             const newsamples = []
             for (let [v,n] of grid) {
                 const coord = v.split(',').map(i => parseInt(i))
-                let axis = n.majorAxis()
-            
+                let axis = n.majorAxis()            
                 let dir = n[axis] < 0 ? 1 : -1
                 coord[axis] += dir
                 let hash = String(coord)
@@ -106,23 +124,10 @@ export class VoxelGrid {
             if (++iter >= 20) break
         } 
         console.log('voxelize iters:', iter)
-    
-        const R = D/2
-        this.samples = []
-        this.gradients = []
-        for (const [v,i] of hashmap) {
-            const [x,y,z] = v.split(',').map(istr => parseInt(istr))
-            this.samples.push(v3(c.x + x*D + R, c.y + y*D + R, c.z + z*D + R))
-            this.gradients.push(normals[i].normalized())
-        }
-        
+
+
         //const sdf = SDF(voxels, dim)
         //const gradients = voxels.map(([x,y,z]) => sdfGrad(sdf, dim, x, y, z).normalized())
-        console.log(`voxelize took ${performance.now() - tstart}ms`)
-
-    }
-}
-
 export const sdfGrad = (sdf, dim, x, y, z) => {
     const dx = sampleGrid(sdf, dim, min(x + 1, dim.x - 1), y, z) - sampleGrid(sdf, dim, max(x - 1, 0), y, z)
     const dy = sampleGrid(sdf, dim, x, min(y + 1, dim.y - 1), z) - sampleGrid(sdf, dim, x, max(y - 1, 0), z)
@@ -187,7 +192,7 @@ export const SDF = (voxels, dim) => {
 }
 
 
-
+*/
 
 
 

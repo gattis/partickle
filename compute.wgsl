@@ -3,26 +3,25 @@ type v3i = vec3<i32>;
 
 const MAXNN = ${MAXNN}u;
 const D = ${D}f;
-const Dplus = ${D*1.0};
+const Dplus = ${D*1.5};
     
 
 @compute @workgroup_size(${threads})
 fn predict(@builtin(global_invocation_id) gid:vec3<u32>) {
     let pid:u32 = gid.x;
     if (pid >= arrayLength(&particles)) { return; }
+    
+    
     let p = &particles[pid];
     (*p).k = 0u;
     (*p).sp = (*p).si;
+    if (params.grabbing == i32(pid)) { return; }
     
     let m = &meshes[(*p).mesh];
-    var fext = (*m).fext;
-    fext = fext - params.friction * (*p).v;
+    var fext = (*m).ffield;
  
     (*p).v = (*p).v + fext * params.t;
     (*p).sp += (*p).v * params.t;
-
-    
-
     
 }
 
@@ -255,7 +254,7 @@ fn shapematch(@builtin(local_invocation_id) lid:vec3<u32>,
     var A = transpose(shapework[0]);
     var quat = mat2Quat(A);
     
-    for (var i = 0; i < 35; i++) {
+    for (var i = 0; i < 40; i++) {
         var R = quat2Mat(quat);
         var w = (cross(R[0],A[0]) + cross(R[1],A[1]) + cross(R[2],A[2])) *
             (1.0 / abs(dot(R[0],A[0]) + dot(R[1],A[1]) + dot(R[2],A[2])) + 1.0e-9);
@@ -291,12 +290,14 @@ fn collisions(@builtin(global_invocation_id) gid:vec3<u32>) {
     var ds = v3(0.0, 0.0, 0.0);
     for (var i = 0u; i < k; i++) {
         let p2 = &particles[(*p).nn[i]];
-        let d = length((*p).si - (*p2).si);
+        let m2 = &meshes[(*p2).mesh];
+        let r = (*p).si - (*p2).si;
+        let d = length(r);
         let c = max(0.0, D - d);
-        ds += params.fcol * c * (*p2).grad / f32(k);
+        let grad = select((*p2).grad, r/(d+.00001), (*m2).shape == 0);
+        ds += params.collision * c * grad;
     }  
     if (k > 0) {
-        ds = ds / f32(k);
         (*p).si = (*p).si + ds;
         (*p).sp = (*p).sp + ds;
     }
@@ -308,28 +309,51 @@ fn project(@builtin(global_invocation_id) gid:vec3<u32>) {
     let pid:u32 = gid.x;
     let nparticles = arrayLength(&particles);
     if (pid >= nparticles) { return; }
+
+    if (params.grabbing == i32(pid)) { return; }
     let p = &particles[pid];
     let m = &meshes[(*p).mesh];  
     
-    var sf = (*p).sp;    
+    var sf = (*p).sp;
+    
+    let nedges = (*p).nedges;    
+    for (var i = 0u; i < nedges; i++) {
+        let p2 = &particles[(*p).edges[i]];
+        let r = (*p2).sp - (*p).sp;
+        let d = length(r);
+        if (d == 0) { continue; }
+        var c = d - length((*p2).s0 - (*p).s0);
+        let s = sign(c);
+        sf += params.spring * abs(c) * s * r / d; 
+    }
+    
+    let goal = (*m).ci + (*m).rot*(*p).q;
+    let fshape = params.shape * (*m).shape;
+    sf += fshape * (goal - (*p).sp);
+
     let k = min(MAXNN, (*p).k);
     for (var i = 0u; i < k; i++) {
         let p2 = &particles[(*p).nn[i]];
         let m2 = &meshes[(*p).mesh];
-        let d = length((*p).sp - (*p2).sp);
+        let r = (*p).sp - (*p2).sp;
+        let d = length(r);
         let c = max(0.0, D - d);
-        sf += params.fcol * c * (*p2).grad / f32(k);
+        let grad = select((*p2).grad, r/(d+.00001), (*m2).shape == 0);
+        sf += params.collision * c * grad;
+    }   
+
+    if (params.ground > 0 && sf.z < 0) {
+        sf -= params.collision * sf.z * v3(0,0,1);
     }
-
-
-    let goal = (*m).ci + (*m).rot*(*p).q;
-    sf += params.fshape * (*m).fshape * (goal - (*p).sp);
+    
     sf += (*p).lock * ((*p).s0 - (*p).sp);
 
-    let v = (sf - (*p).si) / params.t;
- 
+    let delta = sf - (*p).si;
+    if (length(delta) < 1e-6) { return; }
+    var v = (sf - (*p).si) / params.t;
+    v -= params.friction * params.t * v;
     (*p).v = v;
-    (*p).si = sf;
+    (*p).si += v*params.t;
     
 }
 

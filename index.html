@@ -1,142 +1,20 @@
 <!DOCTYPE html>
 <html>
-  <head>
-    <style type='text/css'>
-      body { margin:0; padding:0; background-color: black; overflow:hidden; }
-      div { font-family:monospace; position:fixed; color:white; }
-      #ctrls { left:5px;top: 5px; }
-      #step { display:none; }
-      #pedit { left:5px; top: 35px; text-align:right; }
-      #rpref { left:5px; bottom:5px; text-align:left; }
-      #dbg { right:5px; bottom:5px; }
-      #nav { right:5px; top:5px; }
-      #info { right:5px; top: 25px; text-align:right; }
-      #inspect { margin-left:20px; display:none; }
-      #partidx { width:70px; text-align:right; }
-      input[type="range"] { vertical-align: middle; width: 200px; }
-      select { width:80px; }
-      input[type="number"] { width:30px; }
-    </style>
-  </head>
-  <body>
-    <canvas></canvas>
-    <div id='info'></div>
-    <div id='ctrls'>
-      <button id='pause'>&#9199;</button>
-      <button id='step'>&#11122;</button>
-      <div id='inspect'>
-        particle: <input id='partidx' type='number' min='0' max='${particles.length - 1}' value=''>
-      </div>      
-    </div>
-    <div id='nav'></div>
-    <div id='pedit'></div>
-    <div id='rpref'></div>
-    <div id='dbg'></div>
-    <script type='module'>
-
-      const { Sim, Params, renderPref, renderOpts } = await import('./sim.mjs')
-
-      window.renderPref = renderPref
-      window._ = sel => document.querySelector(sel)
-      window.__ = sel => document.querySelectorAll(sel)
+    <head>
+        <link rel='stylesheet' href='./ui/style.css'/>
     
-      window.cv = document.querySelector('canvas')
-      cv.width = cv.style.width = window.innerWidth
-      cv.height = cv.style.height = window.innerHeight
-      window.ctx = cv.getContext('webgpu')
-      window.sim = new Sim()
-      await sim.init(cv.width, cv.height, ctx)
-
-      const { render, compute, possessed, gpu, bufs, camera, params, particles } = sim
-      _('#step').style.display = _('#inspect').style.display = localStorage.paused ? 'inline' : 'none'
-      _('#partidx').max = particles.length - 1              
-      _('#pedit').innerHTML = ['fcol','fshape','friction'].map(name => {
-          const val = localStorage[name] == undefined ? params[name] : parseFloat(localStorage[name])
-          const lo = 0, hi = params[name] * 4.9
-          return `${name} <input type='range' name='${name}' value='${val}' `+
-              `min='${lo}' max='${hi}' step='0.001' ` +
-              `oninput='${name}.value=parseFloat(this.value).toFixed(3); localStorage.${name} = this.value'/> ` +
-              `<output id='${name}'>${val.toFixed(3)}</output>`
-      }).join('<br/>')
-
-
-      _('#rpref').innerHTML = Object.entries(renderPref).map(([key,val]) => {
-          let valtype = typeof val
-          let type = {boolean:'checkbox', number:'number', string:'select'}[valtype]
-          let convert = {boolean: x=>x?"' checked ":'', number:x=>x, string:x=>x}[valtype]
-          let reverse = {boolean: 'this.checked', number:'parseInt(this.value)', string:'this.value'}[valtype]
-          let tag = valtype == 'string' ? 'select' : `input type='${type}'`, ending = '/>'
-          if (valtype == 'string') {
-              let opts = renderOpts[key].map(opt => `<option value='${opt}' ${opt==val?'selected':''}>${opt}</option>`).join()
-      ending = `>${opts}</select>`
-          }
-          return `<${tag} name='${key}' value='${convert(val)}' onchange='renderPref.${key}=${reverse}; sim.render.reset=true' ${ending} ${key.replaceAll('_',' ')}` 
-      }).join('<br/>')
-
-      window.move = false
-      cv.onmouseup = cv.onmouseout = cv.onmousedown = cv.onmousemove = cv.onwheel = cv.oncontextmenu = window.onresize = _('#pause').onclick = _('#step').onclick = _('#partidx').oninput = (ev) => { 
-          if (ev.type == 'contextmenu')
-              ev.preventDefault()
-          if (ev.target == _('#step') && ev.type == 'click')
-              compute.fwdstep = true
-          if (ev.type == 'mousedown')
-              move = {x: ev.x, y: ev.y, btn: ev.button}             
-          if (ev.type == 'mouseout' || ev.type == 'mouseup')
-              move = false;
-          if (ev.target == _('#pause') && ev.type == 'click') {
-              compute.paused = !compute.paused
-              _('#step').style.display = _('#inspect').style.display = compute.paused ? 'inline' : 'none'
-          }  
-          if (ev.target == _('#partidx') && ev.type == 'input') {
-              const pidx = parseInt(_('#partidx').value)
-              camera.selection = pidx
-          }              
-          if (ev.type == 'mousemove') {
-              if (!move) return
-              const dx = .01*(ev.x - move.x), dy = .01*(move.y - ev.y)
-              move.x = ev.x
-              move.y = ev.y
-              if (move.btn == 0) {
-                  sim.camLR += dx
-                  sim.camUD = clamp(sim.camUD + dy,-PI/2, PI/2)
-              } else if (move.btn == 1) {
-                  const delta = v3( -dx * cos(sim.camLR), dx * sin(sim.camLR), -dy);
-                  sim.camPos = sim.camPos.add(delta)
-              }
-          }              
-          if (ev.type == 'wheel') {
-              const dy = -.001 * ev.deltaY
-              const camDir = sim.camFwd()
-              sim.camPos.x += dy * camDir.x
-              sim.camPos.y += dy * camDir.y
-              sim.camPos.z += dy * camDir.z
-          }
-          if (ev.type == 'resize') {
-              cv.width = cv.style.width = window.innerWidth
-              cv.height = cv.style.height = window.innerHeight
-              sim.resize(cv.width, cv.height)
-          }
-      }
-      
-      async function updateInfo() {      
-          const lines = []
-          let computeStats = await compute.stats(), renderStats = await render.stats();
-          lines.push(`compute trel:${((computeStats.tlast - computeStats.tsim)*1000).toFixed(2)} ms`)
-          for (const { kind, tstart, tlast, frames, profile } of [computeStats,renderStats]) {
-              lines.push(`${kind} fps:${(frames/(tlast-tstart)).toFixed(2)}`)
-              if (!profile) continue
-              for (const [label, nsecs] of profile)
-                  lines.push(`${label}: ${nsecs/1000n} &mu;s`)
-              lines.push(`total: ${profile.sum(([label,nsecs]) => nsecs, 0n)/1000n} &mu;s`)
-              lines.push('&nbsp;')
-          }
-          _('#info').innerHTML = lines.join('<br/>')
-          _('#nav').innerText = `cam: pos=${sim.camPos.toString()} fwd=${sim.camFwd().toString()}`
-          setTimeout(updateInfo, 500)
-      }
-      setTimeout(updateInfo, 500)
-      sim.run()
-      
-    </script>
-  </body>
+    </head>
+    <body>
+        <canvas></canvas>
+        <div id='info'></div>
+        <div id='pedit'></div>
+        <div id='rpref'></div>
+        <div id='dbg'></div>
+        <script type='module' src='./app.js'></script>
+    </body>
 </html>
+
+
+
+
+

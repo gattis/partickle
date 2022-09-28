@@ -4,15 +4,16 @@ type v3 = vec3<f32>;
 type m3 = mat3x3<f32>;
 type m4 = mat4x4<f32>;
 
-const shininess = 64.0;
+const shininess = 16.0;
 const ambient = 0.2f;
 
 
 const tetrahedron = array<v3,8>(v3( 1, 1, 1), v3( 1,-1,-1), v3(-1, 1,-1), v3(-1,-1, 1),
                                 v3( 1, 1, 1), v3(-1,-1, 1), v3( 1,-1,-1), v3(-1, 1,-1));
-const cube = array<v3,14>(v3(-1,1,-1), v3(1,1,-1), v3(-1,-1,-1), v3(1,-1,-1), v3(1,-1,1),
-                         v3(1,1,-1), v3(1,1,1), v3(-1,1,-1), v3(-1,1,1), v3(-1,-1,-1),
-                         v3(-1,-1,1), v3(1,-1,1), v3(-1,1,1), v3(1,1,1));
+
+const cube = array<v3,14>(v3(-1,1,1), v3(1,1,1), v3(-1,-1,1), v3(1,-1,1), v3(1,-1,-1),
+                          v3(1,1,1), v3(1,1,-1), v3(-1,1,1), v3(-1,1,-1), v3(-1,-1,1),
+                          v3(-1,-1,-1), v3(1,-1,-1), v3(-1,1,-1), v3(1,1,-1));
 
 
 
@@ -52,7 +53,7 @@ struct SurfOut {
     @location(3) @interpolate(flat) mesh:u32,
 };
 
-@vertex fn vert_surf(@location(0) pos:v3,
+@vertex fn surface_vert(@location(0) pos:v3,
                      @location(1) norm:v3,
                      @location(2) mesh:u32,
                      @location(3) uv:v2) -> SurfOut {
@@ -79,31 +80,28 @@ struct FragDepth {
     @builtin(frag_depth) depth:f32
 };
 
-fn ranger(x:f32, inlo:f32, inhi:f32, outlo:f32, outhi:f32) -> f32 {
-    return (outhi - outlo) * (x - inlo) / (inhi - inlo) + outlo;
-}
 
-
-@fragment fn frag_surf(input:SurfIn) -> @location(0) v4 {
+@fragment fn surface_frag(input:SurfIn) -> @location(0) v4 {
     let m = &meshes[input.mesh];
-    var color = (*m).color * select(textureSample(tex, samp, input.uv, (*m).tex), vec4(1), (*m).tex < 0);
+    var color = (*m).color * select(textureSample(tex, samp, input.uv, (*m).tex), v4(1), (*m).tex < 0);
+    if (color.a < 0.0001) { discard; }
     color = frag(input.worldpos, input.norm, color);
     return v4(color.rgb, color.a);
 }
 
 
-@vertex fn vert_axis(@builtin(vertex_index) vertidx:u32,
+@vertex fn axes_vert(@builtin(vertex_index) vertidx:u32,
                      @builtin(instance_index) instidx:u32) -> @builtin(position) v4 {
     var worldPos = v3(0);
     worldPos[instidx] = f32(2*i32(vertidx) - 1);
     return camera.projection * camera.modelview * v4(worldPos, 1.0);
 }
 
-@fragment fn frag_axis() -> @location(0) v4 {
+@fragment fn axes_frags() -> @location(0) v4 {
     return v4(1,1,1,1);
 }
 
-@vertex fn vert_norm(@builtin(vertex_index) vertidx:u32,
+@vertex fn normals_vert(@builtin(vertex_index) vertidx:u32,
                      @location(0) vertPos:v3,
                      @location(1) norm:v3) -> @builtin(position) v4 {
     var worldPos = vertPos;
@@ -113,7 +111,7 @@ fn ranger(x:f32, inlo:f32, inhi:f32, outlo:f32, outhi:f32) -> f32 {
     return camera.projection * camera.modelview * v4(worldPos, 1.0);
 }
 
-@fragment fn frag_norm() -> @location(0) v4 {
+@fragment fn normals_frag() -> @location(0) v4 {
     return v4(1,1,1,1);
 }
 
@@ -126,7 +124,7 @@ struct PartIO {
     @location(3) @interpolate(flat) selected:u32,
 };
 
-@vertex fn vert_part(@builtin(vertex_index) vertidx:u32,
+@vertex fn particle_vert(@builtin(vertex_index) vertidx:u32,
                      @builtin(instance_index) instidx:u32,
                      @location(0) partpos:v3,
                      @location(1) mesh:u32) -> PartIO {
@@ -136,39 +134,53 @@ struct PartIO {
     out.vertpos = tetrahedron[vertidx] * sqrt(3) * camera.r;
     out.position = camera.projection * camera.modelview * v4(out.partpos + out.vertpos,1);
     out.mesh = mesh;
-    out.selected = select(1u, 0u, i32(instidx) == camera.selection);
+    out.selected = select(0u, 1u, i32(instidx) == camera.selection);
     return out;
 }
 
+struct RayTrace {
+    t:f32,
+    rd:v3,
+    hit:v3,
+    normal:v3,
+    clip_depth: f32
+};
 
 
-@fragment fn frag_part(input:PartIO) -> FragDepth {
+fn trace_sphere(vertpos:v3, center:v3, r:f32) -> RayTrace {
+    var trace:RayTrace;
+    trace.rd = normalize(vertpos + center - camera.pos);
+    let co = camera.pos - center;
+    let b = dot(co, trace.rd);
+    let c = b*b - dot(co, co) + r*r;
+    if (c < 0) { discard; }
+    let t1 = -b + sqrt(c);
+    let t2 = -b - sqrt(c);
+    if (t1 >= 0 && t2 >= 0) { trace.t = min(t1,t2); }
+    else if (t1 >= 0 && t2 < 0) { trace.t = t1; }
+    else if (t1 < 0 && t2 >= 0) { trace.t = t2; }
+    else { discard; }
+    let ot = trace.rd * trace.t;
+    trace.hit = camera.pos + ot;
+    trace.normal = normalize(ot + co);
+    let hitclip = camera.projection * camera.modelview * v4(trace.hit, 1);
+    trace.clip_depth = hitclip.z / hitclip.w;
+    return trace;
+}
 
+@fragment fn particle_frag(input:PartIO) -> FragDepth {
     let color = meshes[input.mesh].pcolor;
     if (color.a < 0.5) { discard; }
     var rgb = color.rgb;
     if (input.selected == 1u) {
         rgb = 1 - rgb;
     }
-    let pc = camera.pos;
-    let pl = input.partpos;
-        
-    let rd = normalize(pl + input.vertpos - pc);
-    let vcl = pc - pl;
-    let b = dot(vcl,rd);
-    let c = b*b - dot(vcl,vcl) + camera.r*camera.r;
-    if (c < 0) { discard; }
-    let t = -b - sqrt(c);
-    if (t < 0) { discard; }
-    var pt = pc + rd*t;
-    let clippos = camera.projection * camera.modelview * v4(pt,1);
-    let normal = normalize(pt - pl);
-    return FragDepth(frag(pt, normalize(input.vertpos), v4(rgb,1.0f)), clippos.z/clippos.w);
-   
+    let trace = trace_sphere(input.vertpos, input.partpos, camera.r);
+    return FragDepth(frag(trace.hit, trace.normal, v4(rgb,1.0f)), trace.clip_depth);   
 }
 
 
-struct LightOut {
+struct LightIO {
     @builtin(position) position:v4,
     @location(0) lightpos:v3,
     @location(1) vertpos:v3,
@@ -176,47 +188,58 @@ struct LightOut {
     @location(3) size:f32,
 };
 
-@vertex fn vert_light(@builtin(vertex_index) vertidx:u32,
-                      @builtin(instance_index) instidx:u32) -> LightOut {   
+@vertex fn lights_vert(@builtin(vertex_index) vertidx:u32,
+                      @builtin(instance_index) instidx:u32) -> LightIO {   
     let l = &lights[instidx];
-    var out:LightOut;
+    var out:LightIO;
 
     out.lightpos = (*l).pos;
-    out.size = 0.08f * sqrt((*l).power);
-    out.vertpos = cube[vertidx] * sqrt(3) * out.size;
-    out.position = camera.projection * camera.modelview * v4(out.lightpos + out.vertpos,1);
+    out.size = .4*sqrt((*l).power);
+    let vpos = cube[vertidx];
+    out.vertpos = vpos * out.size;
+    out.position = camera.projection * camera.modelview * v4(out.lightpos + out.vertpos * out.size,1);
     out.color = (*l).color;
+    return out;
+}
+        
+
+@fragment fn lights_frag(input:LightIO) -> FragDepth {
+    let trace = trace_sphere(input.vertpos, input.lightpos, input.size);
+    let mag = pow(dot(-trace.normal, trace.rd), 20);
+    return FragDepth(v4(input.color * mag, 1), trace.clip_depth);
+}
+
+
+struct GndIO {
+    @builtin(position) position:v4,
+    @location(0) vertpos:v3,
+};
+
+const rgnd = 1000.0f;
+const gnd_color = v4(1, 1, 1, 1);
+
+
+@vertex fn ground_vert(@builtin(vertex_index) vertidx:u32) -> GndIO {
+    var out:GndIO;
+    let vpos = cube[vertidx];
+    out.vertpos = vpos*rgnd;
+    out.position = camera.projection * camera.modelview * v4(rgnd * (vpos - v3(0,0,1)), 1);
     return out;
 }
 
 
-struct LightIn {
-    @builtin(position) position:v4,
-    @location(0) lightpos:v3,
-    @location(1) vertpos:v3,
-    @location(2) color:v3,
-    @location(3) size:f32,
-};
-
-
-@fragment fn frag_light(input:LightIn) -> FragDepth {
-    let pc = camera.pos;
-    let pl = input.lightpos;
-    let vctnorm = normalize(pl + input.vertpos - pc);
-    let vlc = pc - pl;
-    let b = dot(vlc,vctnorm);
-    let c = b*b - dot(vlc,vlc) + input.size*input.size;
-    if (c < 0) { discard; }
-    let t = -b - sqrt(c);
-    if (t < 0) { discard; }
-    let vct = vctnorm*t;
-    let pt = pc + vct;
-    let vtl = -vct + -vlc;
-    
-    let ptclip = camera.projection * camera.modelview * v4(pt,1);   
-    let mag = pow(dot(normalize(vtl),vctnorm), 15);
-    return FragDepth(v4(input.color*mag,1), ptclip.z/ptclip.w);
-
+fn checkers(xy:v2) -> f32 {    
+    return f32(abs(i32(floor(xy.x)) + i32(floor(xy.y))) % 2);
 }
+
+@fragment fn ground_frag(input:GndIO) -> FragDepth {
+    let trace = trace_sphere(input.vertpos, v3(0,0,-rgnd), rgnd);
+    let pattern = .2*checkers(trace.hit.xy/.1) + .3*checkers(trace.hit.xy) + 0.1;
+    let fade = 10/(10 + length(trace.hit.xy));
+    var color = v4(v3(clamp(pattern,.2,.8)*fade),1);
+        
+    return FragDepth(frag(trace.hit, trace.normal, color), trace.clip_depth);
+}
+
 
 

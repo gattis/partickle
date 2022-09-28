@@ -1,93 +1,79 @@
-const { cos, sin, acos, asin, cbrt, sqrt, PI, random, ceil, floor, tan, max, min, log2,round,atan } = Math
-import * as util from './utils.mjs'
-import * as gpu from './gpu.mjs'
-import * as geo from './geometry.mjs'
+import * as util from './utils.js'
+import * as gpu from './gpu.js'
+import * as geo from './geometry.js'
 Object.assign(globalThis, util, gpu, geo)
 
-
-const D = 0.01
-const FRAMERATIO = 3
-const SPEED = 1
-const FEXT = v3(0, 0, -9.8)
 const MAXNN = 24
 const MAXEDGES = 18
-const FCOL = 0.1
-const FSHAPE = 0.01
-const FRICTION = 1.5
 
-const FOV = 60
 let UP = v3(0,0,1)
-let CAM_POS = v3(0, -4.5, 3)
-let CAM_UD = -PI/7
+let CAM_POS = v3(0, -3, 2)
+let CAM_UD = -PI/8
 
-const RED = v4(0.8, 0.2, 0.4, 1.0)
-const BLUE = v4(0.3, 0.55, 0.7, 1.0);
-const GREEN = v4(0.1, 0.5, 0.2, 1.0);
-const BLACK = v4(0.0, 0.0, 0.0, 1.0);
-const CLEAR = v4(0.0, 0.0, 0.0, 0.0);
+export const phys = new Preferences('phys')
+phys.addBool('paused', false)
+phys.addNum('d', .01 , 0, 0.1, 0.01)
+phys.addNum('frameratio', 3, 1, 10, 1)
+phys.addNum('speed', 1, 0, 5, .01)
+phys.addNum('gravity', -9.8, -20, 20, 0)
+phys.addNum('collision', .5, 0, 1, .01)
+phys.addNum('spring', 0.05, 0, 0.15, 0.001)
+phys.addNum('shape', .025, 0, .05, .001)
+phys.addNum('friction', 1, 0, 2, .01)
 
-export const renderPref = {
-    normals: false,
-    grads: false,
-    axes: false,
-    depth_write: true,
-    atc: true,
-    samples: 4,
-    depth_compare: 'less-equal',
-    cull: 'back',
-    color_op:'add',
-    alpha_op:'add',
-    color_src:'one',
-    color_dst:'one-minus-src-alpha',
-    alpha_src:'one',
-    alpha_dst:'one-minus-src-alpha',
-    alpha_mode:'premultiplied',
-    format: 'rgba8unorm',
-    depth_format: 'depth32float'
-}
+export const render = new Preferences('render')
+render.addBool('particles', true)
+render.addBool('ground', true)
+render.addBool('normals', false)
+render.addBool('grads', false)
+render.addBool('axes', false)
+render.addBool('depth_wr', true)
+render.addBool('atc', true)
+render.addChoice('depth_cmp', 'less-equal', ['less-equal','less','greater-equal','greater','always','never'])
+render.addChoice('cull', 'back', ['none','back','front'])
+render.addChoice('alpha_mode', 'premultiplied', ['opaque','premultiplied'])
+render.addChoice('color_op', 'add', ['add','subtract','reverse-subtract'])
+render.addChoice('alpha_op', 'add', ['add','subtract','reverse-subtract'])
+const factors = ['zero','one','src','one-minus-src','src-alpha','one-minus-src-alpha',
+                 'dst','one-minus-dst','dst-alpha','one-minus-dst-alpha']
+render.addChoice('color_src', 'one', factors)
+render.addChoice('color_dst', 'one-minus-src-alpha', factors)
+render.addChoice('alpha_src', 'one', factors)
+render.addChoice('alpha_dst', 'one-minus-src-alpha', factors)
+render.addChoice('format', 'rgba16float', ['rgba8unorm','bgra8unorm','rgba16float'])
+render.addChoice('depth_fmt', 'depth32float-stencil8', 
+                 ['depth16unorm','depth24plus','depth24plus-stencil8','depth32float','depth32float-stencil8'])
+render.addNum('samples', 4, 1, 4, 3)
+render.addNum('fov', 60, 1, 150, 1)
 
-const opOpts = ['add','subtract','reverse-subtract','min','max']
-const factorOpts = ['zero','one','constant','one-minus-constant',
-                    'src','one-minus-src','src-alpha','one-minus-src-alpha','src-alpha-saturated',
-                    'dst','one-minus-dst','dst-alpha','one-minus-dst-alpha']
-export const renderOpts = {
-    depth_compare:['less-equal','less','greater-equal','greater','always','never'],
-    cull:['none','back','front'],
-    color_op:opOpts, alpha_op:opOpts,
-    color_src:factorOpts, color_dst:factorOpts, alpha_src:factorOpts, alpha_dst:factorOpts,
-    alpha_mode:['opaque','premultiplied'],
-    format:['rgba8unorm','bgra8unorm','rgba16float'],
-    depth_format:['depth16unorm','depth24plus','depth24plus-stencil8','depth32float','depth32float-stencil8']
-}
     
     
-const particleColor = v4(.3,.3,.8,0)
+const particleColors = [v4(.4,.4,.8,1), v4(.83,.54,.47,1), v4(.2, .48, .48)]
 
 const QUINN = { url:'quinn.obj', texUrl:'quinn.png', offset:v3(0,0,0), sample:true,
-                scale:v3(2, 2, 2), fext:v3(0, 0, 0), color:v4(1,.9,.9,1) }
+                scale:v3(2, 2, 2), ffield:v3(0, 0, 0), color:v4(.7,.6,.5,1) }
 
-const HAND = { url:'hand.obj', texUrl:'hand.png', color:v4(.9,.9,.9,1), 
+const HAND = { url:'hand.obj', texUrl:'hand.png', color:v4(1,.9,.8,1), 
                offset:v3(.7,-.5,.6), scale:v3(1,1,1),
-               sample:true, fext:v3(-.5, .1, .5) }
+               sample:true, ffield:v3(0) }
 
 const TORUS = { url:'torus.obj', offset:v3(0,0,2), scale:v3(1),
-                color:v4(.7,.2,.1,.89), particleColor:v4(.7,.7,.1,0), sample:true, fext:v3(0,0,-3) }
+                color:v4(.7,.2,.1,.89), particleColor:v4(.7,.7,.1,1), sample:true }
 
-const GROUND = { url:'ground.obj', texUrl:'marble.png', fext:v3(0),
+const GROUND = { url:'ground.obj', texUrl:'marble.png', ffield:v3(0), offset:v3(0,0,.11),
                  sample:true, lock:()=>0.99 }
 
-const CUBE = { url:'cube.obj', sample:true, color:v4(.3,.3,.8,.7), fext:v3(0), scale:v3(1) }
+const CUBE = { url:'cube.obj', offset:v3(0,0,4), sample:true, dense:true, color:v4(0), shape:0}
 
-const TRI = { url:'tri.obj', sample:true, color:v4(0.1,0.4,0.6,0.7), fext:v3(0) }
+const TRI = { url:'tri.obj', sample:true, color:v4(0.1,0.4,0.6,0.7), ffield:v3(0) }
 
-const WALL = { url:'wall2.obj', fext:v3(0), sample:true, color:v4(0.2,0.2,0.2,.4), lock:()=>0.99 }
+const WALL = { url:'wall2.obj', ffield:v3(0), sample:true, color:v4(0.2,0.2,0.2,.4), lock:()=>0.99,
+             particleColor: v4(0,0,0,0) }
 
-const TETRA = { url:'tetra.obj', fext:v3(0,0,0), color:v4(1,1,1,1), fshape:0,
-                sample:true, lock:()=>0.9 }
 
-const KNOT = { url:'knot.obj', color:v4(.6,.3,.3,.8), fext:v3(0), offset:v3(0,0,1), sample:true, scale:v3(1)}
+const KNOT = { url:'knot.obj', color:v4(.6,.3,.3,1), offset:v3(0,0,3), sample:true, scale:v3(1)}
 
-const HELPER = { url: 'helper.obj', scale: v3(2,2,2), sample: false, fext: v3(0) }
+const HELPER = { url: 'helper.obj', scale: v3(2,2,2), sample: false, ffield: v3(0) }
 
 
 const lightUpd = (orig,cur,t,off) => {
@@ -96,28 +82,22 @@ const lightUpd = (orig,cur,t,off) => {
     cur.pos.y = R*((1-k)*sin(t+off) - l*k*sin(t*(1-k)/k+off))
 }
 const LIGHTS = [
-    { power: 2, color: v3(1,.85,.6), pos:v3(0,0,2.3), update(l, t) { lightUpd(this,l,t,PI/4) }},
-    { power: 2, color: v3(1,.85,.6), pos:v3(0,0,2.3), update(l, t) { lightUpd(this,l,t,3*PI/4) }},
-    { power: 2, color: v3(1,.85,.6), pos:v3(0,0,2.3), update(l, t) { lightUpd(this,l,t,5*PI/4) }},
-    { power: 2, color: v3(1,.85,.6), pos:v3(0,0,2.3), update(l, t) { lightUpd(this,l,t,7*PI/4) }},
+    { power: 1.5, color: v3(1,.85,.6), pos:v3(2,2,2.3) },
+    { power: 1.5, color: v3(1,.85,.6), pos:v3(2,-2,2.3) },
+    { power: 1.5, color: v3(1,.85,.6), pos:v3(-2,2,2.3) },
+    { power: 1.5, color: v3(1,.85,.6), pos:v3(-2,-2,2.3) },
 ]
       
 const MESHES = [
-    GROUND,
-    TORUS
-
-    //{ url:objfile, color:v4(1,0,0,1), fext:v3(0), offset:v3(-2.5,3,0) },
-    //{ url:objfile, color:v4(1,.5,0,.5), fext:v3(0), offset:v3(-1.5,3.5,0) },
-    //{ url:objfile, color:v4(1,1,0,1), fext:v3(0), offset:v3(-.5,4,0) },
-    //{ url:objfile, color:v4(0,1,0,.5), fext:v3(0), offset:v3(.5,4.5,0) },
-    //{ url:objfile, color:v4(0,0,1,.5), fext:v3(0), offset:v3(1.5,5,0) },
-    //{ url:objfile, color:v4(1,0,1,1), fext:v3(0), offset:v3(2.5,5.5,0) },
+    //QUINN,HAND,
+    KNOT, HAND //GROUND,
+    //{ url:objfile, color:v4(1,0,1,1), ffield:v3(0), offset:v3(2.5,5.5,0) },
     //{url:'particle.obj', sample:false, offset:v3(0,0,1)},
-    //{url:'particle.obj', sample:false, offset:v3(.1,0,0), fext: v3(0)},
+    //{url:'particle.obj', sample:false, offset:v3(.1,0,0), ffield: v3(0)},
     
 ]
 
-const clock = () => SPEED*performance.now()/1000
+const clock = () => phys.speed*performance.now()/1000
 
 export const Mesh = GPU.struct({
     name: 'Mesh',
@@ -128,8 +108,8 @@ export const Mesh = GPU.struct({
         ['pi', u32],
         ['pcolor', V4],
         ['pf', u32],
-        ['fext', V3],
-        ['fshape', f32],
+        ['ffield', V3],
+        ['shape', f32],
         ['color', V4],        
         ['rot', M3],
         ['padding', GPU.array({ type: u32, length: 28 })]        
@@ -163,9 +143,11 @@ export const Particle = GPU.struct({
         ['q', V3],
         ['lock',f32],
         ['s0', V3],
+        ['nedges', u32],
         ['grad0', V3],
         ['grad', V3],
-        ['nn', GPU.array({ type: u32, length: MAXNN })],
+        ['edges', GPU.array({ type:u32, length:6})],
+        ['nn', GPU.array({ type:u32, length:MAXNN })],
     ]
 })
 
@@ -175,11 +157,13 @@ export const Camera = GPU.struct({
     fields: [
         ['projection', M4],
         ['modelview', M4],
+        ['inverse', M4],
         ['pos', V3],
         ['selection', i32],
         ['forward', V3],
         ['r', f32],
         ['ratio', f32],
+        ['t', f32]
     ]
 })
 
@@ -197,13 +181,16 @@ export const Params = GPU.struct({
     name: 'Params',
     fields: [
         ['camPos', V3],
-        ['fcol', f32],
-        ['fshape', f32],
+        ['ffield', V3],
+        ['collision', f32],
+        ['spring', f32],
+        ['shape', f32],
         ['friction', f32],
+        ['ground', u32],
+        ['grabbing', i32],
         ['t',f32],
     ]
 })
-
 
 export const TriVert = GPU.struct({
     name: 'TriVert',
@@ -237,7 +224,7 @@ export class Sim {
 
     async init(width, height, ctx) {
         const gpu = new GPU()
-        await gpu.init(width,height,ctx,renderPref)
+        await gpu.init(width,height,ctx,render)
 
         this.camPos = CAM_POS
         this.camLR = 0
@@ -246,12 +233,14 @@ export class Sim {
         const objs = []
         for (const opt of MESHES) {
             const obj = await this.loadObj(opt)
+            obj.particleColor ||= particleColors[objs.length % 3]
             if (obj.sample) {
-                const grid = new VoxelGrid(obj.verts, obj.faces, D)
+                const grid = new VoxelGrid(obj.verts, obj.faces, phys.d)
                 grid.voxelize()
                 obj.virts = grid.samples
                 obj.virtgrads = grid.gradients
                 obj.vertToVirt = grid.vertidxs
+                obj.partEdges = grid.edges
             }
             objs.push(obj)
         }
@@ -275,10 +264,10 @@ export class Sim {
             mesh.pi = cnts.particles
             mesh.color = obj.color
             mesh.pcolor = obj.particleColor
-            mesh.fext = obj.fext
+            mesh.ffield = obj.ffield
             mesh.tex = -1
             mesh.rot = m3([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
-            mesh.fshape = obj.fshape
+            mesh.shape = obj.shape
             if (obj.possess)
                 possessed.push(mesh)                
             if (obj.bitmap) {
@@ -297,7 +286,15 @@ export class Sim {
                 p.si = p.s0 = pos
                 p.mesh = meshidx
                 p.lock = obj.lock(pos)
-                if (obj.virtgrads) p.grad0 = p.grad = obj.virtgrads[i]
+                if (obj.sample) {
+                    p.grad0 = p.grad = obj.virtgrads[i]
+                    const edges = obj.partEdges[i]
+                    for (const j of range(edges.length))
+                        p.edges[j] = edges[j] + mesh.pi
+                    p.nedges = edges.length
+                }
+                
+                
             }
             mesh.pf = cnts.particles
             for (const tri of obj.faces) {
@@ -336,9 +333,17 @@ export class Sim {
                 unsorted.splice(found, 1)
             }
             if (!cycle) sorted.push(nexti)
-            verts[v].nedges = sorted.length
+            const vert = verts[v]
+            vert.nedges = sorted.length
             for (let e of range(sorted.length))
-                verts[v].edges[e] = sorted[e]
+                vert.edges[e] = sorted[e]
+            if (!objs[vert.mesh].sample) {
+                p = particles[vert.particle]
+                p.nedges = sorted.length
+                for (let e of range(sorted.length))
+                    p.edges[e] = verts[sorted[e]].particle
+            }
+            
         }
 
         for (const mesh of meshes) {
@@ -354,9 +359,12 @@ export class Sim {
             
 
         const params = Params.alloc()
-        params.fcol = FCOL
-        params.fshape = FSHAPE
-        params.friction = FRICTION
+        params.collision = phys.collision
+        params.shape = phys.shape
+        params.friction = phys.friction
+        params.spring = phys.spring
+        params.ground = render.ground ? 1 : 0
+        params.grabbing = -1
 
         const camera = Camera.alloc()
         const lights = GPU.array({ type: Light, length: LIGHTS.length }).alloc(LIGHTS.length)
@@ -365,7 +373,7 @@ export class Sim {
             lights[i].pos = l.pos
             lights[i].power = l.power
         }
-
+        
 
         const threads = gpu.threads
         const pd = ceil(particles.length/gpu.threads)
@@ -373,7 +381,7 @@ export class Sim {
         const td = ceil(tris.length/gpu.threads)
         
         const buflist = [
-            gpu.buf({ label:'particles', data:particles, usage: 'STORAGE|COPY_SRC|VERTEX' }),
+            gpu.buf({ label:'particles', data:particles, usage: 'STORAGE|COPY_SRC|COPY_DST|VERTEX' }),
             gpu.buf({ label:'vertices', data:verts, usage: 'STORAGE|VERTEX|COPY_SRC' }),
             gpu.buf({ label:'meshes', data:meshes, usage: 'STORAGE|COPY_DST|COPY_SRC' }),
             gpu.buf({ label:'camera', data:camera, usage: 'UNIFORM|COPY_DST' }),
@@ -400,18 +408,25 @@ export class Sim {
     resize(width, height) {
         this.width = width
         this.height = height
-        this.gpu.configure(this.ctx,width,height,renderPref)
+        this.gpu.configure(this.ctx,width,height,render)
     }
 
     camFwd() {
-        return v3(sin(this.camLR) * cos(this.camUD), cos(this.camLR) * cos(this.camUD), sin(this.camUD))
+        return v3(sin(this.camLR) * cos(this.camUD), cos(this.camLR) * cos(this.camUD), sin(this.camUD)).normalized()
+    }
+
+    camAxes() {
+        let fwd = this.camFwd()
+        let right = fwd.cross(v3(0,0,1))
+        let up = right.cross(fwd)
+        return { fwd, up, right }
     }
     
     async loadObj(opt) {
         const obj = {
             offset: v3(0), scale: v3(1),            
-            color: v4(1), particleColor,
-            sample: false, fext: FEXT, lock: ()=>0, fshape: 1.0
+            color: v4(1), 
+            sample: false, ffield: v3(0,0,phys.gravity), lock: ()=>0, shape: 1
         }
         Object.assign(obj, opt)
         obj.virts = []
@@ -439,21 +454,80 @@ export class Sim {
 
     async run() {
         const { gpu, compute, render } = this
-        let lastStamp = null
-        
-        while (true) {
+        await gpu.dev.queue.onSubmittedWorkDone()       
+        let frameratio = 5
+        const dbg = _('#dbg')
+        const step = async stamp => {
+            const thefuture = new Promise(resolve => {
+                requestAnimationFrame(nextStamp => {
+                    resolve(nextStamp - stamp)
+                    step(nextStamp)
+                })
+            })
+            const tstart = clock()
             await render.step()
-            const stamp = performance.now()/1000
-            if (lastStamp != null) {
-                const tstep = (stamp - lastStamp) / FRAMERATIO
-                for (let i of range(FRAMERATIO))
-                    await compute.step(tstep)
-            }
+            for (let i of range(frameratio))
+                await compute.step(1/60/frameratio)
             await gpu.dev.queue.onSubmittedWorkDone()
-            lastStamp = stamp
+            let twork = clock() - tstart
+            let tframe = await thefuture
+            let surplus = tframe - 1000*twork
+            frameratio =clamp(frameratio + (surplus > 1 ? 1 : -1), 3, phys.frameratio)
+            
         }
-        
+        requestAnimationFrame(step)
     }
+
+    clipToRay(x,y) {
+        const cam = this.camera
+        let clip = v4(2*x/this.width - 1, 1 - 2*y/this.height,-1,1)
+        let eye = cam.projection.inverse().transform(clip)
+        let ray = cam.modelview.inverse().transform(v4(eye.x,eye.y,-1,0))
+        return v3(ray.x,ray.y,ray.z).normalized()
+    }
+    
+    async grabParticle(x, y) {
+        const { gpu, camera, params } = this
+        let ray = this.clipToRay(x,y)
+        let rsq = (phys.d)**2
+        let particles = new Particles(await gpu.read(this.bufs.particles))
+        let hitdists = []
+        for (const [i,p] of enumerate(particles)) {
+            let co = camera.pos.sub(p.si)
+            let b = ray.dot(co)
+            let discrim = b*b - co.dot(co) + rsq
+            if (discrim < 0) continue
+            let dist = -b - sqrt(discrim)
+            if (dist > 0) hitdists.push([i,dist])
+        }
+        camera.selection = -1
+        params.grabbing = -1
+        if (hitdists.length == 0) return
+        hitdists.sort((a,b) => a[1]-b[1])
+        camera.selection = hitdists[0][0]
+        params.grabbing = hitdists[0][0]
+        let vToPart = ray.mulc(hitdists[0][1])
+        this.grabDepth = this.camFwd().dot(vToPart)
+    }
+
+    async moveParticle(x, y) {
+        const { camera, gpu, bufs, params } = this
+        if (params.grabbing < 0) return
+        let buf1 = gpu.offset(bufs.particles, Particles.stride*camera.selection)
+        let buf2 = gpu.chop(buf1, Particle.size)
+        let p = new Particle(await this.gpu.read(buf2))
+        let ray = this.clipToRay(x,y)
+        let t = this.grabDepth / ray.dot(this.camFwd())
+        let pos = camera.pos.add(ray.mulc(t))
+        //p.v = pos.sub(p.si).divc(params.t)
+        p.si = pos
+        gpu.write(buf2, p)
+    }
+
+    async dropParticle() {
+        this.params.grabbing = -1
+    }
+    
 }
 
 
@@ -466,7 +540,7 @@ export class Compute {
         const { gpu, verts, particles, meshes, params, bufs, tris, pd } = this.sim
         if (particles.length == 0) return
         const threads = gpu.threads
-        const wgsl = (await fetchtext('./compute.wgsl')).interp({threads, MAXNN, D})
+        const wgsl = (await fetchtext('./compute.wgsl')).interp({threads, MAXNN, D:phys.d})
         
         const shader = await gpu.shader({ compute: true, wgsl: wgsl, defs: [Particle, Mesh, Params],
                                           storage: { particles:Particles, meshes:Meshes, sorted:u32array, centroidwork:V3Array,
@@ -483,7 +557,7 @@ export class Compute {
         const shapematch_init = gpu.computePipe({ shader, entryPoint:'shapematch_init', binds: ['meshes','particles','shapework'] })
         const shapematch = gpu.computePipe({ shader, entryPoint:'shapematch', binds: ['meshes','shapework'] })
         const grads = gpu.computePipe({ shader, entryPoint:'grads', binds: ['particles','meshes'] })
-        const collisions = gpu.computePipe({ shader, entryPoint:'collisions', binds: ['particles','params'] })
+        const collisions = gpu.computePipe({ shader, entryPoint:'collisions', binds: ['particles','meshes','params'] })
         const project = gpu.computePipe({ shader, entryPoint:'project', binds: ['particles','meshes','params'] })
 
         const shapestage = []
@@ -537,10 +611,10 @@ export class Compute {
             gpu.timestamp('shapematch'),
             gpu.computePass({ pipe:grads, dispatch:pd, binds:{ particles:bufs.particles, meshes:bufs.meshes }}),
             gpu.timestamp('gradients'),
-            gpu.computePass({ pipe:collisions, dispatch:pd, binds:{ particles:bufs.particles, params:bufs.params } }),
-            gpu.computePass({ pipe:collisions, dispatch:pd, binds:{ particles:bufs.particles, params:bufs.params } }),
-            gpu.computePass({ pipe:collisions, dispatch:pd, binds:{ particles:bufs.particles, params:bufs.params } }),
-            gpu.timestamp('stabilize collisions'),
+            gpu.computePass({ pipe:collisions, dispatch:pd, binds:{ particles:bufs.particles, params:bufs.params, meshes:bufs.meshes } }),
+            gpu.computePass({ pipe:collisions, dispatch:pd, binds:{ particles:bufs.particles, params:bufs.params, meshes:bufs.meshes } }),
+            gpu.computePass({ pipe:collisions, dispatch:pd, binds:{ particles:bufs.particles, params:bufs.params, meshes:bufs.meshes } }),
+            gpu.timestamp('stabilize'),
             gpu.computePass({ pipe:project, dispatch:pd, binds:{ particles:bufs.particles, meshes:bufs.meshes, params:bufs.params } }),
             gpu.timestamp('project'),
 
@@ -548,15 +622,14 @@ export class Compute {
         
         this.batch = gpu.encode(cmds)
         this.fwdstep = false
-        this.tstart = this.tsim = this.tlast = clock()
+        this.tstart = this.tlast = clock()
         this.frames = 0
-        this.tsteps = []
         this.profiles = []
 
     }
 
     async stats() {
-        let ret = { kind:'compute', tstart:this.tstart, tlast:this.tlast, frames:this.frames, tsim:this.tsim }
+        let ret = { kind:'phys', fps: this.frames / (this.tlast - this.tstart) }
         if (this.batch) {
             let data = new BigInt64Array(await this.sim.gpu.read(this.batch.stampBuf))
             let labels = this.batch.stampLabels
@@ -567,47 +640,27 @@ export class Compute {
         return ret
     }
         
-    get paused() {
-        return localStorage.paused == 'true'
-    }
-
-    set paused(val) {        
-        localStorage.paused = val ? 'true' : ''
-    }
-
     async step(tstep) {
         const { gpu, particles, bufs, meshes, possessed, params, camPos } = this.sim
         if (particles.length == 0) return
-
-        if (this.tsteps.length > 10)
-            this.tsteps.shift()
-        this.tsteps.push(tstep)
-        const tsmooth = this.tsteps.sum()/this.tsteps.length
-
-        if (!this.paused || this.fwdstep) {
+        if (!phys.paused || this.fwdstep) {
             for (const idx of possessed) {
-                gpu.write({ buf:bufs.meshes, data: meshes, arrayIdx: idx, field: Mesh.ci})
-                gpu.write({ buf:bufs.meshes, data: meshes, arrayIdx: idx, field: Mesh.rot})
+                let buf = gpu.chop(gpu.offset(bufs.meshes, Meshes.stride * idx), Mesh.size)
+                gpu.write(buf, meshes[idx])
             }
-            params.fcol = localStorage.fcol == undefined ? FCOL : parseFloat(localStorage.fcol)
-            params.fshape = localStorage.fshape == undefined ? FSHAPE : parseFloat(localStorage.fshape)
-            params.friction = localStorage.friction == undefined ? FRICTION : parseFloat(localStorage.friction)           
-            params.t = tsmooth
+            params.fcol = phys.collision
+            params.shape = phys.shape
+            params.friction = phys.friction
+            params.spring = phys.spring
+            params.t = tstep
             params.camPos = camPos
-            gpu.write({ buf:bufs.params, data: params })
+            params.ground = render.ground ? 1 : 0
+            gpu.write(bufs.params, params )
             this.batch.execute()
         }
-        this.tsim += tsmooth
         this.tlast = clock()
         this.frames++        
-        
-        
-                        
         this.fwdstep = false        
-        
-        
-
-        
     }
     
 }
@@ -622,9 +675,10 @@ export class Render {
     async setup() {
         const { ctx, gpu, meshes, bufs, ntris, tris, bitmaps, particles, verts, camera, lights, possessed, vd, td, width, height } = this.sim
 
-        gpu.configure(ctx, width, height, renderPref)
+        gpu.configure(ctx, width, height, render)
+        render.watch(render.keys.filter(key => key != 'fov'), () => { this.reset = true })
         
-        camera.r = D/2
+        camera.r = phys.d/2
         camera.selection = -1
 
         let wgsl = (await fetchtext('./prerender.wgsl')).interp({threads: gpu.threads}) 
@@ -638,38 +692,7 @@ export class Render {
                                           storage:{ particles:Particles, meshes:Meshes, vertices:Vertices },
                                           uniform:{ camera:Camera, lights:lights.constructor, },
                                           textures:{ tex:{ name:'texture_2d_array<f32>' } },
-                                          samplers:{ samp:{ name:'sampler' } } })                         
-
-        const partPipe = gpu.renderPipe({
-            shader, vert:'vert_part', frag:'frag_part', binds: ['meshes', 'camera', 'lights'], topology: 'triangle-strip',
-            vertBufs: [{ buf:bufs.particles, arrayStride:Particles.stride, stepMode: 'instance',
-                         attributes: [{ shaderLocation:0, offset:Particle.si.off, format:'float32x3' },
-                                      { shaderLocation:1, offset:Particle.mesh.off, format:'uint32' }]}] })
-        const lightPipe = gpu.renderPipe({ shader, vert:'vert_light', frag:'frag_light', binds: ['camera','lights'],
-                                           topology: 'triangle-strip', atc: false, color_src: 'one', color_dst:'one',
-                                           alpha_src:'one', alpha_dst:'one' })
-        const surfPipe = gpu.renderPipe({
-            shader, vert:'vert_surf', frag:'frag_surf',
-            binds: ['meshes', 'camera', 'lights', 'tex', 'samp'], 
-            vertBufs: [{ buf:bufs.tris, arrayStride:TriVert.size,
-                         attributes: [{ shaderLocation:0, offset:TriVert.pos.off, format:'float32x3' },
-                                      { shaderLocation:1, offset:TriVert.norm.off, format:'float32x3' },
-                                      { shaderLocation:2, offset:TriVert.mesh.off, format:'uint32' },
-                                      { shaderLocation:3, offset:TriVert.uv.off, format:'float32x2' }]}]
-        })
-        const axisPipe = gpu.renderPipe({ shader, vert:'vert_axis', frag:'frag_axis', binds:['camera'], topology:'line-list' })
-        const normPipe = gpu.renderPipe({
-            shader, vert:'vert_norm', frag:'frag_norm', binds: ['camera'], topology: 'line-list',
-            vertBufs: [{ buf:bufs.tris, arrayStride:TriVert.size, stepMode: 'instance',
-                         attributes: [{ shaderLocation:0, offset:TriVert.pos.off, format:'float32x3' },
-                                      { shaderLocation:1, offset:TriVert.norm.off, format:'float32x3' }]}]
-        })
-        const gradPipe = gpu.renderPipe({
-            shader, vert:'vert_norm', frag:'frag_norm', binds: ['camera'], topology: 'line-list',
-            vertBufs: [{ buf:bufs.particles, arrayStride:Particles.stride, stepMode: 'instance',
-                         attributes: [{ shaderLocation:0, offset:Particle.si.off, format:'float32x3' },
-                                      { shaderLocation:1, offset:Particle.grad.off, format:'float32x3' }]}]
-        })
+                                          samplers:{ samp:{ name:'sampler' } } })
 
         let tex = gpu.texture(bitmaps)
         let samp = gpu.sampler()       
@@ -684,22 +707,62 @@ export class Render {
             cmds.push(gpu.computePass({ pipe:normals, dispatch:vd, binds:{ vertices:bufs.vertices, particles:bufs.particles } }))
             cmds.push(gpu.timestamp('vertexnormals'))
         }
+        
         if (td > 0) {
             const update_tris = gpu.computePipe({ shader: preShader, entryPoint:'update_tris', binds: ['tris','vertices'] })
             cmds.push(gpu.computePass({ pipe:update_tris, dispatch:td, binds:{ vertices:bufs.vertices, tris:bufs.tris } }))
             cmds.push(gpu.timestamp('vertexnormals'))
         }
 
-        
-        const draws = [
-            gpu.draw({ pipe:surfPipe, dispatch:ntris*3, binds:{ meshes: bufs.meshes, camera:bufs.camera, lights:bufs.lights, tex, samp }}),
-            gpu.draw({ pipe:partPipe, dispatch:[8, particles.length], binds:{ meshes: bufs.meshes, camera:bufs.camera, lights:bufs.lights }}),
-        ]
+        const draws = []
 
-        if (renderPref.axes) draws.push(gpu.draw({ pipe:axisPipe, dispatch:[2, 3], binds:{ camera:bufs.camera }}))
-        if (renderPref.normals) draws.push(gpu.draw({ pipe:normPipe, dispatch:[2, ntris*3], binds:{ camera:bufs.camera }}))
-        if (renderPref.grads) draws.push(gpu.draw({ pipe:gradPipe, dispatch:[2, particles.length], binds:{ camera:bufs.camera }}))
+       
+        if (render.ground) {
+            const gndPipe = gpu.renderPipe({ shader, entry:'ground', cullMode:'none', binds:['camera','lights'], topology:'triangle-strip' })
+            draws.push(gpu.draw({ pipe:gndPipe, dispatch:4, binds:{ camera:bufs.camera, lights:bufs.lights }}))
+        }
+
+        if (ntris > 0) {
+            const surfPipe = gpu.renderPipe({ shader, entry:'surface', binds: ['meshes', 'camera', 'lights', 'tex', 'samp'], 
+                                              vertBufs: [{ buf:bufs.tris, arrayStride:TriVert.size,
+                                                           attributes: [{ shaderLocation:0, offset:TriVert.pos.off, format:'float32x3' },
+                                                                        { shaderLocation:1, offset:TriVert.norm.off, format:'float32x3' },
+                                                                        { shaderLocation:2, offset:TriVert.mesh.off, format:'uint32' },
+                                                                        { shaderLocation:3, offset:TriVert.uv.off, format:'float32x2' }]}]})
+            draws.push(gpu.draw({ pipe:surfPipe, dispatch:ntris*3, binds:{ meshes: bufs.meshes, camera:bufs.camera, lights:bufs.lights, tex, samp }}))
+        }
+        if (render.particles && particles.length > 0) {
+            const partPipe = gpu.renderPipe({ shader, entry:'particle', binds: ['meshes', 'camera', 'lights'], topology: 'triangle-strip',
+                                              vertBufs: [{ buf:bufs.particles, arrayStride:Particles.stride, stepMode: 'instance',
+                                                           attributes: [{ shaderLocation:0, offset:Particle.si.off, format:'float32x3' },
+                                                                        { shaderLocation:1, offset:Particle.mesh.off, format:'uint32' }]}] })
+            draws.push(gpu.draw({ pipe:partPipe, dispatch:[8, particles.length], binds:{ meshes: bufs.meshes, camera:bufs.camera, lights:bufs.lights }}))
+
+        }
+        if (render.axes) {
+            const axesPipe = gpu.renderPipe({ shader, entry:'axes', binds:['camera'], topology:'line-list' })
+            draws.push(gpu.draw({ pipe:axisPipe, dispatch:[2, 3], binds:{ camera:bufs.camera }}))
+        }
+        if (render.normals) {
+            const normPipe = gpu.renderPipe({ shader, entry:'normals', binds: ['camera'], topology: 'line-list',
+                                              vertBufs: [{ buf:bufs.tris, arrayStride:TriVert.size, stepMode: 'instance',
+                                                           attributes: [{ shaderLocation:0, offset:TriVert.pos.off, format:'float32x3' },
+                                                                        { shaderLocation:1, offset:TriVert.norm.off, format:'float32x3' }]}]})
+            draws.push(gpu.draw({ pipe:normPipe, dispatch:[2, ntris*3], binds:{ camera:bufs.camera }}))
+
+        }
+        if (render.grads) {
+            const gradPipe = gpu.renderPipe({ shader, entry:'normals', binds: ['camera'], topology: 'line-list',
+                                              vertBufs: [{ buf:bufs.particles, arrayStride:Particles.stride, stepMode: 'instance',
+                                                           attributes: [{ shaderLocation:0, offset:Particle.si.off, format:'float32x3' },
+                                                                        { shaderLocation:1, offset:Particle.grad.off, format:'float32x3' }]}]})
+            draws.push(gpu.draw({ pipe:gradPipe, dispatch:[2, particles.length], binds:{ camera:bufs.camera }}))
+        }
+
+        const lightPipe = gpu.renderPipe({ shader, entry:'lights', binds: ['camera','lights'], topology: 'triangle-strip',
+                                           atc: false, color_src: 'one', color_dst:'one', alpha_src:'one', alpha_dst:'one' })
         draws.push(gpu.draw({ pipe:lightPipe, dispatch:[14, lights.length], binds: { camera:bufs.camera, lights:bufs.lights }}))
+
         cmds.push(gpu.renderPass(draws))
         cmds.push(gpu.timestamp('draws'))
 
@@ -710,7 +773,7 @@ export class Render {
     }
 
     async stats() {
-        const ret = { kind:'render', tstart:this.tstart, tlast:this.tlast, frames:this.frames }
+        const ret = { kind:'render', fps: this.frames/(this.tlast - this.tstart) }
         if (this.batch) {
             let data = new BigInt64Array(await this.sim.gpu.read(this.batch.stampBuf))
             let labels = this.batch.stampLabels
@@ -728,39 +791,30 @@ export class Render {
             await this.setup()
             this.reset = false
         }
-        
+
+        camera.t = performance.now()/1000
         camera.pos = camPos
         camera.ratio = width/height
-        camera.projection = M4.perspective(FOV, camera.ratio, .01, 200)
+        camera.projection = M4.perspective(render.fov, camera.ratio, .01, 10000)
         camera.forward = this.sim.camFwd()
         camera.modelview = M4.look(camPos, camera.forward, UP)
-        gpu.write({ buf:bufs.camera, data: camera})
+        camera.inverse = camera.modelview.mul(camera.projection).inverse()
+        gpu.write(bufs.camera, camera)
         
-        const t = performance.now()/1000
-        for (const [i,l] of enumerate(LIGHTS))
-            l.update(lights[i], t)        
-        gpu.write({ buf:bufs.lights, data: lights})
+        gpu.write(bufs.lights, lights)
 
         params.camPos = camPos
-        gpu.write({ buf:bufs.params, data: params })
+        gpu.write(bufs.params, params)
         
         this.batch.execute()
         this.frames++
         this.tlast = clock()
 
-
-
+        //globalThis.tris = new Triangles(await gpu.read(bufs.tris))
+        //globalThis.particles = new Particles(await gpu.read(bufs.particles))
+        //globalThis.verts = new Vertices(await gpu.read(bufs.vertices))
+        //globalThis.meshes = new Meshes(await gpu.read(bufs.meshes))
         
-
-
-        //let buf = await gpu.read(bufs.tris)
-        //globalThis.tris = new Triangles(buf)
-        //buf = await gpu.read(bufs.particles)
-        //globalThis.particles = new Particles(buf)
-        //buf = await gpu.read(bufs.vertices)
-        //globalThis.verts = new Vertices(buf)
-        //buf = await gpu.read(bufs.meshes)
-        //globalThis.meshes = new Meshes(buf)
             
         
     }

@@ -2,13 +2,11 @@
 for (const prop of Object.getOwnPropertyNames(Math))
     globalThis[prop] = Math[prop]
 
-export const I32MIN = -(2**31)
-export const I32MAX = 2**31-1
-export const MB = 2**20
-export const GB = 2**30
-
+globalThis.round = (x,n = 0) => Math.round(x * 10**n) / 10**n
 export const roundUp = (n,k) => ceil(n/k)*k
 export const roundUpPow = (n,e) => e ** ceil(log(n)/log(e))
+export const I32MIN = -(2**31)
+export const I32MAX = 2**31-1
 
 export const range = function* (a,b,step) {
     const [start,stop] = b == undefined ? [0,a] : [a,b]
@@ -58,6 +56,14 @@ Array.prototype.sum = function(fn, init) {
     fn ||= x=>x
     if (init == undefined) init = 0
     return this.reduce((a,b) => a + fn(b), init)
+}
+
+Array.prototype.max = function() {
+    return this.reduce((a,b) => max(a,b), -Infinity)
+}
+
+Array.prototype.min = function() {
+    return this.reduce((a,b) => min(a,b), Infinity)
 }
 
 
@@ -139,7 +145,59 @@ export const hijack = (cls, meth, replacement) => {
 
 
 
-
+export class Preferences {
+    constructor(name) {
+        this.name = name
+        this.data = JSON.parse(localStorage[name] || '{}')
+        this.keys = []
+        this.keyWatch = {}
+        this.ival = {}
+        this.lo = {}
+        this.hi = {}
+        this.step = {}
+        this.opts = {}
+        this.type = {}
+    }
+    addNum(key, ival, lo, hi, step) {
+        this.lo[key] = lo
+        this.hi[key] = hi
+        this.step[key] = step
+        this.type[key] = 'num'
+        this.addField(key,ival)
+    }
+    addChoice(key, ival, opts) {
+        this.opts[key] = opts
+        this.type[key] = 'choice'
+        this.addField(key,ival)
+    }
+    addBool(key, ival) {
+        this.type[key] = 'bool'
+        this.addField(key,ival)
+    }
+    addField(key,ival) {
+        this.keys.push(key)
+        this.ival[key] = ival
+        this.keyWatch[key] = []
+        Object.defineProperty(this, key, { 
+            get: () => this.getval(key),
+            set: (val) => this.setval(key,val)
+        })
+        if (!(key in this.data)) this[key] = ival        
+    }
+    getval(key) {
+        return this.data[key]
+    }
+    setval(key,val) {
+        this.data[key] = val
+        localStorage[this.name] = JSON.stringify(this.data)
+        for (const cb of this.keyWatch[key])
+            cb(val)
+    }
+    watch(keys, callback) {
+        for (const key of keys)
+            this.keyWatch[key].push(callback)
+    }
+}
 
 
 

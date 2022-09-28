@@ -6,13 +6,10 @@ fn vertpos(@builtin(global_invocation_id) gid:vec3<u32>) {
     let nverts = arrayLength(&vertices);
     if (vid >= nverts) { return; }
     let v = &vertices[vid];
-    let pid = (*v).particle;
-    if (pid >= 0) {
-        (*v).pos = particles[pid].si;
-    } else {
-        let m = &meshes[(*v).mesh];
-        (*v).pos = (*m).rot * (*v).q + (*m).ci;
-    }
+    let p = &particles[(*v).particle];
+    let m = &meshes[(*v).mesh];
+    let goal_delta = (*p).si - ((*m).ci + (*m).rot * (*p).q);
+    (*v).pos = (*m).ci + (*m).rot * (*v).q +  goal_delta;
 }
 
 fn closest_tri_delta(a:v3, b:v3, c:v3, p:v3) -> v3 {

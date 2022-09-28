@@ -1,6 +1,6 @@
 
 const { abs, cos, sin, acos, asin, cbrt, sqrt, PI, random, round, ceil, floor, tan, max, min, log2 } = Math
-import * as util from './utils.mjs'
+import * as util from './utils.js'
 Object.assign(globalThis, util)
 
 
@@ -33,7 +33,7 @@ export const GPU = class GPU {
         const limits = {}, features = []
         for (const feature of adapter.features.keys())
             if (feature != 'multi-planar-formats' && feature != 'clear-texture')
-                features.push(feature)        
+               features.push(feature)        
         for (const prop of Object.getOwnPropertyNames(adapter.limits.constructor.prototype)) {
             if (prop == 'maxInterStageShaderVariables') continue
             const val = adapter.limits[prop]
@@ -57,14 +57,14 @@ export const GPU = class GPU {
     }
     
     configure(ctx, width, height, pref) {
-        this.pref = pref = { ...pref }
+        this.pref = pref
         this.ctx = ctx
         ctx.configure({ device: this.dev, format:pref.format, alphaMode:pref.alpha_mode, colorSpace: 'srgb' })
         const size = {width, height}
         if (this.depthTex) this.depthTex.destroy()
         if (this.colorTex) this.colorTex.destroy()
         const usage = GPUTextureUsage.RENDER_ATTACHMENT
-        this.depthTex = this.dev.createTexture({ size, sampleCount: pref.samples, format:pref.depth_format, usage })
+        this.depthTex = this.dev.createTexture({ size, sampleCount: pref.samples, format:pref.depth_fmt, usage })
         this.colorTex = this.dev.createTexture({ size, sampleCount: pref.samples, format:pref.format, usage })
     }
 
@@ -72,11 +72,6 @@ export const GPU = class GPU {
         this.dev.destroy()
     }
     
-    write(args) {
-        let off = (args.field ? args.field.off : 0) + (args.arrayIdx ? args.arrayIdx * args.data.constructor.stride : 0)
-        let size = args.field ? args.field.type.size : args.data.byteLength
-        this.dev.queue.writeBuffer(args.buf.buffer, off, args.data.buffer, off + args.data.byteOffset, size)
-    }
     
     buf(args) {
         if ('data' in args) [args.type, args.length] = [args.data.constructor, args.data.length]
@@ -90,15 +85,40 @@ export const GPU = class GPU {
             new Uint8Array(args.buffer.getMappedRange()).set(new Uint8Array(args.data.buffer))
             args.buffer.unmap()
         }
-        args.resource = {buffer: args.buffer}
+        args.resource = {buffer: args.buffer, offset: 0, size: args.size}
         return args
     }
 
     offset(buf,off) {
-        const resource = { ...buf.resource, offset: off }
-        return { ...buf, resource }
+        const resource = { ...buf.resource, offset: off, size:max(0,buf.size - off) }
+        return { ...buf, resource, size: resource.size }
     }
 
+    chop(buf,size) {
+        const resource = { ...buf.resource, size }
+        return { ...buf, resource, size }
+    }
+
+    async read(buf) {
+        let copyBuf = this.copyBufs.pop()
+        if (!copyBuf || copyBuf.size < buf.size) {
+            if (copyBuf) copyBuf.buffer.destroy()
+            copyBuf = this.buf({length:buf.size/4, type:u32, usage:'MAP_READ|COPY_DST' })
+        }
+        const cmds = this.dev.createCommandEncoder()
+        cmds.copyBufferToBuffer(buf.buffer, buf.resource.offset, copyBuf.buffer, 0, buf.size)
+        this.dev.queue.submit([cmds.finish()])
+        await copyBuf.buffer.mapAsync(GPUMapMode.READ, 0, buf.size)
+        const data = new Uint8Array(copyBuf.buffer.getMappedRange(0,buf.size)).slice()
+        copyBuf.buffer.unmap()
+        this.copyBufs.push(copyBuf)
+        return data.buffer
+    }
+
+    write(buf, data) {
+        this.dev.queue.writeBuffer(buf.buffer, buf.resource.offset, data.buffer, data.byteOffset, buf.size)
+    }
+    
     async shader(args) {
         const { compute, wgsl, defs, storage, uniform, textures, samplers } = args
         const binds = []
@@ -144,13 +164,13 @@ export const GPU = class GPU {
     renderPipe(args) {
         const pref = this.pref
         const buffers = args.vertBufs ||= []
-        let { shader, frag, vert, vertBufs, binds, topology, depthWriteEnabled, depthCompare, cullMode, atc,
+        let { shader, entry, vertBufs, binds, topology, depthWriteEnabled, depthCompare, cullMode, atc,
               color_op, color_src, color_dst, alpha_op, alpha_src, alpha_dst } = args
         color_op ||= pref.color_op; color_src ||= pref.color_src; color_dst ||= pref.color_dst
         alpha_op ||= pref.alpha_op; alpha_src ||= pref.alpha_src; alpha_dst ||= pref.alpha_dst
         
-        if (depthWriteEnabled == undefined) depthWriteEnabled = pref.depth_write
-        if (depthCompare == undefined) depthCompare = pref.depth_compare
+        if (depthWriteEnabled == undefined) depthWriteEnabled = pref.depth_wr
+        if (depthCompare == undefined) depthCompare = pref.depth_cmp
         if (atc == undefined) atc = pref.atc
         topology ||= 'triangle-list'
         cullMode ||= pref.cull
@@ -163,11 +183,11 @@ export const GPU = class GPU {
                         alpha: { operation: alpha_op, srcFactor: alpha_src, dstFactor: alpha_dst } }
         const pipeDesc = {        
             layout: this.dev.createPipelineLayout({ bindGroupLayouts: [ args.layout ] }),
-            multisample: { count: pref.samples, alphaToCoverageEnabled: atc },
-            vertex: { module: shader.module, entryPoint:vert, buffers:vertBufs },
-            fragment: { module: shader.module , entryPoint:frag, targets: [{ format: pref.format, blend }]},
+            multisample: { count: pref.samples, alphaToCoverageEnabled: atc && pref.samples > 1},
+            vertex: { module: shader.module, entryPoint:entry+'_vert', buffers:vertBufs },
+            fragment: { module: shader.module , entryPoint:entry+'_frag', targets: [{ format: pref.format, blend }]},
             primitive: { topology, cullMode },
-            depthStencil: { depthWriteEnabled , depthCompare, format:pref.depth_format },
+            depthStencil: { depthWriteEnabled , depthCompare, format:pref.depth_fmt },
         }
         
         args.pipeline = this.dev.createRenderPipeline(pipeDesc)        
@@ -216,15 +236,17 @@ export const GPU = class GPU {
     }
 
     renderPass(draws) {
+        const multisamp = this.pref.samples > 1
         return (encoder) => {
-            const useStencil = Boolean(this.pref.depth_format.match(/stencil/))
+            const useStencil = Boolean(this.pref.depth_fmt.match(/stencil/))
+            const canvasTex = this.ctx.getCurrentTexture().createView()
+            const [view, resolveTarget] = multisamp ? [this.colorTex.createView(), canvasTex] : [canvasTex]
             const pass = encoder.beginRenderPass({
-                colorAttachments: [{              
-                    view: this.colorTex.createView(),
+                colorAttachments: [{ 
+                    view, resolveTarget,
                     loadOp: 'clear',
                     storeOp: 'store',
-                    clearValue: { r: 0.13, g: 0.1, b: 0.10, a: 1.0 },
-                    resolveTarget: this.ctx.getCurrentTexture().createView()
+                    clearValue: { r: 0, g: 0, b: 0, a: 0 },                    
                 }],
                 depthStencilAttachment: {
                     depthClearValue: 1.0,
@@ -261,6 +283,7 @@ export const GPU = class GPU {
     }
 
     timestamp(label) {
+        if (!this.ts) return ()=>{}
         return (encoder, labels, querySet) => {
             encoder.writeTimestamp(querySet, labels.length)
             labels.push(label)
@@ -286,22 +309,6 @@ export const GPU = class GPU {
                 this.stampLabels = labels
             }
         }
-    }
-
-    async read(buf) {
-        let copyBuf = this.copyBufs.pop()
-        if (!copyBuf || copyBuf.size < buf.size) {
-            if (copyBuf) copyBuf.buffer.destroy()
-            copyBuf = this.buf({length:buf.size/4, type:u32, usage:'MAP_READ|COPY_DST' })
-        }
-        const cmds = this.dev.createCommandEncoder()
-        cmds.copyBufferToBuffer(buf.buffer, 0, copyBuf.buffer, 0, buf.size)
-        this.dev.queue.submit([cmds.finish()])
-        await copyBuf.buffer.mapAsync(GPUMapMode.READ, 0, buf.size)
-        const data = new Uint8Array(copyBuf.buffer.getMappedRange(0,buf.size)).slice()
-        copyBuf.buffer.unmap()
-        this.copyBufs.push(copyBuf)
-        return data.buffer
     }
 
     static struct(opt) {
@@ -437,9 +444,9 @@ export const GPU = class GPU {
 
     fatal(err) {
         if (err == null) return
+        console.error(err.message);
         debugger;
         //this.cleanup()
-        //throw new Error(err.message);
     }
 }
 
@@ -701,7 +708,7 @@ export const M4 = GPU.array({
             return [u,v,w,t,b,det]
         },
         inverse: function() {
-            const [u,v,t,b,det] = this.invdet()
+            const [u,v,w,t,b,det] = this.invdet()
             return m4(
                 [[v.y*b[11]-v.z*b[10]+v.w*b[9],u.z*b[10]-u.y*b[11]-u.w*b[9],t.y*b[5]-t.z*b[4]+t.w*b[3],w.z*b[4]-w.y*b[5]-w.w*b[3]],
                  [v.z*b[8]-v.x*b[11]-v.w*b[7],u.x*b[11]-u.z*b[8]+u.w*b[7],t.z*b[2]-t.x*b[5]-t.w*b[1],w.x*b[5]-w.z*b[2]+w.w*b[1]],
