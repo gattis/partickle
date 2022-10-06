@@ -191,7 +191,7 @@ export class Preferences {
         this.data[key] = val
         localStorage[this.name] = JSON.stringify(this.data)
         for (const cb of this.keyWatch[key])
-            cb(val)
+            cb(key,val)
     }
     watch(keys, callback) {
         for (const key of keys)

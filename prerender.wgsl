@@ -63,11 +63,6 @@ fn update_tris(@builtin(global_invocation_id) gid:vec3<u32>) {
     (*tri).v0.mesh = (*v0).mesh;
     (*tri).v1.mesh = (*v1).mesh;
     (*tri).v2.mesh = (*v2).mesh;
-    //(*tri).v0.dist = length(closest_tri_delta((*v0).pos, (*v1).pos, (*v2).pos, params.camPos));
-    //(*tri).v0.dist = distance((*v0).pos, params.camPos);
-    //(*tri).v1.dist = distance((*v1).pos, params.camPos);
-    //(*tri).v2.dist = distance((*v2).pos, params.camPos);
-    //(*tri).v0.dist = distance(((*v0).pos + (*v1).pos + (*v2).pos)/3, params.camPos);
 
 }
 

@@ -1,22 +1,21 @@
-
 const { abs, cos, sin, acos, asin, cbrt, sqrt, PI, random, round, ceil, floor, tan, max, min, log2 } = Math
 import * as util from './utils.js'
 Object.assign(globalThis, util)
 
 
-export const f32 = {name:'f32', conv:'Float32', align: 4, size: 4, getset: (off) => ({
+export const f32 = { name:'f32', conv:'Float32', align:4, size: 4, getset: (off) => ({
     get() { return this.getFloat32(off,true) },
     set(v) { return this.setFloat32(off,v,true) }
 })}
-export const u32 = {name:'u32', conv:'Uint32', align: 4, size: 4, getset: (off) => ({
+export const u32 = { name:'u32', conv:'Uint32', align:4, size: 4, getset: (off) => ({
     get() { return this.getUint32(off,true) },
     set(v) { return this.setUint32(off,v,true)}
 })}
-export const u64 = {name:'u64', conv:'Uint32', size: 8, getset: (off) => ({
+export const u64 = { name:'u64', conv:'Uint32', size:8, getset: (off) => ({
     get() { return this.getBigUInt64(off,true) },
     set(v) { return this.setBigUInt64(off,v,true) }
 })}
-export const i32 = {name:'i32', conv:'Int32', align: 4, size: 4, getset: (off) => ({
+export const i32 = { name:'i32', conv:'Int32', align:4, size: 4, getset: (off) => ({
     get() { return this.getInt32(off,true) },
     set(v) { return this.setInt32(off,v,true)}
 })}
@@ -289,7 +288,7 @@ export const GPU = class GPU {
             labels.push(label)
         }
     }
-    
+
     encode(cmds) {
         const dev = this.dev
         const querySet = this.ts ? dev.createQuerySet({ type: 'timestamp', count: 64 }) : null
@@ -577,12 +576,22 @@ export const M3 = GPU.array({
         }
     },
     members: {
+        col: function (j) {
+            return v3(this[0][j], this[1][j], this[2][j])
+        },
         mulc: function(c) {
             const m = M3.alloc()
             for (const i of range(3))
                 for (const j of range(3))
                     m[i][j] = this[i][j] * c
             return m
+        },
+        mul: function (b) {
+            const c = M3.alloc()
+            for (const i of range(3))
+                for (const j of range(3))
+                    c[i][j] = this[i].dot(b.col(j))
+            return c
         },
         toString: function() {
             return [this[0].toString(), this[1].toString(), this[2].toString()].join('\n')

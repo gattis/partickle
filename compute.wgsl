@@ -1,111 +1,26 @@
 type v3 = vec3<f32>;
 type v3i = vec3<i32>;
+type m3 = mat3x3<f32>;
 
 const MAXNN = ${MAXNN}u;
-const D = ${D}f;
-const Dplus = ${D*1.5};
-    
+const REXPAND = 1.05f;
 
 @compute @workgroup_size(${threads})
 fn predict(@builtin(global_invocation_id) gid:vec3<u32>) {
     let pid:u32 = gid.x;
-    if (pid >= arrayLength(&particles)) { return; }
-    
-    
+    if (pid >= arrayLength(&particles)) { return; }       
     let p = &particles[pid];
     (*p).k = 0u;
     (*p).sp = (*p).si;
     if (params.grabbing == i32(pid)) { return; }
-    
     let m = &meshes[(*p).mesh];
-    var fext = (*m).ffield;
- 
-    (*p).v = (*p).v + fext * params.t;
+    if ((*m).flags == 1) { return; }
+
+    let mass = 4188790.0f * params.density * (*p).mass * pow(params.r,3);
+    var agrav = v3(0, 0, -params.gravity * (*m).gravity);
+    (*p).v += agrav * params.t;
     (*p).sp += (*p).v * params.t;
-    
 }
-
-@compute @workgroup_size(${threads})
-fn cntsort_cnt(@builtin(global_invocation_id) gid:vec3<u32>) {
-    let pid:u32 = gid.x;
-    if (pid >= arrayLength(&particles)) { return; }
-    
-    let sd = v3i(particles[pid].sp / Dplus + ${threads/2}f);
-    if (sd.x < 0 || sd.y < 0 || sd.z < 0 || sd.x >= ${threads} || sd.y >= ${threads} || sd.z >= ${threads}) {
-        particles[pid].hash = -1;
-        return;
-    }
-    let hash = sd.x + sd.y * ${threads} + sd.z * ${threads**2};
-    particles[pid].hash = hash;
-    atomicAdd(&cnts_atomic[hash], 1);
-}
-
-@compute @workgroup_size(${threads})
-fn prefsum_down(@builtin(local_invocation_id) lid:vec3<u32>,
-                        @builtin(workgroup_id) wid:vec3<u32>,
-                        @builtin(num_workgroups) wgs:vec3<u32>) {
-    let k = lid.x + wid.x * ${threads};
-    for (var stride = 1u; stride < ${threads}u; stride = stride << 1u) {
-        let opt = lid.x >= stride;
-        let sum = select(0, cnts[k] + cnts[k - stride], opt);
-        storageBarrier();
-        if (opt) { cnts[k] = sum; }
-        storageBarrier();
-    }
-    if (lid.x != ${threads - 1} || wgs.x == 1) { return; }
-    work[wid.x] = cnts[k];
-}
-
-@compute @workgroup_size(${threads})
-fn prefsum_up(@builtin(local_invocation_id) lid:vec3<u32>, @builtin(workgroup_id) wid:vec3<u32>) {
-    cnts[lid.x + (wid.x + 1) * ${threads}] += work[wid.x];
-}
-
-@compute @workgroup_size(${threads})
-fn cntsort_sort(@builtin(global_invocation_id) gid:vec3<u32>) {
-    let pid:u32 = gid.x;
-    if (pid >= arrayLength(&particles)) { return; }
-    let hash = particles[pid].hash;
-    if (hash < 0) { return; }
-    let pos = atomicSub(&cnts_atomic[hash], 1) - 1;
-    sorted[pos] = pid;
-}
-
-@compute @workgroup_size(${threads})
-fn grid_collide(@builtin(global_invocation_id) gid:vec3<u32>) {
-    let pid1:u32 = gid.x;
-    if (pid1 >= arrayLength(&particles)) { return; }
-
-    let p1 = &particles[pid1];
-    let hash = (*p1).hash;
-    var h = v3i(0, 0, hash / ${threads**2});
-    h.y = (hash - h.z * ${threads**2}) / ${threads};
-    h.x = hash - h.z * ${threads**2} - h.y * ${threads};
-    let hstart = max(h - 1, v3i(0,0,0));
-    let hstop = min(h + 1, v3i(${threads-1}));
-
-    for (var x = hstart.x; x <= hstop.x; x++) {
-    for (var y = hstart.y; y <= hstop.y; y++) {
-    for (var z = hstart.z; z <= hstop.z; z++) {
-        let ohash = x + y * ${threads} + z * ${threads**2};
-        if (ohash < 0 || ohash >= ${threads**3 - 1}) { continue; }
-        let ostop = cnts[ohash + 1];
-        for (var i = cnts[ohash]; i < ostop; i = i + 1) {
-            let pid2 = sorted[i];
-            if (pid2 == pid1) { continue; }
-            let p2 = &particles[pid2];                    
-            if ((*p1).mesh == (*p2).mesh) { continue; }
-            if (length((*p1).sp - (*p2).sp) >= Dplus) { continue; }
-            let k = (*p1).k;
-            if (k < MAXNN) {
-                (*p1).nn[k] = pid2;
-                (*p1).k = k + 1;
-            }
-        }
-    }}}    
-}
-
-
 
 fn quat2Mat(q:vec4<f32>) -> mat3x3<f32> {
     let qx = 2.0f * q.x * q;
@@ -159,8 +74,9 @@ fn quatMul(a:vec4<f32>, b:vec4<f32>) -> vec4<f32> {
 }
 
 @compute @workgroup_size(${threads})
-fn centroid_init(@builtin(global_invocation_id) gid:vec3<u32>) {
+fn centroid_prep(@builtin(global_invocation_id) gid:vec3<u32>) {
     let m = &meshes[0];
+    if ((*m).flags == 1) { return; }
     let pstart = (*m).pi;
     let pstop = (*m).pf;
     let i = pstart + gid.x;
@@ -170,7 +86,7 @@ fn centroid_init(@builtin(global_invocation_id) gid:vec3<u32>) {
 }
 
 @compute @workgroup_size(${threads})
-fn getcentroid(@builtin(local_invocation_id) lid:vec3<u32>,
+fn get_centroid(@builtin(local_invocation_id) lid:vec3<u32>,
             @builtin(workgroup_id) wgid:vec3<u32>,
             @builtin(num_workgroups) wgs:vec3<u32>) {  
     let N = arrayLength(&centroidwork);
@@ -206,7 +122,7 @@ fn getcentroid(@builtin(local_invocation_id) lid:vec3<u32>,
 }
 
 @compute @workgroup_size(${threads})
-fn shapematch_init(@builtin(global_invocation_id) gid:vec3<u32>) {
+fn rotate_prep(@builtin(global_invocation_id) gid:vec3<u32>) {
     let m = &meshes[0];
     let pstart = (*m).pi;
     let pstop = (*m).pf;
@@ -220,7 +136,7 @@ fn shapematch_init(@builtin(global_invocation_id) gid:vec3<u32>) {
 }
 
 @compute @workgroup_size(${threads})
-fn shapematch(@builtin(local_invocation_id) lid:vec3<u32>,
+fn get_rotate(@builtin(local_invocation_id) lid:vec3<u32>,
               @builtin(workgroup_id) wgid:vec3<u32>,
               @builtin(num_workgroups) wgs:vec3<u32>) {
     let N = arrayLength(&shapework);
@@ -270,90 +186,204 @@ fn shapematch(@builtin(local_invocation_id) lid:vec3<u32>,
 
 }
 
+
+
 @compute @workgroup_size(${threads})
-fn grads(@builtin(global_invocation_id) gid:vec3<u32>) {
-    let pid:u32 = gid.x;
-    let nparticles = arrayLength(&particles);
-    if (pid >= nparticles) { return; }
+fn constrain(@builtin(global_invocation_id) gid:vec3<u32>) {
+    let pid = gid.x;
+    if (pid >= arrayLength(&particles)) { return; }
+    if (params.grabbing == i32(pid)) { return; }    
     let p = &particles[pid];
     let m = &meshes[(*p).mesh];
-    (*p).grad = normalize((*m).rot*(*p).grad0);
+    if ((*m).flags == 1) { return; }
+
+    var ds_spring = v3(0);
+    let nedges = (*p).nedges;
+    for (var i = 0u; i < nedges; i++) {
+        let p2 = &particles[(*p).edges[i]];
+        var delta = (*p2).sp - (*p).sp;
+        let dist = length(delta);
+        let dir = select(delta/dist, v3(0,0,1), dist == 0);
+        let dist0 = length((*p2).s0 - (*p).s0);
+        ds_spring += params.spring_stiff * (dist - dist0) * dir / 2.0 / f32(nedges);
+    }
+
+    var center:v3;
+    var rot:m3;
+    if ((*m).flags == 2) {
+        center = params.handpos;
+        rot = params.handrot;
+    } else {
+        center = (*m).ci;
+        rot = (*m).rot;
+    }
+    let goal = center + rot * (*p).q;
+    let delta = goal - (*p).sp;
+    var ds_shape = params.shape_stiff * delta;
+    
+    (*p).sp += ds_spring + ds_shape;
+    (*p).v = ((*p).sp - (*p).si) / params.t;
+    
 }
 
 @compute @workgroup_size(${threads})
-fn collisions(@builtin(global_invocation_id) gid:vec3<u32>) {
+fn cntsort_cnt(@builtin(global_invocation_id) gid:vec3<u32>) {
     let pid:u32 = gid.x;
     if (pid >= arrayLength(&particles)) { return; }
     let p = &particles[pid];
-
-    let k = min(MAXNN, (*p).k);
-    var ds = v3(0.0, 0.0, 0.0);
-    for (var i = 0u; i < k; i++) {
-        let p2 = &particles[(*p).nn[i]];
-        let m2 = &meshes[(*p2).mesh];
-        let r = (*p).si - (*p2).si;
-        let d = length(r);
-        let c = max(0.0, D - d);
-        let grad = select((*p2).grad, r/(d+.00001), (*m2).shape == 0);
-        ds += params.collision * c * grad;
-    }  
-    if (k > 0) {
-        (*p).si = (*p).si + ds;
-        (*p).sp = (*p).sp + ds;
+    let m = &meshes[(*p).mesh];
+    if ((*m).flags == 1) { return; }
+    let sd = v3i((*p).sp / (params.r * 2 * REXPAND) + ${threads/2}f);
+    if (sd.x < 0 || sd.y < 0 || sd.z < 0 || sd.x >= ${threads} || sd.y >= ${threads} || sd.z >= ${threads}) {
+        (*p).hash = -1;
+        return;
     }
+    let hash = sd.x + sd.y * ${threads} + sd.z * ${threads**2};
+    (*p).hash = hash;
+    atomicAdd(&cnts_atomic[hash], 1);
+}
+
+@compute @workgroup_size(${threads})
+fn prefsum_down(@builtin(local_invocation_id) lid:vec3<u32>,
+                @builtin(workgroup_id) wid:vec3<u32>,
+                @builtin(num_workgroups) wgs:vec3<u32>) {
+    let k = lid.x + wid.x * ${threads};
+    for (var stride = 1u; stride < ${threads}u; stride = stride << 1u) {
+        let opt = lid.x >= stride;
+        let sum = select(0, cnts[k] + cnts[k - stride], opt);
+        storageBarrier();
+        if (opt) { cnts[k] = sum; }
+        storageBarrier();
+    }
+    if (lid.x != ${threads - 1} || wgs.x == 1) { return; }
+    work[wid.x] = cnts[k];
+}
+
+@compute @workgroup_size(${threads})
+fn prefsum_up(@builtin(local_invocation_id) lid:vec3<u32>, @builtin(workgroup_id) wid:vec3<u32>) {
+    cnts[lid.x + (wid.x + 1) * ${threads}] += work[wid.x];
+}
+
+@compute @workgroup_size(${threads})
+fn cntsort_sort(@builtin(global_invocation_id) gid:vec3<u32>) {
+    let pid:u32 = gid.x;
+    if (pid >= arrayLength(&particles)) { return; }
+    let p = &particles[pid];
+    let m = &meshes[(*p).mesh];
+    if ((*m).flags == 1) { return; }
+    let hash = (*p).hash;
+    if (hash < 0) { return; }
+    let pos = atomicSub(&cnts_atomic[hash], 1) - 1;
+    sorted[pos] = pid;
+}
+
+@compute @workgroup_size(${threads})
+fn grid_collide(@builtin(global_invocation_id) gid:vec3<u32>) {
+    let pid1:u32 = gid.x;
+    if (pid1 >= arrayLength(&particles)) { return; }
+    let p1 = &particles[pid1];
+    let m = &meshes[(*p1).mesh];
+    if ((*m).flags == 1) { return; }
+    let hash = (*p1).hash;
+    var h = v3i(0, 0, hash / ${threads**2});
+    h.y = (hash - h.z * ${threads**2}) / ${threads};
+    h.x = hash - h.z * ${threads**2} - h.y * ${threads};
+    let hstart = max(h - 1, v3i(0,0,0));
+    let hstop = min(h + 1, v3i(${threads-1}));
+
+    for (var x = hstart.x; x <= hstop.x; x++) {
+    for (var y = hstart.y; y <= hstop.y; y++) {
+    for (var z = hstart.z; z <= hstop.z; z++) {
+        let ohash = x + y * ${threads} + z * ${threads**2};
+        if (ohash < 0 || ohash >= ${threads**3 - 1}) { continue; }
+        let ostop = cnts[ohash + 1];
+        for (var i = cnts[ohash]; i < ostop; i = i + 1) {
+            let pid2 = sorted[i];
+            if (pid2 == pid1) { continue; }
+            let p2 = &particles[pid2];                    
+            if ((*p1).mesh == (*p2).mesh && (*m).shape != 0) { continue; }
+            if (length((*p1).sp - (*p2).sp) >= (params.r * 2 * REXPAND)) { continue; }
+            let k = (*p1).k;
+            if (k < MAXNN) {
+                (*p1).nn[k] = pid2;
+                (*p1).k = k + 1;
+            }
+        }
+    }}}    
 }
 
 
 @compute @workgroup_size(${threads})
 fn project(@builtin(global_invocation_id) gid:vec3<u32>) {
     let pid:u32 = gid.x;
-    let nparticles = arrayLength(&particles);
-    if (pid >= nparticles) { return; }
-
+    if (pid >= arrayLength(&particles)) { return; }
     if (params.grabbing == i32(pid)) { return; }
     let p = &particles[pid];
-    let m = &meshes[(*p).mesh];  
-    
-    var sf = (*p).sp;
-    
-    let nedges = (*p).nedges;    
-    for (var i = 0u; i < nedges; i++) {
-        let p2 = &particles[(*p).edges[i]];
-        let r = (*p2).sp - (*p).sp;
-        let d = length(r);
-        if (d == 0) { continue; }
-        var c = d - length((*p2).s0 - (*p).s0);
-        let s = sign(c);
-        sf += params.spring * abs(c) * s * r / d; 
-    }
-    
-    let goal = (*m).ci + (*m).rot*(*p).q;
-    let fshape = params.shape * (*m).shape;
-    sf += fshape * (goal - (*p).sp);
+    let m = &meshes[(*p).mesh];
+    if ((*m).flags == 1) { return; }
 
+    var savg = v3(0);
+    var vavg = v3(0);
+    var cnt = 0.0;
+    let massx = 4188790.0f * params.density * pow(params.r,3);
+    let mass = (*p).mass * massx;
+    
+    let vi = (*p).v;
+    let si = (*p).si;
     let k = min(MAXNN, (*p).k);
+    let dsq = 4.0 * params.r * params.r;
     for (var i = 0u; i < k; i++) {
         let p2 = &particles[(*p).nn[i]];
         let m2 = &meshes[(*p).mesh];
-        let r = (*p).sp - (*p2).sp;
-        let d = length(r);
-        let c = max(0.0, D - d);
-        let grad = select((*p2).grad, r/(d+.00001), (*m2).shape == 0);
-        sf += params.collision * c * grad;
-    }   
+        let si2 = (*p2).si;
+        let vi2 = (*p2).v;
+        let mass2 = (*p2).mass * massx;
+        let ds = si - si2;
+        let dv = vi - vi2;
+        var a = dot(dv,dv);
+        let b = 2*dot(ds,dv);
+        let c = dot(ds,ds) - dsq;
+        var disc = b*b - 4*a*c;
+        if (disc < 0) { continue; }
+        disc = sqrt(disc);
+        a *= 2.0;
+        let t1 = (-b - disc)/a;
+        let t2 = (-b + disc)/a;
+        if (t2 < 0 || t1 > params.t) { continue; }
+        let tc = t1;
+        let pc = si + vi * tc;
+        let pc2 = si2 + vi2 * tc;
+        let n = normalize(pc - pc2);
 
-    if (params.ground > 0 && sf.z < 0) {
-        sf -= params.collision * sf.z * v3(0,0,1);
+        let ncom = n * dot(n,vi);
+        let ncom2 = -n * dot(-n,vi2);
+        let deltav = (ncom*(mass - mass2) + 2.0*ncom2*mass2)/(mass + mass2) - ncom;
+        let vf = vi + params.collidamp * deltav;
+        let tr = params.t - tc;
+        savg += pc + vf * tr;
+        vavg += vf;
+        cnt += 1.0;
+    }
+
+    if (params.ground > 0 && (*p).sp.z < params.r) {
+        let tc = (params.r - si.z) / vi.z;
+        let pc = si + vi * tc;
+        let tr = params.t - tc;
+        let vf = vi + params.collidamp * v3(0, 0, -2.*vi.z);
+        savg += pc + vf * tr;
+        vavg += vf;
+        cnt += 1.0;
     }
     
-    sf += (*p).lock * ((*p).s0 - (*p).sp);
+    if (cnt == 0) {
+        (*p).si = (*p).sp;
+    } else {
+        (*p).si = savg / f32(cnt);
+        (*p).v = vavg / f32(cnt);
+        (*p).sp = (*p).si;
+    }
 
-    let delta = sf - (*p).si;
-    if (length(delta) < 1e-6) { return; }
-    var v = (sf - (*p).si) / params.t;
-    v -= params.friction * params.t * v;
-    (*p).v = v;
-    (*p).si += v*params.t;
+    (*p).v *= 1 - params.damp;
     
 }
 

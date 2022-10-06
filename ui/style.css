@@ -25,7 +25,7 @@ output {
     display: inline-flex;
     justify-content: right;
     padding-right:5px;
-    font-size:90%;
+    font-size:50%;
 }
 
 
@@ -33,7 +33,7 @@ output {
 #pedit {
     left: 5px;
     top: 10px;
-    text-align: lef;
+    text-align: left;
 }
 
 #rpref {
@@ -42,9 +42,27 @@ output {
     text-align: left;
 }
 
-#dbg {
-    right: 5px;
-    bottom: 5px;
+#actions {
+    right: 10px;
+    bottom: 10px;
+}
+
+#hand {
+    font-size: 25pt;
+    pointer-events: initial;
+    padding: 0px 5px 5px 0px;
+    border-radius: 25%;
+    box-shadow: 0px 5px 10px rgba(0, 0, 0, .5);
+    cursor: pointer;
+}
+
+#hand:hover {
+    transform: translateX(-4px) translateY(-4px);
+
+}
+
+#hand:active {
+    box-shadow: 0px 0px 0px
 }
 
 #info {
@@ -62,6 +80,7 @@ output {
     margin-left: 8px;
     height: 25px;
     width: 35px;
+    pointer-events: initial;
 }
 
 input {

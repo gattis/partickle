@@ -15,9 +15,6 @@ const cube = array<v3,14>(v3(-1,1,1), v3(1,1,1), v3(-1,-1,1), v3(1,-1,1), v3(1,-
                           v3(1,1,1), v3(1,1,-1), v3(-1,1,1), v3(-1,1,-1), v3(-1,-1,1),
                           v3(-1,-1,-1), v3(1,-1,-1), v3(-1,1,-1), v3(1,1,-1));
 
-
-
-
 fn frag(worldpos:v3, norm:v3, color:v4) -> v4 {
     var mix = color.rgb * ambient;
     for (var i = 0; i < ${numLights}; i += 1) {
@@ -42,8 +39,6 @@ fn frag(worldpos:v3, norm:v3, color:v4) -> v4 {
     return v4(clamp(mix,v3(0),v3(1)), color.a);
 
 }
-
-
 
 struct SurfOut {
     @builtin(position) position: v4,
@@ -83,6 +78,7 @@ struct FragDepth {
 
 @fragment fn surface_frag(input:SurfIn) -> @location(0) v4 {
     let m = &meshes[input.mesh];
+    if ((*m).flags == 1) { discard; }
     var color = (*m).color * select(textureSample(tex, samp, input.uv, (*m).tex), v4(1), (*m).tex < 0);
     if (color.a < 0.0001) { discard; }
     color = frag(input.worldpos, input.norm, color);
@@ -169,7 +165,9 @@ fn trace_sphere(vertpos:v3, center:v3, r:f32) -> RayTrace {
 }
 
 @fragment fn particle_frag(input:PartIO) -> FragDepth {
-    let color = meshes[input.mesh].pcolor;
+    let m = &meshes[input.mesh];
+    if ((*m).flags == 1) { discard; }
+    let color = (*m).pcolor;
     if (color.a < 0.5) { discard; }
     var rgb = color.rgb;
     if (input.selected == 1u) {
