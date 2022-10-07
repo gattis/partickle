@@ -13,13 +13,13 @@ let CAM_UD = -PI/10
 export const phys = new Preferences('phys')
 phys.addBool('paused', false)
 phys.addNum('r', .01, 0, 0.1, 0.001)
-phys.addNum('density', 1.0, 0.01, 10, 0.01)
+phys.addNum('density', 1.0, 0.1, 10, 0.1)
 phys.addNum('frameratio', 3, 1, 20, 1)
 phys.addNum('speed', 1, 0, 5, .1)
 phys.addNum('gravity', 9.8, -5, 20, 0.1)
 phys.addNum('spring_stiff', 0.5, 0, 1, 0.01)
 phys.addNum('shape_stiff', 0.01, 0, 0.1, 0.001)
-phys.addNum('damp', .01, 0, .1, .001)
+phys.addNum('damp', 0.5, 0, 1, .01)
 phys.addNum('collidamp', .9, 0, 1, .01)
 
 export const render = new Preferences('render')
@@ -51,8 +51,8 @@ render.addNum('fov', 60, 1, 150, 1)
     
 const particleColors = [v4(.4,.4,.8,1), v4(.83,.54,.47,1), v4(.2, .48, .48)]
 
-const QUINN = { url:'quinn.obj', texUrl:'quinn.png', offset:v3(0,0,0), sample:true,
-                scale:v3(2, 2, 2), gravity:0, color:v4(.7,.6,.5,1) }
+const QUINN = { url:'quinn.obj', texUrl:'quinn.png', offset:v3(0,0,.1), sample:false,
+                scale:v3(2, 2, 2), gravity:1, color:v4(.7,.6,.5,1) }
 
 
 
@@ -92,8 +92,8 @@ const LIGHTS = [
 const MESHES = [
     
     //{ url: 'particle.obj', color: v4(.5, .5, .3, 1), offset: v3(0, 0, 2) }, 
-    //{ url: 'particle.obj', color: v4(.5, .3, .5, 1), offset: v3(0, 0, 1) }, 
-    { url: 'cube.obj', color: v4(.5, .3, .5, 1), offset: v3(0, 0, 2), sample:true }
+    //{ url: 'particle.obj', color: v4(.5, .3, .5, 1), offset: v3(0, 0, 1) },
+    { url: 'torus.obj', color: v4(.5, .3, .5, 1), offset: v3(0, 0, 2), sample:true }
 ]
 
 const clock = () => phys.speed*performance.now()/1000
@@ -145,7 +145,7 @@ export const Particle = GPU.struct({
         ['k', u32],
         ['grad', V3],
         ['v', V3],
-        ['edges', GPU.array({ type:u32, length:6})],
+        ['edges', GPU.array({ type:u32, length:8})],
         ['nn', GPU.array({ type:u32, length:MAXNN })],
     ]
 })
@@ -476,7 +476,7 @@ export class Sim {
     async grabParticle(x, y) {
         const { gpu, camera, params } = this
         let ray = this.clipToRay(x,y)
-        let rsq = (phys.r)**2
+        let rsq = (phys.r*2)**2
         let particles = new Particles(await gpu.read(this.bufs.particles))
         
         let hitdists = []
@@ -611,18 +611,20 @@ export class Compute {
 
         for (const [i, m] of enumerate(meshes)) {
             let n = m.pf - m.pi
-            if (n <= 1) continue
+            if (n <= 0) continue
+            if (m.flags == 1) continue
             const centroidWork = gpu.buf({ label: `centroidwork${i}`, type: V3Array, size: V3Array.stride * n, usage: 'STORAGE' })
             const shapeWork = gpu.buf({ label: `shapework${i}`, type: m3Array, size: m3Array.stride * n, usage: 'STORAGE' })
             let dp1 = ceil(n / threads), dp2 = ceil(dp1 / threads)
             const meshBind = { meshes: gpu.offset(bufs.meshes, Meshes.stride * i) }
-            cmds.push(gpu.computePass({ pipe: centroid_prep, dispatch: dp1, binds: { ...meshBind, particles: bufs.particles, centroidwork: centroidWork } }))
+            cmds.push(gpu.computePass({ pipe: centroid_prep, dispatch: dp1, binds: { ...meshBind, particles:bufs.particles, centroidwork:centroidWork }}))
             cmds.push(gpu.computePass({ pipe: get_centroid, dispatch: dp1, binds: { ...meshBind, centroidwork: centroidWork } }))
             if (dp1 > 1) {
                 cmds.push(gpu.computePass({ pipe: get_centroid, dispatch: dp2, binds: { ...meshBind, centroidwork: centroidWork } }))
                 if (dp2 > 1)
                     cmds.push(gpu.computePass({ pipe: get_centroid, dispatch: 1, binds: { ...meshBind, centroidwork: centroidWork } }))
             }
+            if (n <= 1) continue
             cmds.push(gpu.computePass({ pipe: rotate_prep, dispatch: dp1, binds: { ...meshBind, particles: bufs.particles, shapework: shapeWork } }))
             cmds.push(gpu.computePass({ pipe: get_rotate, dispatch: dp1, binds: { ...meshBind, shapework: shapeWork } }))
             if (dp1 > 1) {
@@ -859,7 +861,7 @@ export class Render {
         //globalThis.tris = new Triangles(await gpu.read(bufs.tris))
         //globalThis.particles = new Particles(await gpu.read(bufs.particles))
         //globalThis.verts = new Vertices(await gpu.read(bufs.vertices))
-        //globalThis.meshes = new Meshes(await gpu.read(bufs.meshes))
+        globalThis.meshes = new Meshes(await gpu.read(bufs.meshes))
         
             
         

@@ -99,7 +99,7 @@ const handleInput = async (e) => {
         else if (move.btn == 2) sim.dragParticle(move.x, move.y)
     }
     if (e.type == 'wheel')
-        sim.advanceCam(-0.0005 * e.deltaY)
+        sim.advanceCam(-0.001 * e.deltaY)
     if (e.type == 'keydown')
         if (e.code == 'Space')
             location.reload()

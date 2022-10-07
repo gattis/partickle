@@ -22,49 +22,8 @@ fn predict(@builtin(global_invocation_id) gid:vec3<u32>) {
     (*p).sp += (*p).v * params.t;
 }
 
-fn quat2Mat(q:vec4<f32>) -> mat3x3<f32> {
-    let qx = 2.0f * q.x * q;
-    let qy = 2.0f * q.y * q;
-    let qz = 2.0f * q.z * q;
-    return mat3x3<f32>(1.0f - qy.y - qz.z,
-              qx.y + qz.w,
-              qx.z - qy.w,
-              qx.y - qz.w,
-              1.0f - qx.x - qz.z,
-              qy.z + qx.w,
-              qx.z + qy.w,
-              qy.z - qx.w,
-              1.0f - qx.x - qy.y);
-    
-}
 
-fn mat2Quat(m:mat3x3<f32>) -> vec4<f32> {
-    let tr = m[0][0] + m[1][1] + m[2][2];
-    var out:vec4<f32>;
-    if (tr > 0.0) {
-        var root = sqrt(tr + 1.0); 
-        out.w = 0.5 * root;
-        root = 0.5 / root;
-        out.x = (m[1][2] - m[2][1]) * root;
-        out.y = (m[2][0] - m[0][2]) * root;
-        out.z = (m[0][1] - m[1][0]) * root;
-    } else {
-        var i = 0;
-        if (m[1][1] > m[0][0]) { i = 1; }
-        if (m[2][2] > m[(u32(i)*4u)/3u][(u32(i)*4u)%3u]) { i = 2; }
-        var j = (i+1) % 3;
-        var k = (i+2) % 3;
-        let i4 = i*4; let j4 = j*4; let k4 = k*4;
-        var root = sqrt(m[i4/3][i4%3] - m[j4/3][j4%3] - m[k4/3][k4%3] + 1.0);
-        out[i] = 0.5 * root;
-        root = 0.5 / root;
-        let j3k=j*3+k; let k3j=k*3+j; let j3i=j*3+i; let i3j=i*3+j; let k3i=k*3+i; let i3k=i*3+k;
-        out.w = (m[j3k/3][j3k%3] - m[k3j/3][k3j%3]) * root;
-        out[j] = (m[j3i/3][j3i%3] + m[i3j/3][i3j%3]) * root;
-        out[k] = (m[k3i/3][k3i%3] + m[i3k/3][i3k%3]) * root;
-    }
-    return out;
-}
+
 
 fn quatMul(a:vec4<f32>, b:vec4<f32>) -> vec4<f32> {
     return vec4<f32>(a.x * b.w + a.w * b.x + a.y * b.z - a.z * b.y,
@@ -134,6 +93,51 @@ fn rotate_prep(@builtin(global_invocation_id) gid:vec3<u32>) {
         shapework[gid.x] = mat3x3<f32>(p.x*q, p.y*q, p.z*q);
     }
 }
+
+fn mat2Quat(m:mat3x3<f32>) -> vec4<f32> {
+    let tr = m[0][0] + m[1][1] + m[2][2];
+    var out:vec4<f32>;
+    if (tr > 0.0) {
+        var root = sqrt(tr + 1.0); 
+        out.w = 0.5 * root;
+        root = 0.5 / root;
+        out.x = (m[1][2] - m[2][1]) * root;
+        out.y = (m[2][0] - m[0][2]) * root;
+        out.z = (m[0][1] - m[1][0]) * root;
+    } else {
+        var i = 0;
+        if (m[1][1] > m[0][0]) { i = 1; }
+        if (m[2][2] > m[(u32(i)*4u)/3u][(u32(i)*4u)%3u]) { i = 2; }
+        var j = (i+1) % 3;
+        var k = (i+2) % 3;
+        let i4 = i*4; let j4 = j*4; let k4 = k*4;
+        var root = sqrt(m[i4/3][i4%3] - m[j4/3][j4%3] - m[k4/3][k4%3] + 1.0);
+        out[i] = 0.5 * root;
+        root = 0.5 / root;
+        let j3k=j*3+k; let k3j=k*3+j; let j3i=j*3+i; let i3j=i*3+j; let k3i=k*3+i; let i3k=i*3+k;
+        out.w = (m[j3k/3][j3k%3] - m[k3j/3][k3j%3]) * root;
+        out[j] = (m[j3i/3][j3i%3] + m[i3j/3][i3j%3]) * root;
+        out[k] = (m[k3i/3][k3i%3] + m[i3k/3][i3k%3]) * root;
+    }
+    return out;
+}
+
+fn quat2Mat(q:vec4<f32>) -> mat3x3<f32> {
+    let qx = 2.0f * q.x * q;
+    let qy = 2.0f * q.y * q;
+    let qz = 2.0f * q.z * q;
+    return mat3x3<f32>(1.0f - qy.y - qz.z,
+              qx.y + qz.w,
+              qx.z - qy.w,
+              qx.y - qz.w,
+              1.0f - qx.x - qz.z,
+              qy.z + qx.w,
+              qx.z + qy.w,
+              qy.z - qx.w,
+              1.0f - qx.x - qy.y);
+    
+}
+
 
 @compute @workgroup_size(${threads})
 fn get_rotate(@builtin(local_invocation_id) lid:vec3<u32>,
@@ -358,18 +362,20 @@ fn project(@builtin(global_invocation_id) gid:vec3<u32>) {
         let ncom = n * dot(n,vi);
         let ncom2 = -n * dot(-n,vi2);
         let deltav = (ncom*(mass - mass2) + 2.0*ncom2*mass2)/(mass + mass2) - ncom;
-        let vf = vi + params.collidamp * deltav;
+        let vf = vi + (1-params.collidamp) * deltav;
         let tr = params.t - tc;
         savg += pc + vf * tr;
         vavg += vf;
         cnt += 1.0;
     }
-
-    if (params.ground > 0 && (*p).sp.z < params.r) {
+    
+    let under = params.r - (*p).sp.z;
+    if (params.ground > 0 && under > 0) {
         let tc = (params.r - si.z) / vi.z;
         let pc = si + vi * tc;
         let tr = params.t - tc;
-        let vf = vi + params.collidamp * v3(0, 0, -2.*vi.z);
+        let perp = min(1., 2. * under / params.r);
+        let vf = vi - (1-params.collidamp) * 2. * v3(perp*vi.x, perp*vi.y, vi.z);
         savg += pc + vf * tr;
         vavg += vf;
         cnt += 1.0;
@@ -383,7 +389,7 @@ fn project(@builtin(global_invocation_id) gid:vec3<u32>) {
         (*p).sp = (*p).si;
     }
 
-    (*p).v *= 1 - params.damp;
+    (*p).v *= pow((1 - params.damp), params.t);
     
 }
 
