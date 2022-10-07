@@ -374,7 +374,7 @@ fn project(@builtin(global_invocation_id) gid:vec3<u32>) {
         let tc = (params.r - si.z) / vi.z;
         let pc = si + vi * tc;
         let tr = params.t - tc;
-        let perp = min(1., 2. * under / params.r);
+        let perp = min(1., 20. * under / params.r);
         let vf = vi - (1-params.collidamp) * 2. * v3(perp*vi.x, perp*vi.y, vi.z);
         savg += pc + vf * tr;
         vavg += vf;

@@ -137,13 +137,9 @@ export const Heap = class Heap {
     }
 }
 
-
 export const hijack = (cls, meth, replacement) => {
     cls.prototype[meth] = new Proxy(cls.prototype[meth], { apply: replacement })
 }
-
-
-
 
 export class Preferences {
     constructor(name) {
