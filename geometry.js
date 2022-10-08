@@ -15,7 +15,6 @@ export const intersectRayAABB = (start, dir, lower, upper) => {
 
 export class VoxelGrid {
     constructor(verts, tris, D) {
-
         this.tris = tris
         this.c = v3(0);
         for (const vert of verts)
@@ -48,7 +47,7 @@ export class VoxelGrid {
         const { tris, relverts, D, lim, hashmap, c, normals } = this
         let tstart = performance.now()
         for (const [tidx,tri] of enumerate(tris)) {
-            const ps = [0,1,2].map(i=>relverts[tri[i].vidx])
+            const ps = [0,1,2].map(i=>relverts[tri[i][0]])
             const N = ps[1].sub(ps[0]).cross(ps[2].sub(ps[0])).normalized()
             const ls = [[1,2],[0,2],[0,1]].map(([a,b]) => ps[a].sub(ps[b]).mag())
             const order = [0,1,2]
@@ -100,100 +99,6 @@ export class VoxelGrid {
 
     }
 }
-
-
-/*        let iter = 0
-        while (false) {
-            const newsamples = []
-            for (let [v,n] of grid) {
-                const coord = v.split(',').map(i => parseInt(i))
-                let axis = n.majorAxis()            
-                let dir = n[axis] < 0 ? 1 : -1
-                coord[axis] += dir
-                let hash = String(coord)
-                let entry = grid.get(hash)
-                if (entry) continue
-                newsamples.push([hash,n])
-            }
-            if (newsamples.length == 0) break
-            for (let [hash,n] of newsamples) {
-                let entry = grid.get(hash) || v3(0)
-                entry = entry.add(n)
-                grid.set(hash,entry)
-            }        
-            if (++iter >= 20) break
-        } 
-        console.log('voxelize iters:', iter)
-
-
-        //const sdf = SDF(voxels, dim)
-        //const gradients = voxels.map(([x,y,z]) => sdfGrad(sdf, dim, x, y, z).normalized())
-export const sdfGrad = (sdf, dim, x, y, z) => {
-    const dx = sampleGrid(sdf, dim, min(x + 1, dim.x - 1), y, z) - sampleGrid(sdf, dim, max(x - 1, 0), y, z)
-    const dy = sampleGrid(sdf, dim, x, min(y + 1, dim.y - 1), z) - sampleGrid(sdf, dim, x, max(y - 1, 0), z)
-    const dz = sampleGrid(sdf, dim, x, y, min(z + 1, dim.z - 1)) - sampleGrid(sdf, dim, x, y, max(z - 1, 0))
-    const grad = v3(dx,dy,dz)
-    return dim.divc(2).mul(grad)
-}
-
-
-
-export const sampleGrid = (voxgrid, dim, x, y, z) => {
-    return voxgrid[clamp(x, 0, dim.x-1) + clamp(y, 0, dim.y-1)*dim.x + clamp(z, 0, dim.z-1)*dim.x*dim.y]
-}
-
-export const edgeDetect = (voxgrid, dim, x, y, z) => {
-    const center = sampleGrid(voxgrid, dim, x, y, z)
-    let dist = Infinity
-    for (const k of [z - 1, z, z + 1])
-        for (const j of [y - 1, y, y + 1])
-	    for (const i of [x - 1, x, x + 1])
-		if (sampleGrid(voxgrid, dim, i, j, k) != center)
-		    dist = min(dist, sqrt((x-i)**2 + (y-j)**2 + (z-k)**2) / 2);
-    return dist
-}
-
-export const SDF = (voxels, dim) => {
-
-    for (const [x,y,z] of voxels)
-        voxgrid[x + y*dim.x + z*dim.x*dim.y] = 1
-    const queue = new Heap((a,b) => a[3] - b[3])
-    const sdf = new Float32Array(dim.x*dim.y*dim.z)
-    for (const z of range(dim.z))
-        for (const y of range(dim.y))
-            for (const x of range(dim.x)) {
-                const dist = edgeDetect(voxgrid, dim, x, y, z)
-                if (dist != Infinity)
-                    queue.push([x,y,z,dist,x,y,z])
-                sdf[x + y*dim.x + z*dim.x*dim.y] = Infinity
-            }
-    while (queue.items.length) {
-        const [ci,cj,ck,d,si,sj,sk] = queue.pop()
-        const pos = ci + cj*dim.x + ck*dim.x*dim.y
-        if (sdf[pos] == Infinity) {
-            sdf[pos] = d
-            for (const z of [max(0,ck-1), ck, min(ck+1, dim.z-1)])
-                for (const y of [max(0,cj-1), cj, min(cj+1, dim.y-1)])
-                    for (const x of [max(0,ci-1), ci, min(ci+1, dim.x-1)])
-                        if ((ci != x || cj != y || ck != z) && sdf[x + y*dim.x + z*dim.x*dim.y] == Infinity) {
-                            const dnext = sqrt((x-si)**2 + (y-sj)**2 + (z-sk)**2) + sdf[si + sj*dim.x + sk*dim.x*dim.y]
-                            queue.push([x,y,z,dnext,si,sj,sk])
-                        }
-        }
-    }
-    const scale = 1/max(max(dim.x,dim.y),dim.z)
-    for (const z of range(dim.z))
-        for (const y of range(dim.y))
-            for (const x of range(dim.x)) {
-                const pos = x + y*dim.x + z*dim.x*dim.y
-                sdf[pos] *= scale //(voxgrid[pos] ? -1 : 1) * scale
-            }
-    return sdf
-}
-
-
-*/
-
 
 
 

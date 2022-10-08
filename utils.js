@@ -66,6 +66,10 @@ Array.prototype.min = function() {
     return this.reduce((a,b) => min(a,b), Infinity)
 }
 
+Array.prototype.uniq = function () {
+    return [...new Set(this)];
+}
+
 
 export const coroutine = f => {
     var o = f();

@@ -16,7 +16,7 @@ fn predict(@builtin(global_invocation_id) gid:vec3<u32>) {
     let m = &meshes[(*p).mesh];
     if ((*m).flags == 1) { return; }
 
-    let mass = 4188790.0f * params.density * (*p).mass * pow(params.r,3);
+    //let mass = 4188790.0f * params.density / (*p).invmass * pow(params.r,3);
     var agrav = v3(0, 0, -params.gravity * (*m).gravity);
     (*p).v += agrav * params.t;
     (*p).sp += (*p).v * params.t;
@@ -330,7 +330,7 @@ fn project(@builtin(global_invocation_id) gid:vec3<u32>) {
     var vavg = v3(0);
     var cnt = 0.0;
     let massx = 4188790.0f * params.density * pow(params.r,3);
-    let mass = (*p).mass * massx;
+    let mass = 1/(*p).invmass * massx;
     
     let vi = (*p).v;
     let si = (*p).si;
@@ -341,7 +341,7 @@ fn project(@builtin(global_invocation_id) gid:vec3<u32>) {
         let m2 = &meshes[(*p).mesh];
         let si2 = (*p2).si;
         let vi2 = (*p2).v;
-        let mass2 = (*p2).mass * massx;
+        let mass2 = 1/(*p2).invmass * massx;
         let ds = si - si2;
         let dv = vi - vi2;
         var a = dot(dv,dv);

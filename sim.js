@@ -4,7 +4,7 @@ import * as geo from './geometry.js'
 Object.assign(globalThis, util, gpu, geo)
 
 const MAXNN = 16
-const MAXEDGES = 18
+const MAXEDGES = 128
 
 let UP = v3(0,0,1)
 let CAM_POS = v3(0, -6, 4)
@@ -17,7 +17,7 @@ phys.addNum('density', 1.0, 0.1, 10, 0.1)
 phys.addNum('frameratio', 3, 1, 20, 1)
 phys.addNum('speed', 1, 0, 5, .1)
 phys.addNum('gravity', 9.8, -5, 20, 0.1)
-phys.addNum('spring_stiff', 0.5, 0, 1, 0.01)
+phys.addNum('spring_stiff', 0.5, 0, 2, 0.01)
 phys.addNum('shape_stiff', 0.01, 0, 0.1, 0.001)
 phys.addNum('damp', 0.5, 0, 1, .01)
 phys.addNum('collidamp', .9, 0, 1, .01)
@@ -50,10 +50,7 @@ render.addNum('fov', 60, 1, 150, 1)
     
 const particleColors = [v4(.4,.4,.8,1), v4(.83,.54,.47,1), v4(.2, .48, .48)]
 
-const QUINN = { 
-    url:'quinn.obj', texUrl:'quinn.png',  sample:false,
-    scale: v3(2, 2, 2), gravity:1, // tetUrl:'tetquinn.obj',
-}
+const QUINN = { url:'quinn.obj', texUrl:'quinn.png', scale: v3(2, 2, 2), tetUrl:'tetquinn.obj' }
 const TORUS = { url:'torus.obj', offset:v3(0,0,2), scale:v3(1), color:v4(.7,.2,.1,.89), particleColor:v4(.7,.7,.1,1), sample:true }
 const GROUND = { url:'ground.obj', texUrl:'marble.png', gravity:0, offset:v3(0,0,.11), sample:true, density:100 }
 const CUBE = { url:'cube.obj', offset:v3(0,0,4), sample:false, dense:true, color:v4(0), shape:0 }
@@ -62,6 +59,7 @@ const WALL = { url:'wall2.obj', gravity:0, sample:true, color:v4(0.2,0.2,0.2,.4)
 const KNOT = { url:'knot.obj', color:v4(.6,.3,.3,1), offset:v3(0,0,3), sample:true, scale:v3(1) }
 const HELPER = { url:'helper.obj', scale:v3(2,2,2), sample:false, gravity:0 }
 const HAND = { url:'hand.obj', texUrl:'hand.png', color:v4(1, .9, .8, 1), sample:true, gravity:0, flags:1, density:1 }
+const DRAGON = { url:'vdragon.obj', color:v4(.7,.2,.1,.89), tetUrl:'dragon.obj' }
 
 const LIGHTS = [
     { power: 1.5, color: v3(1,.85,.6), pos:v3(2,2,2.3) },
@@ -73,7 +71,8 @@ const LIGHTS = [
 const MESHES = [
     //{ url: 'particle.obj', color: v4(.5, .5, .3, 1), offset: v3(0, 0, 2) }, 
     //{ url: 'particle.obj', color: v4(.5, .3, .5, 1), offset: v3(0, 0, 1) },
-    TORUS,
+    DRAGON
+    //TORUS
 ]
 
 const clock = () => phys.speed*performance.now()/1000
@@ -107,7 +106,7 @@ export const Vertex = GPU.struct({
         ['particle', i32],
         ['norm', V3],
         ['nedges', u32],
-        ['edges', GPU.array({ type: u32, length: MAXEDGES })]        
+        ['edges', GPU.array({ type:u32, length:MAXEDGES })]        
     ]
 })
         
@@ -120,12 +119,12 @@ export const Particle = GPU.struct({
         ['si', V3],
         ['mesh', u32],
         ['q', V3],
-        ['mass',f32],
+        ['invmass',f32],
         ['s0', V3],
         ['nedges', u32],
         ['v', V3],
         ['k', u32],
-        ['edges', GPU.array({ type:u32, length:8})],
+        ['edges', GPU.array({ type:u32, length:MAXEDGES})],
         ['nn', GPU.array({ type:u32, length:MAXNN })],
     ]
 })
@@ -176,9 +175,9 @@ export const TriVert = GPU.struct({
         ['norm', V3],
         ['mesh', u32],
         ['uv', V2],
-        ['dist',f32]
     ]
 })
+
 export const Triangle = GPU.struct({
     name: 'Triangle',
     fields: [
@@ -214,7 +213,7 @@ export class Sim {
         let verts = []
         let tris = []
         const bitmaps = []
-
+        window.tris = tris
         for (const opt of MESHES.concat([HAND])) {
             const data = opt.data || await fetchtext(opt.url)
             const mesh = Mesh.alloc()
@@ -238,32 +237,38 @@ export class Sim {
             let mverts = parsed.verts, mfaces = parsed.faces
             if ('scale' in opt) mverts = mverts.map(v => v.mul(opt.scale))
             if ('offset' in opt) mverts = mverts.map(v => v.add(opt.offset))
+            const vertedges = Array(mverts.length).fill().map(v => [])
+            for (const tri of mfaces) {
+                const [[a],[b],[c]] = tri
+                vertedges[a].push([c, b])
+                vertedges[b].push([a, c])
+                vertedges[c].push([b, a])
+                tris.push(Triangle.of(...tri.map(([v, uv]) => TriVert.of(v3(0), v + verts.length, v3(0), 0, uv))))
+            }
 
             let tets, sample
             if (opt.tetUrl) {
                 tets = parseObj(await fetchtext(opt.tetUrl))
+                if ('scale' in opt) tets.verts = tets.verts.map(v => v.mul(opt.scale))
+                if ('offset' in opt) tets.verts = tets.verts.map(v => v.add(opt.offset))
+                tets.vertedges = Array(tets.verts.length).fill().map(v=>[])
+                for (const [[a],[b],[c],[d]] of tets.faces) {
+                    tets.vertedges[a].push(b,c,d)
+                    tets.vertedges[b].push(c,d,a)
+                    tets.vertedges[c].push(d,a,b)
+                    tets.vertedges[d].push(a,b,c)
+                }
             } else if (opt.sample) {
                 sample = new VoxelGrid(mverts, mfaces, phys.r*2)
                 sample.voxelize()
             }
             
             mesh.vi = verts.length
-
-            const vertedges = Array(mverts.length).fill().map(v => [])
-            for (const tri of mfaces) {
-                const [a, b, c] = [tri.v0.vidx, tri.v1.vidx, tri.v2.vidx]
-                vertedges[a].push([c, b])
-                vertedges[b].push([a, c])
-                vertedges[c].push([b, a])
-                for (const i of range(3)) tri[i].vidx += mesh.vi
-                tris.push(tri)
-            }
-
             for (const i of range(mverts.length)) {
                 const v = Vertex.alloc()
                 v.pos = mverts[i]
                 v.mesh = meshes.length
-                v.particle = particles.length + (sample ? sample.vertidxs[i] : i)
+                v.particle = particles.length + (sample ? sample.vertidxs[i] : (tets ? -1 : i))
                 verts.push(v)
                 const unsorted = vertedges[i], sorted = []
                 if (unsorted.length > MAXEDGES) throw new Error(`meshes must have <= ${MAXEDGES} edges/vertex`)
@@ -294,15 +299,23 @@ export class Sim {
 
             mesh.pi = particles.length
             let c = v3(0)
-            const mparts = sample ? sample.samples : mverts
+            const mparts = sample ? sample.samples : (tets ? tets.verts : mverts)
             for (const [i, pos] of enumerate(mparts)) {
                 const p = Particle.alloc()
                 p.si = p.s0 = pos
                 c = c.add(pos)
                 p.mesh = meshes.length
-                p.mass = 'density' in opt ? opt.density : 1
+                p.invmass = 'density' in opt ? 1/opt.density : 1
                 particles.push(p)
-                if (sample) {
+                if (tets) {
+                    const edges = tets.vertedges[i].uniq()
+                    p.nedges = edges.length
+                    if (p.nedges> MAXEDGES) throw new Error(`tets must have <= ${MAXEDGES} edges/vertex`)
+                    
+                    for (const j of range(edges.length))
+                        p.edges[j] = edges[j] + mesh.pi
+                   
+                } else if (sample) {
                     const edges = sample.edges[i]
                     for (const j of range(edges.length))
                         p.edges[j] = edges[j] + mesh.pi
@@ -514,10 +527,10 @@ export const parseObj = (data) => {
     })
     const verts = sections.v.map(toks => v3(...toks.map(parseFloat)))
     const tex = sections.vt.map(toks => v2(...toks.map(parseFloat)))
-    const faces = sections.f.map(toks => Triangle.of(...toks.map(tok => {
-        const [v, vt] = tok.split('/').slice(0, 2).map(idx => parseInt(idx) - 1)
-        return TriVert.of(v3(0), v, v3(0), 0, isNaN(vt) ? v2(0) : tex[vt], 0)
-    })))
+    const faces = sections.f.map(toks => toks.map(tok => {
+        let [v, vt] = tok.split('/').slice(0, 2).map(idx => parseInt(idx) - 1)
+        return [v, isNaN(vt) ? v2(0) : tex[vt]]
+    }))
     return { verts, faces }
 }
 
