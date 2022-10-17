@@ -523,6 +523,12 @@ export const V3 = class extends Float32Array {
     mul(b) { return v3(this[0]*b[0], this[1]*b[1], this[2]*b[2]) }
     divc(b) { return v3(this[0]/b, this[1]/b, this[2]/b) }
     div(b) { return v3(this[0]/b[0], this[1]/b[1], this[2]/b[2]) }
+    mulm(m) { 
+        return v3(this[0]*m[0][0]+ this[1]*m[1][0] + this[2]*m[2][0],
+                  this[0]*m[0][1]+ this[1]*m[1][1] + this[2]*m[2][1],
+                  this[0]*m[0][2]+ this[1]*m[1][2] + this[2]*m[2][2])
+    }
+    sum() { return this[0] + this[1] + this[2] }
     mag() { return sqrt(this[0]**2 + this[1]**2 + this[2]**2) }
     majorAxis() { let ax = abs(this[0]) > abs(this[1]) ? 0 : 1; return abs(this[ax]) > abs(this[2]) ? ax : 2 }
     round() { return [round(this[0]), round(this[1]), round(this[2])] }
@@ -595,6 +601,13 @@ export const M3 = GPU.array({
         },
         toString: function() {
             return [this[0].toString(), this[1].toString(), this[2].toString()].join('\n')
+        },
+        inverse: function() {
+            const [[m00,m01,m02],[m10,m11,m12],[m20,m21,m22]] = this
+            const n = m3([[m22*m11 - m12*m21, -m22*m01 + m02*m21, m12*m01 - m02*m11], 
+                          [-m22*m10 + m12*m20, m22*m00 - m02*m20, -m12*m00 + m02*m10],
+                          [m21*m10 - m11*m20, -m21*m00 + m01*m20, m11*m00 - m01*m10]])
+            return n.mulc(1 / (n[0][0]*m00+ n[1][0]*m01 + n[2][0]*m02));
         }
     }
     

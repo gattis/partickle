@@ -8,13 +8,23 @@ fn vertpos(@builtin(global_invocation_id) gid:vec3<u32>) {
     let v = &vertices[vid];
     let m = &meshes[(*v).mesh];
     let pid = (*v).particle;
-    if (pid < 0) {
-        (*v).pos = (*m).ci + (*m).rot * (*v).q;
-    } else {
-        let p = &particles[(*v).particle];       
-        let goal_delta = (*p).si - ((*m).ci + (*m).rot * (*p).q);
+    let tid = (*v).tet;
+    if (tid >= 0) {
+        let bary = (*v).bary;
+        let tet = tets[tid];
+        var u = 1.0;
+        (*v).pos = v3(0);
+        for (var k = 0; k < 3; k += 1) {
+            (*v).pos += bary[k] * particles[tet.verts[k]].pos;
+            u -= bary[k];
+        }
+        (*v).pos += u * particles[tet.verts[3]].pos;
+    } else if (pid > 0) {
+        let p = &particles[pid];       
+        let goal_delta = (*p).pos - ((*m).ci + (*m).rot * (*p).q);
         (*v).pos = (*m).ci + (*m).rot * (*v).q +  goal_delta;
-    }
+    } // else {  (*v).pos = (*m).ci + (*m).rot * (*v).q; }
+
 }
 
 @compute @workgroup_size(${threads})

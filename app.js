@@ -43,7 +43,7 @@ const createCtrl = {
         ctrl.setAttribute('step', prefs.step[key])
         out.textContent = prefs[key]
         ctrl.oninput = () => {
-            prefs[key] = round(parseFloat(ctrl.value),3) 
+            prefs[key] = round(parseFloat(ctrl.value),4) 
             out.textContent = prefs[key]
         }
         createCtrl.common(prefs, key, elem, ctrl, out)
