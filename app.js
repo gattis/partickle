@@ -4,6 +4,10 @@ window.phys = phys
 const doc = document
 window._ = sel => doc.querySelector(sel)
 window.__ = sel => doc.querySelectorAll(sel)
+EventTarget.prototype.on = function(type, fn, options = {}) {
+    if (this.cbs?.[type]) this.removeEventListener(type, this.cbs[type])
+    this.addEventListener(type, (this.cbs||={})[type] = fn, options)
+}
 
 window.cv = doc.querySelector('canvas')
 cv.width = cv.style.width = window.innerWidth
@@ -31,7 +35,7 @@ const createCtrl = {
         const ctrl = doc.createElement('input')
         ctrl.setAttribute('type', 'checkbox')
         ctrl.checked = prefs[key]
-        ctrl.onchange = () => { prefs[key] = ctrl.checked }
+        ctrl.on('change', () => { prefs[key] = ctrl.checked })
         createCtrl.common(prefs, key, elem, ctrl)
     },
     'num': (prefs, key, elem) => {
@@ -42,10 +46,10 @@ const createCtrl = {
         ctrl.setAttribute('max', prefs.hi[key])
         ctrl.setAttribute('step', prefs.step[key])
         out.textContent = prefs[key]
-        ctrl.oninput = () => {
+        ctrl.on('input', () => {
             prefs[key] = round(parseFloat(ctrl.value),4) 
             out.textContent = prefs[key]
-        }
+        })
         createCtrl.common(prefs, key, elem, ctrl, out)
     },
     'choice': (prefs, key, elem) => {
@@ -57,7 +61,7 @@ const createCtrl = {
             option.textContent = opt
             select.append(option)
         }
-        select.onchange = () => { prefs[key] = select.value }
+        select.on('change', () => { prefs[key] = select.value })
         createCtrl.common(prefs, key, elem, select)
     }    
 }
@@ -72,17 +76,18 @@ for (const key of render.keys)
 window.move = false
 
 const handleInput = async (e) => {
-    e.preventDefault()
+    if (e.type == 'contextmenu') e.preventDefault()
     if (e.type == 'pointerup') {
         move = false
         cv.style.cursor = 'grab'
-        sim.dropParticle(e.x, e.y)
+        sim.moveParticle(e.x, e.y, true)
     }
     if (e.type == 'pointerdown') {
         move = { x: e.x, y: e.y, btn: e.button }
         if (e.button == 2) {
            sim.grabParticle(e.x, e.y)
            cv.style.cursor = 'grabbing'
+           
         } else if (e.button == 1) {
             cv.style.cursor = 'all-scroll'
         } else if (e.button == 0) {
@@ -96,10 +101,9 @@ const handleInput = async (e) => {
         move.y = e.y
         if (move.btn == 0) sim.rotateCam(dx, dy)
         else if (move.btn == 1) sim.strafeCam(dx, dy)
-        else if (move.btn == 2) sim.dragParticle(move.x, move.y)
+        else if (move.btn == 2) sim.moveParticle(move.x, move.y)
     }
-    if (e.type == 'wheel')
-        sim.advanceCam(-0.001 * e.deltaY)
+    if (e.type == 'wheel') sim.advanceCam(-0.001 * e.deltaY)
     if (e.type == 'keydown')
         if (e.code == 'Space')
             location.reload()
@@ -108,18 +112,18 @@ const handleInput = async (e) => {
 }
     
 for (const type of ['pointerup','pointerout','pointerdown','pointermove','contextmenu'])
-    cv.addEventListener(type, handleInput, { capture: true, passive: false })
-doc.onwheel = handleInput
-doc.onkeydown = handleInput
-window.onresize = () => {
+    cv.on(type, handleInput, { capture: true, passive: false })
+doc.on('wheel', handleInput, { passive: true})
+doc.on('keydown', handleInput)
+window.on('resize', () => {
     cv.width = cv.style.width = window.innerWidth
     cv.height = cv.style.height = window.innerHeight
     sim.resize(cv.width, cv.height)
-}
+})
 
 const step = doc.createElement('button')
 step.id = 'step'
-step.onclick = () => { sim.compute.fwdstep = true }
+step.on('click', () => { sim.compute.fwdstep = true })
 step.style.display = phys.paused ? 'inline' : 'none'
 step.innerHTML = '&#128099;'
 phys.watch(['paused'], () => {
@@ -144,11 +148,14 @@ async function updateInfo() {
 }
 setTimeout(updateInfo, 500)
 
-_('#hand').onclick = () => cv.requestPointerLock()
-doc.onpointerlockchange = () => {
-    sim.activateHand(doc.pointerLockElement == cv)
-    doc.onmousemove = doc.onmousemove ? null : (e) => sim.moveHand(e.movementX, e.movementY, 0)
-    doc.onwheel = doc.onwheel == handleInput ? (e) => sim.moveHand(0, 0, e.deltaY * .0001) : handleInput
-}
+_('#hand').on('click', () => cv.requestPointerLock())
+doc.on('pointerlockchange', () => {
+    let exiting = doc.pointerLockElement != cv
+    sim.activateHand(!exiting)
+    doc.on('mousemove', exiting ? null : (e) => sim.moveHand(e.movementX, e.movementY, 0))
+    doc.on('wheel', exiting ? handleInput : (e) => sim.moveHand(0, 0, e.deltaY * .0001))
+})
+
+_('#fix').on('click', () => sim.fixParticle())
 
 sim.run()

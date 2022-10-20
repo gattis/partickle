@@ -111,6 +111,16 @@ struct FragDepth {
     return v4(1,1,1,1);
 }
 
+@vertex fn edges_vert(@builtin(vertex_index) vertidx:u32,
+                      @location(0) pos:v3) -> @builtin(position) v4 {
+    let a = f32(vertidx);
+    return camera.projection * camera.modelview * v4(pos + v3(.001*sin(a), .001*cos(a), .001*sin(a)*.001*cos(a)), 1.0);
+}
+
+@fragment fn edges_frag() -> @location(0) v4 {
+    return v4(1,1,1,1);
+}
+
 
 struct PartIO {
     @builtin(position) position:v4,

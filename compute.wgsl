@@ -13,7 +13,7 @@ fn predict(@builtin(global_invocation_id) gid:vec3<u32>) {
     (*p).k = 0u;
     (*p).prev_pos = (*p).pos;
     (*p).prev_vel = (*p).vel;
-    if (params.grabbing == i32(pid)) { return; }
+    if ((*p).mass == 0) { return; }
     let m = &meshes[(*p).mesh];
     if ((*m).flags == 1) { return; }
 
@@ -116,8 +116,8 @@ fn grid_collide(@builtin(global_invocation_id) gid:vec3<u32>) {
 fn project(@builtin(global_invocation_id) gid:vec3<u32>) {
     let pid:u32 = gid.x;
     if (pid >= arrayLength(&particles)) { return; }
-    if (params.grabbing == i32(pid)) { return; }
     let p = &particles[pid];
+    if ((*p).mass == 0) { return; }
     let m = &meshes[(*p).mesh];
     if ((*m).flags == 1) { return; }
 
@@ -163,7 +163,7 @@ fn project(@builtin(global_invocation_id) gid:vec3<u32>) {
     if (params.ground > 0 && (*p).pos.z < params.r) {
         let vi = (*p).prev_vel; let vf = (*p).vel; let pi = (*p).prev_pos; let pf = (*p).pos;
         var vo:v3; var po:v3;
-        let compliance = 1 - params.collidamp;
+        let compliance = (1 - params.damp);
         if ((*p).prev_pos.z <= params.r) {
             vo = v3(vf.xy * compliance, 0);
             po = v3(pi.xy + (vi.xy + vo.xy)/2*params.t, params.r);
@@ -172,10 +172,9 @@ fn project(@builtin(global_invocation_id) gid:vec3<u32>) {
             let tcol = (vi.z + sqrt(vi.z*vi.z - 2*a.z*(pi.z - params.r))) / -a.z;
             var vc = (*p).prev_vel + tcol * a;
             let pc = (*p).prev_pos + ((*p).prev_vel + vc)/2 * tcol;
-            vc.z = vc.z - compliance * 2 * vc.z;
+            vc = v3(vc.xy * compliance, vc.z - (1 - params.collidamp) * 2 * vc.z);
             let tremain = params.t - tcol;        
             vo = vc + a * tremain; 
-            vo = v3(vo.xy * compliance, vo.z);
             po = pc + (vc+vo)/2 * tremain;
         }
         vel_out += vo;
@@ -366,23 +365,25 @@ const tetfaces = array<u3,4>(u3(1,3,2), u3(0,2,3), u3(0,3,1), u3(0,1,2));
 fn constrain(@builtin(global_invocation_id) gid:vec3<u32>) {
     let pid = gid.x;
     if (pid >= arrayLength(&particles)) { return; }
-    if (params.grabbing == i32(pid)) { return; }    
     let p = &particles[pid];
+    if ((*p).mass == 0) { return; }  
     let m = &meshes[(*p).mesh];
     if ((*m).flags == 1) { return; }
 
     (*p).vel = (*p).tmp_vel;
+    var pos = (*p).pos;
 
-    var dpos_spring = v3(0);
-    let nedges = f32((*p).ef - (*p).ei);
+    
+    var edge_delta = v3(0);
     for (var e = (*p).ei; e < (*p).ef; e += 1) {
         let p2 = &particles[edges[e]];
-        var delta = (*p2).pos - (*p).pos;
+        var delta = (*p2).pos - pos;
         let dist = length(delta);
         if (dist == 0.0) { continue; }
         let dist0 = length((*p2).rest_pos - (*p).rest_pos);
-        dpos_spring += params.edge_stiff * (dist - dist0) / dist * delta / nedges;
+        edge_delta += (dist - dist0) / dist * delta;
     }
+    pos += edge_delta * (params.edge_stiff * 1.2 / f32((*p).ef - (*p).ei));
 
     var center:v3;
     var rot:m3;
@@ -394,9 +395,9 @@ fn constrain(@builtin(global_invocation_id) gid:vec3<u32>) {
         rot = (*m).rot;
     }
     let goal = center + rot * (*p).q;
-    var dpos_shape = params.shape_stiff / 100.0 * (goal - (*p).pos);   
-    var dpos_tetvol = v3(0);
-    let ntets = f32((*p).tf - (*p).ti);
+    pos += pow(params.shape_stiff,3) * (goal - pos);   
+
+    var vol_delta = v3(0);
     for (var t = (*p).ti; t < (*p).tf; t += 1) {
         let tet = tets[ptets[t]];
         var k:i32;;
@@ -404,22 +405,21 @@ fn constrain(@builtin(global_invocation_id) gid:vec3<u32>) {
             if (tet.verts[k] == pid) { break; }
         }
         if (k == 4) { continue; }
-
-        let a = particles[tet.verts[0]].pos;
-        let ab = particles[tet.verts[1]].pos - a;
-        let ac = particles[tet.verts[2]].pos - a;
-        let ad = particles[tet.verts[3]].pos - a;
-        let vol = dot(cross(ab,ac),ad) / 6.0;
-
-        let p0 = particles[tet.verts[tetfaces[k][0]]].pos;
-        let p1 = particles[tet.verts[tetfaces[k][1]]].pos;
-        let p2 = particles[tet.verts[tetfaces[k][2]]].pos;
-        let n = cross(p1 - p0, p2 - p0);
-
-        dpos_tetvol -= params.tetvol_stiff * 300.0 * (vol - tet.vol0) * n / ntets;
+        var tverts = array<v3,4>(
+            particles[tet.verts[0]].pos, particles[tet.verts[1]].pos, 
+            particles[tet.verts[2]].pos, particles[tet.verts[3]].pos
+        );
+        tverts[k] = pos;
+        let vol = dot(cross(tverts[1] - tverts[0], tverts[2] - tverts[0]), tverts[3] - tverts[0]) / 6.0;
+        let p0 = tverts[tetfaces[k][0]];
+        let p1 = tverts[tetfaces[k][1]];
+        let p2 = tverts[tetfaces[k][2]];
+        let n = cross(normalize(p1 - p0), normalize(p2 - p0));
+        vol_delta += (tet.vol0 - vol) * n;
     }
+    pos += vol_delta * (params.tetvol_stiff * 1000.0 / f32((*p).tf - (*p).ti));
 
-    (*p).pos_delta = dpos_spring + dpos_shape + dpos_tetvol;
+    (*p).pos_delta = pos - (*p).pos;
     (*p).vel += (*p).pos_delta / params.t;
 
 }
@@ -428,8 +428,8 @@ fn constrain(@builtin(global_invocation_id) gid:vec3<u32>) {
 fn syncpos(@builtin(global_invocation_id) gid:vec3<u32>) {
     let pid:u32 = gid.x;
     if (pid >= arrayLength(&particles)) { return; }
-    if (params.grabbing == i32(pid)) { return; }
     let p = &particles[pid];
+    if ((*p).mass == 0) { return; }  
     let m = &meshes[(*p).mesh];
     if ((*m).flags == 1) { return; }
     (*p).pos += (*p).pos_delta;

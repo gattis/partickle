@@ -47,21 +47,20 @@ output {
     bottom: 10px;
 }
 
-#hand {
-    font-size: 25pt;
+button {
+    font-size: 20pt;
     pointer-events: initial;
-    padding: 0px 5px 5px 0px;
     border-radius: 25%;
     box-shadow: 0px 5px 10px rgba(0, 0, 0, .5);
     cursor: pointer;
 }
 
-#hand:hover {
+button:hover {
     transform: translateX(-4px) translateY(-4px);
 
 }
 
-#hand:active {
+button:active {
     box-shadow: 0px 0px 0px
 }
 

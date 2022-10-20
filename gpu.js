@@ -180,7 +180,7 @@ export const GPU = class GPU {
         args.layout = this.dev.createBindGroupLayout({ entries })
         const blend = { color: { operation: color_op, srcFactor: color_src, dstFactor: color_dst },
                         alpha: { operation: alpha_op, srcFactor: alpha_src, dstFactor: alpha_dst } }
-        const pipeDesc = {        
+        const pipeDesc = {
             layout: this.dev.createPipelineLayout({ bindGroupLayouts: [ args.layout ] }),
             multisample: { count: pref.samples, alphaToCoverageEnabled: atc && pref.samples > 1},
             vertex: { module: shader.module, entryPoint:entry+'_vert', buffers:vertBufs },
@@ -272,6 +272,20 @@ export const GPU = class GPU {
             for (const i of range(pipe.vertBufs.length))
                 pass.setVertexBuffer(i, pipe.vertBufs[i].buf.buffer)
             pass.draw(...dispatch)
+        }
+    }
+
+    drawIndexed(args) {
+        let { pipe, dispatch, binds } = args
+        if (dispatch.length == undefined) dispatch = [dispatch]
+        const bg = this.bindGroup(pipe, binds)
+        return (pass) => {
+            pass.setPipeline(pipe.pipeline)
+            pass.setBindGroup(0, bg)
+            for (const i of range(pipe.vertBufs.length))
+                pass.setVertexBuffer(i, pipe.vertBufs[i].buf.buffer)
+            pass.setIndexBuffer(pipe.indexBuf.buf.buffer, pipe.indexBuf.indexFormat)
+            pass.drawIndexed(...dispatch)
         }
     }
         
