@@ -78,7 +78,7 @@ struct FragDepth {
 
 @fragment fn surface_frag(input:SurfIn) -> @location(0) v4 {
     let m = &meshes[input.mesh];
-    if ((*m).flags == 1) { discard; }
+    if (bool((*m).inactive)) { discard; }
     var color = (*m).color * select(textureSample(tex, samp, input.uv, (*m).tex), v4(1), (*m).tex < 0);
     if (color.a < 0.0001) { discard; }
     color = frag(input.worldpos, input.norm, color);
@@ -114,7 +114,7 @@ struct FragDepth {
 @vertex fn edges_vert(@builtin(vertex_index) vertidx:u32,
                       @location(0) pos:v3) -> @builtin(position) v4 {
     let a = f32(vertidx);
-    return camera.projection * camera.modelview * v4(pos + v3(.001*sin(a), .001*cos(a), .001*sin(a)*.001*cos(a)), 1.0);
+    return camera.projection * camera.modelview * v4(pos, 1.0);
 }
 
 @fragment fn edges_frag() -> @location(0) v4 {
@@ -143,6 +143,28 @@ struct PartIO {
     out.selected = select(0u, 1u, i32(instidx) == camera.selection);
     return out;
 }
+
+struct LightIO {
+    @builtin(position) position:v4,
+    @location(0) lightpos:v3,
+    @location(1) vertpos:v3,
+    @location(2) color:v3,
+    @location(3) size:f32,
+};
+
+@vertex fn lights_vert(@builtin(vertex_index) vertidx:u32,
+                      @builtin(instance_index) instidx:u32) -> LightIO {   
+    let l = &lights[instidx];
+    var out:LightIO;
+
+    out.lightpos = (*l).pos;
+    out.size = .4*sqrt((*l).power);
+    out.vertpos = tetrahedron[vertidx] * sqrt(3) * out.size;
+    out.position = camera.projection * camera.modelview * v4(out.lightpos + out.vertpos,1);
+    out.color = (*l).color;
+    return out;
+}
+        
 
 struct RayTrace {
     t:f32,
@@ -176,7 +198,7 @@ fn trace_sphere(vertpos:v3, center:v3, r:f32) -> RayTrace {
 
 @fragment fn particle_frag(input:PartIO) -> FragDepth {
     let m = &meshes[input.mesh];
-    if ((*m).flags == 1) { discard; }
+    if (bool((*m).inactive)) { discard; }
     let color = (*m).pcolor;
     if (color.a < 0.5) { discard; }
     var rgb = color.rgb;
@@ -188,33 +210,10 @@ fn trace_sphere(vertpos:v3, center:v3, r:f32) -> RayTrace {
 }
 
 
-struct LightIO {
-    @builtin(position) position:v4,
-    @location(0) lightpos:v3,
-    @location(1) vertpos:v3,
-    @location(2) color:v3,
-    @location(3) size:f32,
-};
-
-@vertex fn lights_vert(@builtin(vertex_index) vertidx:u32,
-                      @builtin(instance_index) instidx:u32) -> LightIO {   
-    let l = &lights[instidx];
-    var out:LightIO;
-
-    out.lightpos = (*l).pos;
-    out.size = .4*sqrt((*l).power);
-    let vpos = cube[vertidx];
-    out.vertpos = vpos * out.size;
-    out.position = camera.projection * camera.modelview * v4(out.lightpos + out.vertpos * out.size,1);
-    out.color = (*l).color;
-    return out;
-}
-        
-
 @fragment fn lights_frag(input:LightIO) -> FragDepth {
     let trace = trace_sphere(input.vertpos, input.lightpos, input.size);
-    let mag = pow(dot(-trace.normal, trace.rd), 20);
-    return FragDepth(v4(input.color * mag, 1), trace.clip_depth);
+    var mag = .01/(1-dot(-trace.normal, trace.rd));
+    return FragDepth(v4(input.color*mag,mag), trace.clip_depth);   
 }
 
 

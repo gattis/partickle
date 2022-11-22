@@ -7,7 +7,6 @@ fn vertpos(@builtin(global_invocation_id) gid:vec3<u32>) {
     if (vid >= nverts) { return; }
     let v = &vertices[vid];
     let m = &meshes[(*v).mesh];
-    let pid = (*v).particle;
     let tid = (*v).tet;
     if (tid >= 0) {
         let bary = (*v).bary;
@@ -15,16 +14,11 @@ fn vertpos(@builtin(global_invocation_id) gid:vec3<u32>) {
         var u = 1.0;
         (*v).pos = v3(0);
         for (var k = 0; k < 3; k += 1) {
-            (*v).pos += bary[k] * particles[tet.verts[k]].pos;
+            (*v).pos += bary[k] * particles[tet[k]].pos;
             u -= bary[k];
         }
-        (*v).pos += u * particles[tet.verts[3]].pos;
-    } else if (pid > 0) {
-        let p = &particles[pid];       
-        let goal_delta = (*p).pos - ((*m).ci + (*m).rot * (*p).q);
-        (*v).pos = (*m).ci + (*m).rot * (*v).q +  goal_delta;
-    } // else {  (*v).pos = (*m).ci + (*m).rot * (*v).q; }
-
+        (*v).pos += u * particles[tet[3]].pos;
+    }
 }
 
 @compute @workgroup_size(${threads})
@@ -59,7 +53,7 @@ fn normals(@builtin(global_invocation_id) gid:vec3<u32>) {
     for (var i = 0u; i < nedges; i = i + 1u) {
         let b = vertices[(*v).edges[i % nedges]].pos - pos;
         let c = vertices[(*v).edges[(i+1u) % nedges]].pos - pos;
-        let n = cross(c,b);
+        let n = cross(b,c);
         let area = 0.5 * length(n);
         let angle = acos(dot(normalize(b),normalize(c)));
         norm += angle * normalize(n);

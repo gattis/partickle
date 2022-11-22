@@ -18,9 +18,27 @@ export const range = function* (a,b,step) {
         for (let val = start; val > stop; val += step) yield val
 }
 
-export const enumerate = function* (arr) {
-    for (const i of range(arr.length))
-        yield [i,arr[i]]
+export const range3d = function* (nx,ny,nz) {
+    for (let z of range(nz))
+        for (let y of range(ny))
+            for (let x of range(nx))
+                yield [x,y,z]
+}
+
+export const enumerate = function* (iterable) {
+    if (iterable[Symbol.iterator]) {
+        let i = 0
+        for (const val of iterable)
+            yield [i++,val]
+    } else {
+        for (let i of range(iterable.length))
+            yield [i, iterable[i]]
+    }
+}
+
+export const reversed = function* (arr) {
+    if (!(arr instanceof Array)) arr = [...arr]
+    for (let i = arr.length - 1; i >= 0; i--) yield arr[i];
 }
 
 export const BitField = class BitField {
@@ -45,6 +63,11 @@ export const BitField = class BitField {
     
 }
 
+EventTarget.prototype.on = function(type, fn, options = {}) {
+    if (this.cbs?.[type]) this.removeEventListener(type, this.cbs[type])
+    this.addEventListener(type, (this.cbs||={})[type] = fn, options)
+    return this
+}
 
 
 String.prototype.interp = function(args) {
@@ -105,41 +128,7 @@ export const fetchtext = async (url) => {
 }
 
 
-export const Heap = class Heap {
-    constructor(cmp) {
-        const items = this.items = []
-        this.cmp = (i, j) => cmp(items[i], items[j])
-        this.swap = (i, j) => [items[i], items[j]] = [items[j], items[i]]
-    }
 
-    push(value) {
-        const { items, cmp, swap } = this
-        let index = items.push(value) - 1
-        while (true) {
-            const parent = ceil(index/2 - 1)
-            if (parent < 0 || cmp(index, parent) >= 0) break
-            swap(parent, index)
-            index = parent
-        }
-
-    }
-
-    pop() {
-        const { items, cmp, swap } = this
-        if (items.length == 1) return items.pop()
-        const ret = items[0]
-        items[0] = items.pop()
-        let index = 0
-        while (true) {
-            const left = 2*index + 1, right = left + 1
-            const child = right < items.length && cmp(left, right) > 0 ? right: left
-            if (left >= items.length || cmp(child, index) >= 0) break
-            swap(index, child)
-            index = child
-        }
-        return ret
-    }
-}
 
 export const hijack = (cls, meth, replacement) => {
     cls.prototype[meth] = new Proxy(cls.prototype[meth], { apply: replacement })
@@ -199,11 +188,66 @@ export class Preferences {
     }
 }
 
+Map.prototype.getDefault = function(key, def) {
+    const val = this.get(key)
+    return val == undefined ? def : val
+}
+
+Map.prototype.setDefault = function(key, def) {
+    const val = this.getDefault(key, def)
+    this.set(key, val)
+    return val
+}
+
+export const hashTuple = (tup) => {
+    tup.sort((a,b) => a - b)
+    while (tup.length < 4) tup.push(0)
+    return (new Float64Array((new Uint16Array(tup)).buffer))[0]
+}
+
+export const randomShuffle = (arr) => {
+    if (!(arr instanceof Array)) arr = [...arr]
+    let g = 279470273, m = 2**31 - 1
+    return arr.sort((a,b) => ((a+1)*g%m - (b+1)*g%m))
+}
+
+export const repr = (v) => {
+    if (v == undefined) return 'undef'
+    if (v == null) return 'null'
+    if (typeof v == 'string') return v
+    if (typeof v == 'number')
+        return (Math.round(v * 100000) / 100000).toString()
+    if (v instanceof Array | v instanceof Set) {
+        if ((v.length || v.size || Infinity) <= 4)
+            return `< ${[...v].map(x => repr(x)).join(' ')} >`
+        else return `[sz=${v.length || v.size || 0}]`
+    }
+    return v.toString()
+}
 
 
 
+export const dbg = (vars) => {
+    let [fname,lineno] = new Error().stack.split('\n')[2].split('/').at(-1).split(':').slice(0,2)
+    let prefix = [
+        `%c${fname}|${lineno}:%c`, 
+        'color: yellow; font-weight:bold;', 'color: unset; font-weight:unset;'
+    ]
+    if (typeof vars == 'string') {
+        console.out(...prefix,vars)
+    } else {
+        let reprs = Object.entries(vars).map(([k,v]) => `${k}=${repr(v)}`)
+        console.groupCollapsed(...prefix, reprs.join(' '))
+        for (let [k,v] of Object.entries(vars)) {
+            console.group(k)
+            console.dir(v)
+            console.groupEnd()
+        }       
+        console.groupEnd()
+    }    
+}
 
-
+console.out = console.log
 
 
 

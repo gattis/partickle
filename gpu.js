@@ -2,7 +2,6 @@ const { abs, cos, sin, acos, asin, cbrt, sqrt, PI, random, round, ceil, floor, t
 import * as util from './utils.js'
 Object.assign(globalThis, util)
 
-
 export const f32 = { name:'f32', conv:'Float32', align:4, size: 4, getset: (off) => ({
     get() { return this.getFloat32(off,true) },
     set(v) { return this.setFloat32(off,v,true) }
@@ -28,7 +27,8 @@ const NODE = globalThis.process && process.release.name == 'node'
 export const GPU = class GPU {
     
     async init(width, height, ctx) {
-        const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' })
+        let promise = navigator.gpu.requestAdapter({ powerPreference: 'high-performance' })
+        const adapter = await promise
         const limits = {}, features = []
         for (const feature of adapter.features.keys())
             if (feature != 'multi-planar-formats' && feature != 'clear-texture')
@@ -70,8 +70,7 @@ export const GPU = class GPU {
     cleanup() {
         this.dev.destroy()
     }
-    
-    
+        
     buf(args) {
         if ('data' in args) [args.type, args.length] = [args.data.constructor, args.data.length]
         args.length = args.length == undefined ? 1 : args.length
@@ -438,9 +437,6 @@ export const GPU = class GPU {
                 get() { return new type(this.buffer, this.byteOffset + off, type.size) },
                 set(v) { return new Int8Array(this.buffer,this.byteOffset+off,type.size).set(new Int8Array(v.buffer,v.byteOffset,type.size)) }   
             })
-            //static toWGSL() {
-            //    let fieldWGSL = cls.fields.map(f => `${f.name}: ${f.type.name}`).join(',\n')
-            //    return `struct ${cls.name} {\n${fieldWGSL}\n}\n`
         }
         
         cls.stride = roundUp(opt.type.size, opt.type.align)
@@ -463,17 +459,21 @@ export const GPU = class GPU {
     }
 }
 
-
 export const i32array = GPU.array({ type: i32 })
 export const u32array = GPU.array({ type: u32 })
+export const f32array = GPU.array({ type: f32 })
 export const iatomicarray = GPU.array({ type: iatomic })
 export const uatomicarray = GPU.array({ type: uatomic })
-
 
 export const V2 = GPU.struct({
     name: 'vec2<f32>',
     fields: [['x', f32], ['y', f32]],
-    size: 8, align: 8
+    size: 8, align: 8,
+    members: {
+        toString: function() {
+            return '['+[0,1].map(i => this[i].toFixed(5).replace(/\.?0+$/g, '').replace(/^-0$/,'0')).join(' ')+']'
+        }
+    }
 })
 
 export const v2 = (...args) => V2.of(...args)
@@ -556,7 +556,7 @@ export const V3 = class extends Float32Array {
     minc() { return min(this[0],this[1],this[2]) }
     max(b) { return v3(max(this[0],b[0]), max(this[1],b[1]), max(this[2],b[2])) }
     min(b) { return v3(min(this[0],b[0]), min(this[1],b[1]), min(this[2],b[2])) }
-    toString() { return '['+[0,1,2].map(i => this[i].toFixed(5).replace(/\.?0+$/g, '').replace(/^-0$/,'0')).join(' ')+']' }
+    toString() { return 'v3('+[0,1,2].map(i => this[i].toFixed(5).replace(/\.?0+$/g, '').replace(/^-0$/,'0')).join(',')+')' }
 
     static getset = (off, type) => ({
         get() { return new V3(this.buffer, this.byteOffset + off, type.size) },
@@ -633,7 +633,7 @@ export const m3 = (...args) => M3.of(...args)
 // left-handed
 // row-vector-Matrix product pre-mult v*M
 // v*M1*M1*M3 = v*(M1*M2*M3)
-export const M4 = GPU.array({   
+export const M4 = GPU.array({
     name: 'mat4x4<f32>',
     type: V4,
     length: 4,
@@ -774,15 +774,14 @@ export const M4 = GPU.array({
 
 export const m4 = (...args) => M4.of(...args)
 
-
 for (const meth of Object.getOwnPropertyNames(GPUDevice.prototype)) {
-    if (!meth.startsWith('create') || meth == 'createCommandEncoder') continue;
+    if (!(meth == 'destroy' || meth.startsWith('create')) || meth == 'createCommandEncoder') continue;
     hijack(GPUDevice, meth, (real, obj, args) => {
         obj.pushErrorScope('validation')
         const retval = real.apply(obj, args)
-        obj.popErrorScope().then(err => obj.holder.fatal(err))
+        if (meth != 'destroy') obj.popErrorScope().then(err => obj.holder.fatal(err))
         return retval
-    })    
+    })
 }
 
 hijack(GPUQueue, 'submit', (real, obj, args) => {

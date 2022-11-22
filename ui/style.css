@@ -1,9 +1,19 @@
 body {
+    width: 100%;
+    height: 100%;
+    display: grid;
     margin: 0;
-    padding: 0;
     background-color: black;
     overflow: hidden;
+    font-family: fantasque;
+    align-items: center;
 }
+
+dialog:not([open]) {
+    pointer-events: none;
+    display: none;
+}
+
 
 @font-face {
     font-family: fantasque;
@@ -12,12 +22,13 @@ body {
     font-style: normal;
 }
 
-div {
-    font-family: fantasque;
-    font-size:80%;
+.hud div {
+    
+    font-size:12px;
     position: fixed;
     color: white;
     pointer-events: none;
+    
 }
 
 output {
@@ -25,20 +36,20 @@ output {
     display: inline-flex;
     justify-content: right;
     padding-right:5px;
-    font-size:50%;
+    
 }
 
 
 
 #pedit {
-    left: 5px;
+    left: 10px;
     top: 10px;
     text-align: left;
 }
 
 #rpref {
     left: 5px;
-    bottom: 10px;
+    bottom: 5px;
     text-align: left;
 }
 
@@ -47,21 +58,33 @@ output {
     bottom: 10px;
 }
 
-button {
-    font-size: 20pt;
+input[type=file] {
+    width:0
+}
+
+
+button, .footer label {
+    font-family: fantasque;
+    font-size: 10pt;
     pointer-events: initial;
-    border-radius: 25%;
-    box-shadow: 0px 5px 10px rgba(0, 0, 0, .5);
+    border-radius: 5%;
+    border: 2px solid black;
+    box-shadow: 2px 2px 2px rgba(0, 0, 0, .5);
     cursor: pointer;
+    margin: 2px;
+    padding:1px 4px 1px 4px;
+    background-color: #ececec;
 }
 
-button:hover {
-    transform: translateX(-4px) translateY(-4px);
+button:hover, .footer label:hover {
+    box-shadow: 1px 1px 1px rgba(0, 0, 0, .5);
+    transform: translateX(0.5px) translateY(0.5px);
 
 }
 
-button:active {
-    box-shadow: 0px 0px 0px
+button:active, .footer label:active {
+    box-shadow: 0px 0px 0px;
+    transform: translateX(1px) translateY(1px);
 }
 
 #info {
@@ -84,20 +107,25 @@ button:active {
 
 input {
     vertical-align: middle;
-    margin-right: 8px;
-    margin-left:10px;
     pointer-events: initial;
+    font-family: fantasque;
 }
 
-input[type='range'] {
+input[type=range] {
     vertical-align: middle;
     width: 200px;
     margin-left: 0px;
+    margin-right: 8px;
+   
+    
 }
 
 input[type=checkbox] {
     transform: scale(1.6);
     margin: 6px 12px 5px 15px;
+    margin-right: 8px;
+    margin-left:10px;
+    
 }
 
 select {
@@ -106,10 +134,101 @@ select {
     text-align:right;
     margin-left:10px;
     pointer-events: initial;
+    font-family:fantasque;
+    font-size:12px;
 }
 
 option {
     font-family: fantasque;
-    font-size: 10px;
+    font-size: 12px;
 }
 
+th {
+    border: 1px solid black;
+    font-size: 12px;
+    border-spacing: 0;
+    max-width:58px;
+}
+
+td {
+    border-spacing: 0;
+    border: 1px solid black;
+    padding:2px 2px 2px 2px;
+    text-align: center;
+    font-size: 12px;
+}
+
+[contenteditable='true'] {
+    /* outline: none; */
+}
+
+table {
+    border-spacing: 1px;
+}
+
+.editor {
+    border-radius: 20px;
+    border: 2px solid #666666;
+    display:flex;
+    flex-direction: column;
+    margin: auto;
+    justify-content: center;
+    align-items: center;
+
+}
+
+.stores {
+    display: flex;
+    flex-direction: row;
+    padding: 10px;
+}
+
+.editTable {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    border:0;
+    background-color:white;
+    color:black;
+}
+
+.summary {
+    font-size: 14px;
+    padding: 10px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.summary span {
+    text-align: left;
+    padding-left: 5px;
+    width: 120px;
+    display: flex;
+    flex-direction: row;
+}
+
+table {
+    padding:10px;
+}
+
+.delrow {
+    border: 0px;
+}
+
+.delrow button {
+    font-size:4px;
+    margin:0px;
+    padding:1px;
+}
+
+.footer {
+    display: flex;
+    flex-direction: row;
+    padding: 10px;
+
+}
+
+
+    
