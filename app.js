@@ -1,4 +1,4 @@
-const { Sim, Params, render, phys } = await import('./sim.js')
+const { Sim, Params, render, phys, sampleMesh, loadWavefront, loadBitmap } = await import('./sim.js')
 window.render = render
 window.phys = phys
 const doc = document
@@ -19,7 +19,7 @@ function html(type, attrs = {}, content = '') {
     return elem
 }
 
-window.db = await GeoDB.open()
+await GeoDB.open()
 
 window.cv = $`canvas`
 cv.width = cv.style.width = window.innerWidth
@@ -35,7 +35,7 @@ const createCtrl = {
         ctrl.setAttribute('id', key)
         ctrl.setAttribute('name', key)
         ctrl.setAttribute('value', prefs[key])
-        $(elem).append(html('label', {for: key}, key.replaceAll('_',' ')), doc.createElement('br'))
+        $(elem).append(html('label', {for: key}, key.replaceAll('_',' ')), html('br'))
     },
     'bool': (prefs, key, elem) => {
         const ctrl = html('input', {type:'checkbox'}).on('change', () => { prefs[key] = ctrl.checked })
@@ -43,13 +43,19 @@ const createCtrl = {
         createCtrl.common(prefs, key, elem, ctrl)
     },
     'num': (prefs, key, elem) => {
-        const ctrl = html('input', {type: 'range', min: prefs.lo[key], max: prefs.hi[key], step: prefs.step[key]})
-        const out = html('output', {}, prefs[key])
-        ctrl.on('input', () => {
-            prefs[key] = round(parseFloat(ctrl.value),4) 
-            out.textContent = prefs[key]
+        const ctrl = html('output', {}, prefs[key])
+        ctrl.on('pointerdown', e => { 
+            window.on('pointermove', e => {
+                let step = prefs.step[key]
+                prefs[key] = roundEps(clamp(prefs[key] + e.movementX*step, prefs.lo[key], prefs.hi[key]))
+                ctrl.textContent = prefs[key]
+            })
+            window.on('pointerup', e => {
+                window.off(['pointermove','pointerup'])
+            })
+            e.preventDefault()
         })
-        createCtrl.common(prefs, key, elem, ctrl, out)
+        createCtrl.common(prefs, key, elem, ctrl)
     },
     'choice': (prefs, key, elem) => {
         const select = doc.createElement('select').on('change', () => { prefs[key] = select.value })
@@ -68,47 +74,35 @@ for (const key of phys.keys)
 for (const key of render.keys)
     createCtrl[render.type[key]](render,key,'#rpref')
 
-
-window.move = false
-
-const handleInput = async (e) => {
-    if (e.type != 'wheel') e.preventDefault()
+cv.on('pointerdown', down => {
     if (!window.sim) return
-    if (e.type == 'pointerup') {
-        move = false
+    if (down.button == 2) {
+       sim.grabParticle(down.x, down.y)
+       cv.style.cursor = 'grabbing'      
+    } else if (down.button == 1 || down.button == 0) {
+        cv.style.cursor = 'all-scroll'
+    }
+    window.on('pointermove', move => {
+        const dx = .005*move.movementX, dy = -.005*move.movementY
+        if (down.button == 0) sim.rotateCam(dx, dy)
+        else if (down.button == 1) sim.strafeCam(dx, dy)
+        else if (down.button == 2) sim.moveParticle(move.x, move.y)
+    })
+    window.on('pointerup', up => {
         cv.style.cursor = 'grab'
-        sim.moveParticle(e.x, e.y, true)
-    }
-    if (e.type == 'pointerdown') {
-        move = { x: e.x, y: e.y, btn: e.button }
-        if (e.button == 2) {
-            console.log('grab',e.x,e.y)
-           sim.grabParticle(e.x, e.y)
-           cv.style.cursor = 'grabbing'
-           
-        } else if (e.button == 1) {
-            cv.style.cursor = 'all-scroll'
-        } else if (e.button == 0) {
-            cv.style.cursor = 'all-scroll'
-        }
-    }
-    if (e.type == 'pointermove') {
-        if (!move) return
-        const dx = .005*(e.x - move.x), dy = .005*(move.y - e.y)
-        move.x = e.x
-        move.y = e.y
-        if (move.btn == 0) sim.rotateCam(dx, dy)
-        else if (move.btn == 1) sim.strafeCam(dx, dy)
-        else if (move.btn == 2) sim.moveParticle(move.x, move.y)
-    }
-    if (e.type == 'wheel') sim.advanceCam(-0.001 * e.deltaY)
+        sim.moveParticle(up.x, up.y, true)
+        window.off(['pointerup','pointermove'])
+    })
+    down.preventDefault()
+}, { capture: true, passive: false })
 
-    return true        
-}
-    
-for (const type of ['pointerup','pointerout','pointerdown','pointermove','contextmenu'])
-    cv.on(type, handleInput, { capture: true, passive: false })
-doc.on('wheel', handleInput, { passive: true})
+cv.on('wheel', wheel => {
+    if (!window.sim) return
+    sim.advanceCam(-0.001 * wheel.deltaY)  
+}, { passive: true })
+
+cv.on('contextmenu', menu => menu.preventDefault())
+
 window.on('resize', () => {
     cv.width = cv.style.width = window.innerWidth
     cv.height = cv.style.height = window.innerHeight
@@ -151,6 +145,7 @@ doc.on('pointerlockchange', () => {
 $`#fix`.on('click', () => sim.fixParticle())
 
 
+
 class EditorTable extends HTMLDivElement {
     constructor(name) {
         const dis = Object.setPrototypeOf(html('div'), EditorTable.prototype)
@@ -176,15 +171,15 @@ class EditorTable extends HTMLDivElement {
         this.update()
     }
 
+
     async update() {
-        this.back.disabled = this.page <= 0
+        
         const start = this.page * this.nrows
-        db.transact(this.name)
-        let results = await db.query(this.name)
-        db.commit()
+        let results = await transact([this.name],'readonly', async x => await x.query(this.name))
         let ntot = results.size
         results = [...results.entries()].slice(start, start + this.nrows)
         let stop = start + results.length
+        this.back.disabled = this.page <= 0
         this.fwd.disabled = stop >= ntot
         this.counting.textContent = ` 0 found`
         this.table.replaceChildren()
@@ -201,8 +196,10 @@ class EditorTable extends HTMLDivElement {
         rows.push(...results.map(([id,result]) => {
             let idcol = html('td',{},id)
             let delcol = html('td', { class:'delrow' }, html('button',{},'\u274C').on('click', async () => {
-                await db.deleteWithRelatives(this.name, id)
-                this.update()
+                transact(db.storeNames, 'readwrite', async x => {
+                    await x.deleteWithRelatives(this.name, id)
+                    this.update()
+                })
             }))
             let editcols = cols.map(col => {
                 const orig = result[col]
@@ -213,18 +210,25 @@ class EditorTable extends HTMLDivElement {
                     ctx.drawImage(orig,0,0);
                     return html('td',{},preview)
                 }
-                const edit = html('td', { contenteditable: 'true' }, str(orig)).on('blur', () => {
+                const edit = html('td', { contenteditable: this.name != 'cache' }, str(orig)).on('blur', () => {
                     let val = edit.textContent
                     if (typeof orig == 'number') val = parseFloat(val)
                     else if (orig instanceof Array) val = eval(val)
-                    db.update(this.name, { key:id, col, val });
-                    edit.textContent = str(val)
+                    transact([this.name], 'readwrite', async x => {
+                        await x.update(this.name, id, col, val)
+                        edit.textContent = str(val)    
+                    })
                 })
                 return edit
             })
             const row = html('tr',{},[idcol, ...editcols, delcol])
             if (this.name == 'meshes')
-                row.append(html('button',{},'sample').on('click', () => db.sampleMesh(id, 2*phys.r)))
+                row.append(html('button',{},'sample').on('click', () => {
+                    dbg('sample click')
+                    transact(db.storeNames, 'readwrite', async x => {
+                        await sampleMesh(id, 2*phys.r, x)
+                    })
+                }))
             return row
             
         }))
@@ -232,11 +236,30 @@ class EditorTable extends HTMLDivElement {
     }
 }
 
+let openTransacts = 0
+let transact = async (stores, perm, cb) => {
+    return await db.transact(stores, perm, async x => {
+        if (perm == 'readwrite')
+            for (let ctrl of $$('.editor button, .editor input, .editor label')) {
+                ctrl.disabled = true
+                ctrl.className = 'disabled'
+            }
+        let result = await cb(x)
+        if (perm == 'readwrite') {
+            for (let ctrl of $$('.editor button, .editor input, .editor label')) {
+                ctrl.disabled = false
+                ctrl.className = 'enabled'
+            }
+            window.editor.active.update()
+        }
+        return result
+    })
+}
 
 
 const stores = {}
 const storeBtns = []
-for (const name of db.objectStoreNames) {
+for (const name of db.storeNames) {
     const table = new EditorTable(name)
     stores[name] = table
     storeBtns.push(html('button',{},name).on('click', () => table.show()))
@@ -245,23 +268,24 @@ const storeNav = html('div', { class:'stores' }, storeBtns)
 const storeFooter = html('div', { class:'footer' });
 
 [
-    ['objfile', '.obj', false, async (f,d) => await db.loadWavefront(f.name.split('.')[0], d)],
-    ['pngfile', '.png', true, async (f,d) => await db.loadBitmap(f.name, d)]
+    ['objfile', '.obj', false, (x,f,d) => loadWavefront(f.name.split('.')[0], d, x)],
+    ['pngfile', '.png', true, (x,f,d) => loadBitmap(f.name, d, x)]
 ].forEach(([id,accept,dataUrl,cb]) =>
     storeFooter.append(html('input', { id, type:'file', accept }).on('change', function() {
         const file = this.files[0]
         if (!file) return
-        this.disabled = true       
-        const reader = new FileReader().on('load', async e => { 
-            await cb(file, e.target.result)
-            editor.active.update()
-            this.disabled = false
+        const reader = new FileReader().on('load', e => { 
+            transact(db.storeNames, 'readwrite', async x => await cb(x,file, e.target.result))
         })       
         if (dataUrl) reader.readAsDataURL(file)
         else reader.readAsText(file)
         this.value = ''
-    }), html('label', {for:id}, 'Load '+accept)))
-storeFooter.append(html('button', {}, 'reset').on('click', () => db.reset().then(() => editor.active.update())))
+    }), html('label', {for:id, class:'enabled'}, 'Load '+accept)))
+
+storeFooter.append(html('button', {}, 'reset').on('click', async () => { 
+    await GeoDB.reset()
+    window.editor.active.update()
+}))
 window.editor = html('dialog', { id:'editor', class:'editor' }, [storeNav, ...Object.values(stores), storeFooter])
 stores['meshes'].show()
 doc.body.append(editor)

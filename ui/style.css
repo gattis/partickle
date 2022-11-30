@@ -32,11 +32,12 @@ dialog:not([open]) {
 }
 
 output {
-    width: 25px;
+    width: 32px;
     display: inline-flex;
     justify-content: right;
     padding-right:5px;
-    
+    cursor: ew-resize;
+    pointer-events: initial;
 }
 
 
@@ -76,16 +77,21 @@ button, .footer label {
     background-color: #ececec;
 }
 
-button:hover, .footer label:hover {
+button:hover:not([disabled]), .footer .enabled:hover {
     box-shadow: 1px 1px 1px rgba(0, 0, 0, .5);
     transform: translateX(0.5px) translateY(0.5px);
 
 }
 
-button:active, .footer label:active {
+button:active:not([disabled]), .footer .enabled:active {
     box-shadow: 0px 0px 0px;
     transform: translateX(1px) translateY(1px);
 }
+
+.footer label.disabled {
+    color: rgba(16, 16, 16, 0.3);
+}
+
 
 #info {
     right: 10px;
@@ -112,12 +118,22 @@ input {
 }
 
 input[type=range] {
-    vertical-align: middle;
-    width: 200px;
-    margin-left: 0px;
-    margin-right: 8px;
-   
-    
+    -webkit-appearance: none;
+    width:0;
+}
+input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 0;
+}
+  
+input[type=range]::-webkit-slider-runnable-track  {
+    -webkit-appearance: none;
+    width: 0;
+}
+
+input[type=range]:active {
+    width: 500px;
+    left: 100px;
 }
 
 input[type=checkbox] {
@@ -229,6 +245,5 @@ table {
     padding: 10px;
 
 }
-
 
     

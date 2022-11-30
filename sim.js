@@ -5,10 +5,11 @@ Object.assign(globalThis, util, gpu, geo)
 
 const MAXNN = 18
 const MAXEDGES = 18
+const TETLIM = sqrt(2)
 let UP = v3(0,0,1)
-let CAM_POS = v3(0, -2, .5)
-let CAM_UD = 0
-const particleColors = [v4(.3,.6,.8,1), v4(.99,.44,.57,1), v4(.9, .48, .48)]
+let CAM_POS = v3(0, -3.5, 3)
+let CAM_UD = -PI/6
+const particleColors = [v4(.3,.6,.8,1), v4(.99,.44,.57, 1), v4(.9, .48, .48, 1)]
 const LIGHTS = [
     { power:1.5, color:v3(1,.85,.6), pos:v3(2,2,2.3) },
     { power:1.5, color:v3(1,.85,.6), pos:v3(2,-2,2.3) },
@@ -19,14 +20,14 @@ const LIGHTS = [
 export const phys = new Preferences('phys')
 phys.addBool('paused', false)
 phys.addNum('r', .01, 0, 0.1, 0.001)
-phys.addNum('density', 1.0, 0.1, 10, 0.1)
+phys.addNum('density', 1.0, 0.1, 10, 0.01)
 phys.addNum('frameratio', 3, 1, 20, 1)
-phys.addNum('speed', 1, 0.05, 5, .05)
-phys.addNum('gravity', 9.8, -5, 20, 0.1)
+phys.addNum('speed', 1, 0.05, 5, .01)
+phys.addNum('gravity', 9.8, -5, 20, 0.01)
 phys.addNum('shape_stiff', 0, 0, 1, 0.005)
 phys.addNum('vol_stiff', .5, 0, 1, 0.005)
-phys.addNum('damp', 0.5, 0, 1, .01)
-phys.addNum('collidamp', .1, 0, 1, .01)
+phys.addNum('damp', 0.5, 0, 1, .001)
+phys.addNum('collidamp', .1, 0, 1, .001)
 
 
 export const render = new Preferences('render')
@@ -36,7 +37,7 @@ render.addBool('normals', false)
 render.addBool('edges', false)
 render.addBool('depth_wr', true)
 render.addBool('atc', true)
-render.addChoice('depth_cmp', 'less-equal', ['less-equal','less','greater-equal','greater','always','never'])
+render.addChoice('depth_cmp', 'less', ['less-equal','less','greater-equal','greater','always','never'])
 render.addChoice('cull', 'back', ['none','back','front'])
 render.addChoice('alpha_mode', 'premultiplied', ['opaque','premultiplied'])
 render.addChoice('color_op', 'add', ['add','subtract','reverse-subtract'])
@@ -73,7 +74,7 @@ export const Mesh = GPU.struct({
         ['vol_stiff', f32],
         ['friction', f32],
         ['collidamp', f32],
-        ['selfcollide', i32],
+        ['fluid', i32],
         ['pose', i32],
         ['inactive', i32],
         ['padding', GPU.array({ type:u32, length:20 })]
@@ -93,7 +94,7 @@ export const Vertex = GPU.struct({
         ['edges', GPU.array({ type:u32, length:MAXEDGES })],
     ]
 })
-        
+
 
 export const Particle = GPU.struct({
     name:'Particle',
@@ -107,6 +108,8 @@ export const Particle = GPU.struct({
         ['vel', V3],
         ['k', u32],
         ['q', V3],
+        ['delta_pos', V3],
+        ['norm', V3],
         ['nn', GPU.array({ type:u32, length:MAXNN })],
     ]
 })
@@ -176,8 +179,6 @@ const Meshes = GPU.array({ type:Mesh })
 const Vertices = GPU.array({ type:Vertex })
 const Particles = GPU.array({ type:Particle })
 const Triangles = GPU.array({ type:Triangle })
-const m3Array = GPU.array({ type:M3 })
-const V3Array = GPU.array({ type:V3 })
 const Tets = GPU.array({ type:Tet })
 const Edges = GPU.array({ type:Edge })
 
@@ -195,146 +196,98 @@ export class Sim {
         this.handRot = m3([[1,0,0],[0,1,0],[0,0,1]])
         this.handUD = 0
 
-        let ids = { particles:{}, bitmaps:{'-1':-1}, meshes:{}, verts:{} }
-        let cnts = { particles:0, verts:0, tets:0 }
-
-        db.transact(['bitmaps','meshes','particles','verts','faces','tets'])
-        let [bitmapData, meshData, faceData] = await Promise.all([db.query('bitmaps'), db.query('meshes'), db.query('faces')])
-        let meshRel = await Promise.all([...meshData.keys()].map(mid => Promise.all([
-            db.query('particles', { index:'meshId', key: mid }),
-            db.query('tets', { index:'meshId', key: mid }),
-            db.query('verts', { index:'meshId', key: mid }),
-        ])))
-        db.commit()
-        let meshes = Meshes.alloc(meshData.size)
-        let particles = Particles.alloc(meshRel.map(([parts,,]) => parts.size).sum())
-        let tets = Tets.alloc(meshRel.map(([,tets,]) => tets.size).sum())
-        let verts = Vertices.alloc(meshRel.map(([,,verts]) => verts.size).sum())
-        let tris = Triangles.alloc(faceData.size)
+        let bitmapIds = {'-1':-1}
         
-
+        console.time('db load')
+        let [bitmapData, meshData, caches] = await db.transact(['bitmaps','meshes','cache'],'readonly', 
+            async x => await Promise.all([x.query('bitmaps'), x.query('meshes'), x.query('cache')]))
+        
         let bitmaps = []
         for (let [bidx,[bid,bdata]] of enumerate(bitmapData)) {
-            ids.bitmaps[bid] = bidx
+            bitmapIds[bid] = bidx
             bitmaps.push(bdata.data)
         }
-
-        let vertFaces = new Map()
-        for (let [fid,fdata] of faceData) {
-            let [vid0,vid1,vid2] = [...range(3)].map(i => fdata['vertId'+i])
-            vertFaces.setDefault(vid0,[]).push([vid1,vid2])
-            vertFaces.setDefault(vid1,[]).push([vid2,vid0])
-            vertFaces.setDefault(vid2,[]).push([vid0,vid1])
+        
+        meshData = [...meshData]
+        for (let [mid,mdata] of meshData) {
+            let cache = caches.get(mid)
+            if (cache == undefined)
+                cache = await db.transact(db.storeNames, 'readwrite', async x => await sampleMesh(mid, 2*phys.r, x))
+            mdata.ppos = new v3array(cache.particles)
+            mdata.tets = new Tets(cache.tets)
+            mdata.mass = new Float32Array(cache.mass)
+            mdata.verts = new Vertices(cache.verts)
+            mdata.faces = new Triangles(cache.faces)
+            mdata.edges = new u32array(cache.edges)
+            mdata.tetGroups = cache.tetGroups
         }
 
-        let mtis = []
+        let meshes = Meshes.alloc(meshData.length)
+        let particles = Particles.alloc(meshData.map(([,mdata]) => mdata.ppos.length).sum())
+        let verts = Vertices.alloc(meshData.map(([,mdata]) => mdata.verts.length).sum())
+        let tris = Triangles.alloc(meshData.map(([,mdata]) => mdata.faces.length).sum())
+        let tets = Tets.alloc(meshData.map(([,mdata]) => mdata.tets.length).sum())
+        let edges = u32array.alloc(meshData.map(([,mdata]) => mdata.edges.length).sum())
+        let tetGroups = []
+
+        let nparticles = 0, ntets = 0, nverts = 0, ntris = 0, nedges = 0
         for (let [midx,[mid,mdata]] of enumerate(meshData)) {
-            ids.meshes[mid] = midx
             let mesh = meshes[midx]
             mesh.color = v4(...mdata.color)
             mesh.pcolor = particleColors[midx % particleColors.length]
             mesh.gravity = mdata.gravity
-            mesh.tex = ids.bitmaps[mdata.bitmapId]
+            mesh.shape_stiff = mdata['shape stiff']
+            mesh.vol_stiff = mdata['vol stiff']
+            mesh.friction = mdata.friction
+            mesh.collidamp = mdata['collision damp']
+            mesh.fluid = mdata['fluid']
+            mesh.tex = bitmapIds[mdata.bitmapId]
             mesh.rot = m3([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
-            
-            let [partData, tetData, vertData] = meshRel[midx]
-
-            mesh.pi = cnts.particles
-            for (let [pid,pdata] of partData) {
-                let pidx = cnts.particles++
-                ids.particles[pid] = pidx
-                const p = particles[pidx]
-                p.pos = p.prev_pos = p.rest_pos = v3(...pdata.pos).mul(mdata.scale).add(mdata.offset)
+            mesh.pi = nparticles
+            mesh.pf = nparticles + mdata.ppos.length
+            mesh.vi = nverts
+            mesh.vf = nverts + mdata.verts.length
+            let ti = ntets
+            for (let pidx of range(mdata.ppos.length))  {
+                let p = particles[nparticles++]
+                p.pos = p.prev_pos = p.rest_pos = mdata.ppos[pidx]
                 mesh.c0 = mesh.c0.add(p.pos)
                 p.mesh = midx
+                p.w = 1.0 / mdata.mass[pidx] * mdata.invmass
             }
-            mesh.pf = cnts.particles
             mesh.c0 = mesh.ci = mesh.c0.divc(mesh.pf - mesh.pi)
-            
-            let ti = cnts.tets
-            let tmats = [], centers = []
-            for (let [tid,tdata] of tetData) {
-                let tidx = cnts.tets++
-                let pids = [0,1,2,3].map(i => ids.particles[tdata['partId'+i]])
-                tets[tidx] = Tet.of(pids)
-                let ps = pids.map(pid => particles[pid].pos)
-                let m = tetVolume(...ps) / 4
-                for (let pid of pids)
-                    particles[pid].w += m
-                tmats.push(m3([ps[0].sub(ps[3]), ps[1].sub(ps[3]), ps[2].sub(ps[3])]).inverse())
-                centers.push(ps[0].add(ps[1]).add(ps[2]).add(ps[3]).divc(4))
-            }
-
-            for (let [pid,pdata] of partData) {
-                const p = particles[ids.particles[pid]]
-                if (p.w != 0) p.w = 1 / p.w
+            for (let pidx of range(mdata.ppos.length))  {
+                let p = particles[mesh.pi + pidx]
                 p.q = p.pos.sub(mesh.c0)
             }
-
-            mesh.vi = cnts.verts
-            for (let vid of vertData.keys()) ids.verts[vid] = cnts.verts++
-            mesh.vf = cnts.verts
-
-            for (const [vid,vdata] of vertData) {
-                const v = verts[ids.verts[vid]]
-                v.pos = v3(...vdata.pos).mul(mdata.scale).add(mdata.offset)
+            for (let [tidx,tet] of enumerate(mdata.tets))
+                tets[ntets++] = Tet.of([0,1,2,3].map(i => tet[i] + mesh.pi))
+            for (let tri of mdata.faces) {
+                for (let i of range(3)) {
+                    tri[i].vidx += nverts
+                    tri[i].mesh = midx
+                }
+                tris[ntris++] = tri
+            }
+            for (const vidx of range(mdata.verts.length)) {
+                let v = mdata.verts[vidx]
                 v.mesh = midx
-                const loop = new Map()
-                for (const [vidb,vidc] of vertFaces.getDefault(vid,[]))
-                    loop.set(ids.verts[vidb], ids.verts[vidc])
-                let [heads,tails] = [[...loop.keys()], [...loop.values()]]
-                heads = heads.filter(head => !tails.includes(head))
-                if (heads.length == 0) heads = [tails[0]]
-                for (let estart of heads) {
-                    let evert = estart
-                    do {
-                        v.edges[v.nedges++] = evert
-                        evert = loop.get(evert)
-                    } while (evert != estart && evert != undefined)
-                }
-                let tetbest = { dist: Infinity }
-                for (let t of range(tmats.length)) {
-                    let dist = centers[t].dist(v.pos)
-                    if (dist < tetbest.dist) tetbest = { t, dist }
-                }
-                if (tetbest.dist != Infinity) {
-                    v.tet = ti + tetbest.t
-                    v.bary = v.pos.sub(particles[tets[v.tet][3]].pos).mulm(tmats[tetbest.t])
-                } else v.tet = -1
+                for (let i of range(v.nedges))
+                    v.edges[i] += mesh.vi
+                v.tet += ti
                 v.q = v.pos.sub(mesh.c0)
+                verts[nverts++] = v
             }
-
+            for (const pidx of mdata.edges)
+                edges[nedges++] = pidx + mesh.pi
+            for (let [i,meshGroup] of enumerate(mdata.tetGroups)) {
+                if (i >= tetGroups.length) tetGroups.push([])
+                let group = tetGroups[i]
+                for (let tid of meshGroup)
+                    group.push(tid + ti)
+            }
         }
-
-        for (let [fidx,[fid,fdata]] of enumerate(faceData))
-            tris[fidx] = Triangle.of(...[0,1,2].map(i => TriVert.of(v3(0), ids.verts[fdata['vertId'+i]], v3(0), ids.meshes[fdata.meshId], v2(...fdata.uv[i]))))
-
-
-       let edges = [], edgeSet = new Set()
-       for (let [a,b,c,d] of tets)
-            for (let edge of [[a,b],[a,c],[a,d],[b,c],[b,d],[c,d]]) {
-                if (edgeSet.has(hashTuple(edge))) continue
-                edges.push(...edge)
-                edgeSet.add(hashTuple(edge))
-            }
-        edges = u32array.of(edges)
-
-        let tetGroups = []
-        let yetGroups = new Set([...range(tets.length)])
-        while (yetGroups.size > 0) {
-            let group = []
-            let groupPids = new Set()
-            for (const tid of yetGroups) {
-                let pids = [...tets[tid]]
-                if (group.length == 0 || !pids.some(pid => groupPids.has(pid))) {
-                    group.push(tid)
-                    yetGroups.delete(tid)
-                    for (const pid of pids)
-                        groupPids.add(pid)
-                } 
-            }
-            tetGroups.push(group)
-        }
+        console.timeEnd('db load')
 
         tetGroups = tetGroups.map((group,i) => ({
             data:group, 
@@ -363,7 +316,7 @@ export class Sim {
             gpu.buf({ label:'camera', data:camera, usage:'UNIFORM|COPY_DST' }),
             gpu.buf({ label:'params', data:params, usage:'UNIFORM|COPY_DST' }),
             gpu.buf({ label:'tris', data:tris, usage:'STORAGE|VERTEX|COPY_SRC|COPY_DST' }),
-            gpu.buf({ label:'cnts', type:GPU.array({ type:i32, length:threads**3 }), usage:'STORAGE|COPY_DST' }),
+            gpu.buf({ label:'cnts', type:GPU.array({ type:i32, length:threads**3 }), usage:'STORAGE|COPY_DST|COPY_SRC' }),
             gpu.buf({ label:'work1', type:GPU.array({ type:i32, length:threads**2 }), usage:'STORAGE' }),
             gpu.buf({ label:'work2', type:GPU.array({ type:i32, length:threads }), usage:'STORAGE' }),
             gpu.buf({ label:'sorted', type:GPU.array({ type:u32, length:particles.length}), usage:'STORAGE' }),
@@ -561,7 +514,7 @@ export class Compute {
         const shader = await gpu.shader({
             compute:true, wgsl:wgsl, defs:[Particle, Mesh, Params],
             storage:{
-                particles:Particles, meshes:Meshes, sorted:u32array, centroidwork:V3Array, edges:Edges, debug:f32array, tetgroup:u32array,
+                particles:Particles, meshes:Meshes, sorted:u32array, centroidwork:v3array, edges:Edges, debug:f32array, tetgroup:u32array,
                 cnts:i32array, cnts_atomic:iatomicarray, work:i32array, shapework:m3Array, tets:Tets
             },
             uniform:{ params:Params }
@@ -585,7 +538,7 @@ export class Compute {
             let n = m.pf - m.pi
             if (n <= 0) continue
             if (m.flags == 1) continue
-            const centroidWork = gpu.buf({ label: `centroidwork${i}`, type: V3Array, size: V3Array.stride * n, usage: 'STORAGE' })
+            const centroidWork = gpu.buf({ label: `centroidwork${i}`, type: v3array, size: v3array.stride * n, usage: 'STORAGE' })
             const shapeWork = gpu.buf({ label: `shapework${i}`, type: m3Array, size: m3Array.stride * n, usage: 'STORAGE' })
             let dp1 = ceil(n / threads), dp2 = ceil(dp1 / threads)
             const meshBind = { meshes: gpu.offset(bufs.meshes, Meshes.stride * i) }
@@ -623,13 +576,6 @@ export class Compute {
         })))
         cmds.push(gpu.timestamp('neohookean'))
 
-        cmds.push(
-            gpu.computePass({ 
-                pipe:gpu.computePipe({ shader, entryPoint:'update_vel', binds:['particles', 'meshes', 'params', 'debug'] }),
-                dispatch:pd, binds:{ particles:bufs.particles, meshes:bufs.meshes, params:bufs.params, debug:bufs.debug }
-            }),
-            gpu.timestamp('update vel')
-        )
 
         const cntsort_cnt = gpu.computePipe({ shader, entryPoint: 'cntsort_cnt', binds: ['particles', 'cnts_atomic', 'meshes', 'params'] })
         const prefsum_down = gpu.computePipe({ shader, entryPoint: 'prefsum_down', binds: ['cnts', 'work'] })
@@ -652,10 +598,19 @@ export class Compute {
             gpu.timestamp('find collisions')
         )
         
-        const project = gpu.computePipe({ shader, entryPoint: 'project', binds: ['particles', 'meshes', 'params'] })
+        const project = gpu.computePipe({ shader, entryPoint: 'project', binds: ['particles', 'meshes', 'params', 'debug'] })
         cmds.push(
-            gpu.computePass({ pipe:project, dispatch:pd, binds:{ particles:bufs.particles, meshes:bufs.meshes, params:bufs.params } }),
+            gpu.computePass({ pipe:project, dispatch:pd, binds:{ particles:bufs.particles, meshes:bufs.meshes, params:bufs.params, debug:bufs.debug } }),
             gpu.timestamp('project'),
+        )
+
+
+        cmds.push(
+            gpu.computePass({ 
+                pipe:gpu.computePipe({ shader, entryPoint:'update_vel', binds:['particles', 'meshes', 'params', 'debug'] }),
+                dispatch:pd, binds:{ particles:bufs.particles, meshes:bufs.meshes, params:bufs.params, debug:bufs.debug }
+            }),
+            gpu.timestamp('update vel')
         )
 
         this.batch = gpu.encode(cmds)
@@ -698,11 +653,30 @@ export class Compute {
 
 
             
-            /*const reads = ['particles','tets','vertices','meshes','debug'].filter(b=>bufs[b])
+
+           
+           /*const reads = [
+                'particles',
+                'cnts'
+                'tets',
+                'tris',
+                'vertices',
+                'meshes',
+                'debug'
+            ].filter(b=>bufs[b])
+            
             const data = await Promise.all(reads.map(b => gpu.read(bufs[b])))
             for (let i of range(reads.length))
                 globalThis[reads[i]] = new bufs[reads[i]].type(data[i])*/
             
+            /*for (let i of range(particles.length)) {
+                let p = globalThis.particles[i]
+                if (!p.pos.isFinite() || !p.vel.isFinite() || !p.prev_pos.isFinite()) {
+                    dbg({msg:'!FINITE', i, p })
+                    phys.paused = true
+                }
+            }*/
+
             
         }
         this.tlast = clock()            
@@ -859,21 +833,228 @@ export class Render {
         this.frames++
         this.tlast = clock()
 
-
-        
-
-
     }
 
 }
 
 
 
+export const sampleMesh = async (meshId, D, transaction) => {
+    let [mesh,verts,faceData] = await Promise.all([
+        transaction.query('meshes', { key:meshId }),
+        transaction.query('verts', { index:'meshId', key:meshId }),
+        transaction.query('faces', { index:'meshId', key:meshId }),
+    ])
+    mesh = mesh.get(meshId)
+    for (let [id,vert] of verts) vert.pos = v3(...vert.pos).mul(mesh.scale).add(mesh.offset)
+    let tree = new BVHTree([...faceData].map(([,face]) => [0,1,2].map(i => verts.get(face['vertId'+i]).pos)))
+    let bmin = v3(Infinity), bmax = v3(-Infinity)
+    for (const [vertId, vert] of verts) {
+        vert.loop = new Map()
+        bmin = bmin.min(vert.pos)
+        bmax = bmax.max(vert.pos)
+    }
+    let bounds = bmax.sub(bmin)
+    dbg({bounds})
+    let dims = [...bounds.divc(D)].map(roundEps).map(ceil).map(d => d + (d%2 == 0 ? 1 : (d > 1 ? 2 : 1)))
+    dbg({dims})
+    let space = v3(...dims).subc(1).mulc(D).sub(bounds).divc(2)
+    let offset = bmin.sub(space)
+    dbg({offset})
+    let [dimx,dimy,dimz] = dims
+    let dimxy = dimx*dimy
 
+    let tetsA = [[6,3,5,0], [4,6,5,0], [2,3,6,0], [1,5,3,0], [6,5,3,7]]
+    let tetsB = [[1,4,2,0], [1,2,4,7], [7,2,4,6], [4,1,7,5], [2,7,1,3]]
 
+    let hpmap = new Map(), hvmap = new Map(), particles = [], tets = [], h = 0
+    for (let [h,[x,y,z]] of enumerate(range3d(...dims))) {
+        let p = v3(D*x,D*y,D*z).add(offset)
+        if (tree.signedDist(p) <= D*TETLIM) {   
+            hpmap.set(h, p)
+            if (mesh.fluid && (x+y+z) % 2 == 0 ) particles.push(p)
+        }
+    }
 
+    const keepTet = (tet) => {
+        for (let p of tet)
+            if (tree.signedDist(p) <= 0)
+                return true
+        for (let i of range(4)) {
+            let faceCenter = v3(0)
+            for (let j of range(4))
+                faceCenter = faceCenter.add(tet[j].mulc(Number(i != j)))
+            faceCenter = faceCenter.divc(3)
+            if (tree.signedDist(faceCenter) <= 0)
+                return true
+        }
+        let [a,b,c,d] = tet
+        for (let [start,end] of [[a,b],[a,c],[a,d],[b,c],[b,d],[c,d]]) {
+            let ray = end.sub(start)
+            let [rayLen,rayDir] = [ray.mag(), ray.normalized()]
+            if (tree.traceRay(start, rayDir).t <= rayLen)
+                return true
+        }
+        return false
+    }
 
+    if (!mesh.fluid)
+        for (let [xi,yi,zi] of range3d(...dims))
+            for (let reltet of (xi+yi+zi) % 2 == 1 ? tetsA : tetsB) {
+                let xyzs = reltet.map(vid => [xi + (vid&1), yi + Number(Boolean(vid&2)), zi + Number(Boolean(vid&4))])
+                if (xyzs.some(([x,y,z]) => x >= dimx || y >= dimy || z >= dimz)) continue
+                let hs = xyzs.map(([x,y,z]) => x + y*dimx + z*dimxy)
+                let hps = hs.map(h => [h, hpmap.get(h)])
+                if (hps.some(([h,p]) => p == undefined)) continue
+                if (!keepTet(hps.map(([h,p]) => p))) continue
+                tets.push(hps.map(([h,p]) => {
+                    let pidx = hvmap.get(h)
+                    if (pidx == undefined) {
+                        pidx = particles.length
+                        particles.push(p)
+                        hvmap.set(h, pidx)
+                    }
+                    return pidx
+                }))
+            }
 
+    dbg({particles:particles.length})
+    dbg({tets:tets.length})
+
+    let cache = { 
+        tets: Tets.alloc(tets.length), 
+        particles: v3array.alloc(particles.length),
+        mass: new Float32Array(particles.length),
+        verts: Vertices.alloc(verts.size),
+        faces: Triangles.alloc(faceData.size)
+    }
+
+    for (let [pidx,pos] of enumerate(particles))
+        cache.particles[pidx] = pos
+
+    let centers = []
+    let tmats = []
+    for (let [tidx,pids] of enumerate(tets)) {
+        cache.tets[tidx] = Tet.of(pids)
+        let ps = pids.map(pid => particles[pid])
+        centers.push(ps[0].add(ps[1]).add(ps[2]).add(ps[3]).divc(4))
+        let tmat =  m3([ps[0].sub(ps[3]), ps[1].sub(ps[3]), ps[2].sub(ps[3])])
+        let vol = -tmat.invert() / 6
+        if (vol < 0) throw new Error('got zero or negative volume')
+        let pm = vol / 4
+        for (let pid of pids)
+            cache.mass[pid] += pm                
+        tmats.push(tmat)
+    }
+
+    for (let [id,face] of faceData)
+        for (let [i,j,k] of [[0,1,2],[1,2,0],[2,0,1]]) 
+            verts.get(face['vertId'+i]).loop.set(face['vertId'+j],face['vertId'+k])
+
+    let vertIdMap = new Map()
+    for (let [vidx,[vid,vert]] of enumerate(verts))
+        vertIdMap[vid] = vidx
+
+    for (let [vidx,[vid,vert]] of enumerate(verts)) {
+        let v = cache.verts[vidx]
+        v.pos = vert.pos
+        let [heads,tails] = [[...vert.loop.keys()], [...vert.loop.values()]]
+        heads = heads.filter(head => !tails.includes(head))
+        if (heads.length == 0) heads = [tails[0]]
+        for (let estart of heads) {
+            let evert = estart
+            do {
+                v.edges[v.nedges++] = vertIdMap[evert]
+                evert = vert.loop.get(evert)
+            } while (evert != estart && evert != undefined)
+        }
+        let tetbest = { dist: Infinity }
+        for (let t of range(tmats.length)) {
+            let dist = centers[t].dist(v.pos)
+            if (dist < tetbest.dist) tetbest = { t, dist }
+        }
+        if (tetbest.dist != Infinity) {
+            v.tet = tetbest.t
+            v.bary = v.pos.sub(particles[tets[v.tet][3]]).mulm(tmats[tetbest.t])
+        } else v.tet = -1
+    }
+
+    for (let [fidx,face] of enumerate(faceData.values()))
+        cache.faces[fidx] = Triangle.of(...[0,1,2].map(i => TriVert.of(
+            v3(0), vertIdMap[face['vertId'+i]], v3(0), -1, v2(...face.uv[i]))))
+
+    let edges = new Set()
+    for (let [a,b,c,d] of cache.tets)
+        for (let [pid1,pid2] of [[a,b],[a,c],[a,d],[b,c],[b,d],[c,d]])
+            edges.add(hashPair(pid1,pid2))
+    edges = [...edges].map(hash => unhashPair(hash)).flat()
+    cache.edges = u32array.of(edges)
+
+    for (let prop in cache) cache[prop] = cache[prop].buffer
+    cache.meshId = meshId
+
+    let tetGroups = []
+    let yetGroups = new Set([...range(tets.length)])
+    while (yetGroups.size > 0) {
+        let group = []
+        let groupPids = new Set()
+        for (const tid of yetGroups) {
+            let pids = [...tets[tid]]
+            if (group.length == 0 || !pids.some(pid => groupPids.has(pid))) {
+                group.push(tid)
+                yetGroups.delete(tid)
+                for (const pid of pids)
+                    groupPids.add(pid)
+            } 
+        }
+        tetGroups.push(group)
+    }
+    cache.tetGroups = tetGroups
+    transaction.objectStore('cache').put(cache)
+    dbg('sampled')
+    return cache
+}
+
+export const loadWavefront = async (name, data, transaction) => {
+    let meshes = transaction.objectStore('meshes')
+    let meshId = await transaction.wait(meshes.add({
+        name, bitmapId:-1, color:[1,1,1,1], offset:[0,0,0], rotation:[0,0,0], gravity:1, invmass:1,
+        scale:[1,1,1], 'shape stiff':1, 'vol stiff':1, friction:1, 'collision damp':1, 'fluid':0
+    }))
+    let verts = transaction.objectStore('verts')
+    let faces = transaction.objectStore('faces')
+    let localVerts = 1
+    let vertIds = {}
+    let localUVs = 1
+    let uvIds = {}
+    for (let line of data.split(/[\r\n]/))  {
+        let [key, ...toks] = line.split(/\s/)
+        if (key == 'v') {
+            let vdata = toks.map(parseFloat)
+            let pos = vdata.slice(0, 3)
+            let mass = vdata.length > 3 ? vdata[3] : 1.0;
+            vertIds[localVerts++] = await transaction.wait(verts.add({ pos, mass, meshId }))
+        } else if (key == 'vt') {
+            let vtdata = toks.map(parseFloat)
+            uvIds[localUVs++] = vtdata.slice(0, 2)
+        } else if (key == 'f') {
+            if (toks.length == 3) {
+                let face = toks.map((tok,i) => [`vertId${i}`, vertIds[parseInt(tok.split('/')[0])]])
+                let uv = toks.map(tok => uvIds[parseInt(tok.split('/')[1])] || [0,0])
+                await transaction.wait(faces.add({ ...Object.fromEntries(face), uv, meshId }))
+            } 
+        }
+    }
+}
+
+export const loadBitmap = async (name, data, transaction) => {
+    const img = new Image()
+    img.src = data
+    await img.decode()
+    const bitmap = await createImageBitmap(img)
+    let bitmaps = transaction.objectStore('bitmaps')
+    await transaction.wait(bitmaps.add({ name, data: bitmap }))
+}
 
 
 

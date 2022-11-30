@@ -3,7 +3,7 @@ import * as gpu from './gpu.js'
 Object.assign(globalThis, gpu, util)
 
 
-
+     
 export const tetVolume = (a,b,c,d) => {
     const ab = b.sub(a), ac = c.sub(a), ad = d.sub(a)
     const vol = ab.cross(ac).dot(ad) / 6.0
@@ -153,8 +153,6 @@ export class BVHTree {
 
     signedDist(p) {
         const tris = this.tris, result = { d: Infinity }
-        let show = p.dist([0.21213172376155853,0.21213172376155853,0.9292889833450317]) < 0.00001
-
         const recurse = node => {
             if (node.faces.length == 1) {
                 const tri = tris[node.faces[0]]
@@ -184,188 +182,83 @@ export class BVHTree {
 
 class GeoDB extends IDBDatabase {
     
-    static async open() {        
+    static async open() {
         const db = await new Promise(resolve => {
-            let req = window.indexedDB.open('geo', 1)
+            let req = window.indexedDB.open('geo')
             req.on('success', e => resolve(req.result))
             req.on('error', e => { throw new Error(e) })
             req.on('upgradeneeded', e => {
                 Object.setPrototypeOf(e.target.result, GeoDB.prototype)
-                e.target.result.upgrade()
+                e.target.result.create()
             })
         })
         Object.setPrototypeOf(db, GeoDB.prototype)
-        return db
+        db.storeNames = [...db.objectStoreNames]
+        globalThis.db = db
     }
 
-    upgrade() {
-        dbg('creating stores')
-        this.waitCreate = new Promise(resolve => { this.doneCreate = resolve })
+    static async reset() {
+        let olddb = globalThis.db
+        globalThis.db = undefined
+        olddb.close()     
+        await new Promise(resolve => window.indexedDB.deleteDatabase('geo').on('success', resolve))
+        await this.open()
+    }
+
+    create() {
+        dbg('creating db')
+        for (let store of this.objectStoreNames)
+            this.deleteObjectStore(store)
         this.createObjectStore('meshes', { autoIncrement: true })
         let verts = this.createObjectStore('verts', { autoIncrement: true })
         let faces = this.createObjectStore('faces', { autoIncrement: true })
-        let particles = this.createObjectStore('particles', { autoIncrement: true })
-        let tets = this.createObjectStore('tets', { autoIncrement: true })
+        let cache = this.createObjectStore('cache', { autoIncrement:false, keyPath:'meshId' })
         this.createObjectStore('bitmaps', { autoIncrement: true })
-        for (let store of [verts, faces, particles, tets]) store.createIndex('meshId','meshId')
+        for (let store of [verts, faces, cache]) store.createIndex('meshId','meshId')
         for (let i of range(3)) faces.createIndex(`vertId${i}`, `vertId${i}`)
-        for (let i of range(4)) tets.createIndex(`partId${i}`, `partId${i}`)
-        dbg('stores created')
-        this.doneCreate()
     }
-
-    async reset() {
-        const stores = [...this.objectStoreNames]
-        this.transact(stores,'readwrite')
-        await Promise.all(stores.map(store => this.wait(this.x.objectStore(store).clear())))
-        this.commit()
-    }
-
-    async loadBitmap(name, data) {
-        const img = new Image()
-        img.src = data
-        await img.decode()
-        const bitmap = await createImageBitmap(img)
-        let x = this.transaction(['bitmaps'], 'readwrite')
-        let bitmaps = x.objectStore('bitmaps')
-        await this.wait(bitmaps.add({ name, data: bitmap }))
+ 
+    async transact(stores, perm, cb) {
+        let x = this.transaction(stores, perm, { durability:'relaxed' })
+        Object.setPrototypeOf(x, GeoTransact.prototype)
+        const result = await cb(x)
         x.commit()
-    }
-
-    async loadWavefront(name, data) {
-        this.transact([...this.objectStoreNames], 'readwrite')
-        let meshes = this.x.objectStore('meshes')
-        let meshId = await this.wait(meshes.add({
-            name, bitmapId:-1, color:[1,1,1,1], offset:[0,0,0], rotation:[0,0,0], gravity:1, density:1,
-            scale:[1,1,1], 'shape stiff':1, 'vol stiff':1, friction:1, 'collision damp':1, 'self collide':1
-        }))
-        let verts = this.x.objectStore('verts')
-        let faces = this.x.objectStore('faces')
-        let localVerts = 1
-        let vertIds = {}
-        let localUVs = 1
-        let uvIds = {}
-        for (let line of data.split(/[\r\n]/))  {
-            let [key, ...toks] = line.split(/\s/)
-            if (key == 'v') {
-                let vdata = toks.map(parseFloat)
-                let pos = vdata.slice(0, 3)
-                let mass = vdata.length > 3 ? vdata[3] : 1.0;
-                vertIds[localVerts++] = await this.wait(verts.add({ pos, mass, meshId }))
-            } else if (key == 'vt') {
-                let vtdata = toks.map(parseFloat)
-                uvIds[localUVs++] = vtdata.slice(0, 2)
-            } else if (key == 'f') {
-                if (toks.length == 3) {
-                    let face = toks.map((tok,i) => [`vertId${i}`, vertIds[parseInt(tok.split('/')[0])]])
-                    let uv = toks.map(tok => uvIds[parseInt(tok.split('/')[1])] || [0,0])
-                    await this.wait(faces.add({ ...Object.fromEntries(face), uv, meshId }))
-                } 
-            }
-        }
-        this.commit()
+        return result
     }
 
 
 
+}
 
-    async sampleMesh(meshId, D) {
-        this.transact(['verts','faces'])
-        const verts = await this.query('verts', { index:'meshId', key:meshId })
-        const faces = await this.query('faces', { index:'meshId', key:meshId })
-        const tris = Array.from(faces).map(([id,face]) => ['vertId0','vertId1','vertId2'].map(col=>v3(...verts.get(face[col]).pos)))
-        const tree = new BVHTree(tris)
-        let bmin = [Infinity,Infinity,Infinity], bmax = [-Infinity,-Infinity,-Infinity]
-        for (const [vertId, vert] of verts)
-            for (let k of [0,1,2]) {
-                bmin[k] = min(vert.pos[k], bmin[k])
-                bmax[k] = max(vert.pos[k], bmax[k])
-            }
-        let bounds = [0,1,2].map(k => (bmax[k]*10 - bmin[k]*10)/10)        
-        dbg({bounds})
-        let dim = [0,1,2].map(k => ceil(bounds[k]/D)).map(d => d + (d % 2 == 0 ? 2 : 1))
-        dbg({dim})
-        let space = [0,1,2].map(k => ((dim[k]-1)*D - bounds[k]) / 2)
-        dbg({space})
-        let offset = [0,1,2].map(k => bmin[k] - space[k])
-        dbg({offset})
-        let [dimx,dimy,dimz] = dim
-        let dimxy = dimx*dimy
 
-        let tetsA = [[6,3,5,0], [4,6,5,0], [2,3,6,0], [1,5,3,0], [6,5,3,7]]
-        let tetsB = [[1,4,2,0], [1,2,4,7], [7,2,4,6], [4,1,7,5], [2,7,1,3]]
+class GeoTransact extends IDBTransaction {
 
-        let hpmap = new Map(), hvmap = new Map(), particles = [], tets = [], h = 0
-        for (let [h,[x,y,z]] of enumerate(range3d(...dim))) {
-            let p = v3(D*x,D*y,D*z).add(offset)
-            if (tree.signedDist(p) <= D/10)
-                hpmap.set(h, p)
-        }
-        for (let [xi,yi,zi] of range3d(...dim))
-            for (let reltet of (xi+yi+zi) % 2 == 1 ? tetsB : tetsA) {
-                let xyzs = reltet.map(vid => [xi + (vid&1), yi + Number(Boolean(vid&2)), zi + Number(Boolean(vid&4))])
-                if (xyzs.some(([x,y,z]) => x >= dimx || y >= dimy || z >= dimz)) continue
-                let hs = xyzs.map(([x,y,z]) => x + y*dimx + z*dimxy)
-                let hps = hs.map(h => [h, hpmap.get(h)])
-                if (hps.some(([h,p]) => p == undefined)) continue
-                tets.push(hps.map(([h,p]) => {
-                    let v = hvmap.get(h)
-                    if (v == undefined) {
-                        v = particles.length
-                        particles.push(p)
-                        hvmap.set(h, v)
-                    }
-                    return v
-                }))
-            }
 
-        dbg({particles:particles.length})
-        dbg({tets:tets.length})
-        this.commit()
-
-        await this.delete('particles', { index:'meshId', key:meshId })
-        await this.delete('tets', { index:'meshId', key:meshId })
-
-        this.transact(['particles','tets'],'readwrite')
-        let partStore = this.x.objectStore('particles'), tetStore = this.x.objectStore('tets')
-        const partIds = []
-        for (let [i,p] of enumerate(particles))
-            partIds[i] = await this.wait(partStore.add({ pos: [p.x,p.y,p.z], meshId }))
-        for (let [a,b,c,d] of tets)
-            await this.wait(tetStore.add({ partId0: partIds[a], partId1: partIds[b], partId2: partIds[c], partId3: partIds[d], meshId }))
-        this.commit()
+    async delete(storeName, args) {
+        let store = this.objectStore(storeName)
+        if (args.index == undefined) 
+            return await store.delete(args.key)
+        let index = store.index(args.index)
+        let keys = await this.wait(index.getAllKeys(IDBKeyRange.bound(args.key,args.key)))
+        for (let key of keys)
+            await store.delete(key)
     }
 
-    transact(stores, perm = 'readonly', options = {}) {
-        if (this.x != undefined) throw Error('tranaction already open')
-        options.durability ||= 'relaxed'
-        this.x = this.transaction(stores, perm, options)
+    async deleteWithRelatives(store, key) {
+        await this.delete(store, { key })
+        if (store == 'meshes')
+            for (const store of ['verts','faces','cache'])
+                await this.delete(store, { index:'meshId', key })
+        else if (store == 'verts')
+            for (const i of range(3))
+                await this.delete('faces', { index:'vertId'+i, key })
     }
 
-    commit(stores, perm) {
-        if (this.x == undefined) throw Error('no transaction was open')
-        this.x.commit()
-        this.x = undefined
-    }
-
-    wait(req) {
-        return new Promise(resolve => {
-            req.on('success', e => resolve(req.result))
-        })
-    }
-
-    op(store, args = {}) {
-        let { index, key, method, startKey, count } = args
-        let collection = this.x.objectStore(store)
-        if (index) collection = collection.index(index)
-        let keyRange = startKey ? IDBKeyRange.lowerBound(startKey, true) : IDBKeyRange.lowerBound(0)
-        let methArgs = [key ? IDBKeyRange.bound(key,key) : keyRange]
-        if (count != undefined) methArgs.push(count)
-        return this.wait(collection[method].apply(collection, methArgs), args)
-    }
-
-    count(store, args = {}) {
-        return this.op(store, { method:'count', ...args })
+    async update(storeName, key, col, val) {
+        let store = this.objectStore(storeName)
+        let record = await this.wait(store.get(key))
+        record[col] = val
+        return await this.wait(store.put(record, key))
     }
 
     async query(store, args = {}) {
@@ -379,55 +272,26 @@ class GeoDB extends IDBDatabase {
         return data
     }
 
-    curse(store, args) {
-        let { index, key, startKey, cb } = args
-        let collection = this.x.objectStore(store)
+    op(store, args = {}) {
+        let { index, key, method, startKey, count } = args
+        let collection = this.objectStore(store)
         if (index) collection = collection.index(index)
         let keyRange = startKey ? IDBKeyRange.lowerBound(startKey, true) : IDBKeyRange.lowerBound(0)
-        key = key == undefined ? keyRange : IDBKeyRange.bound(key,key)
-        const req = collection.openCursor(key)
+        let methArgs = [key ? IDBKeyRange.bound(key,key) : keyRange]
+        if (count != undefined) methArgs.push(count)
+        return this.wait(collection[method].apply(collection, methArgs), args)
+    }
+
+    count(store, args = {}) {
+        return this.op(store, { method:'count', ...args })
+    }
+
+    wait(req) {
         return new Promise(resolve => {
-            req.on('success', e => { 
-                if (!e.target.result) resolve()
-                else {
-                    cb(e.target.result)
-                    e.target.result.continue()
-                }
-            })
+            req.on('success', e => resolve(req.result))
         })
     }
 
-    async update(store, args) {
-        let xnew = this.x == undefined
-        if (xnew) this.transact([store], 'readwrite')
-        await this.curse(store, { ...args, cb: cur => { 
-            if (!cur.value) return
-            cur.value[args.col] = args.val
-            cur.update(cur.value)
-        }})
-        if (xnew) this.commit()
-    }
-
-    async delete(store, args) {
-        let xnew = this.x == undefined
-        if (xnew) this.transact([store], 'readwrite')
-        await this.curse(store, { ...args, cb: cur => cur.delete() })
-        if (xnew) this.commit()
-    }
-
-    async deleteWithRelatives(store, key) {
-        await this.delete(store, { key })
-        if (store == 'meshes')
-            for (const store of ['verts','faces','particles','tets'])
-                await this.delete(store, { index:'meshId', key })
-        else if (store == 'verts')
-            for (const i of range(3))
-                await this.delete('faces', { index:'vertId'+i, key })
-        else if (store == 'particles')
-            for (const i of range(4))
-                await this.delete('tets', { index:'partId'+i, key })    
-    }
-  
 }
 
 

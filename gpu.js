@@ -340,12 +340,6 @@ export const GPU = class GPU {
                 let fieldWGSL = cls.fields.map(f => `${f.name}: ${f.type.name}`).join(',\n')
                 return `struct ${cls.name} {\n${fieldWGSL}\n}\n`
             }
-            get table() {
-                const obj = {}
-                for (const [i, { name, type }] of enumerate(cls.fields))
-                    obj[name] = this[i].toString()
-                return obj
-            }
             [Symbol.iterator]() {
                 let idx = 0;
                 return { next: () => idx < cls.fields.length ? { value: this[idx++], done: false } : { done: true } }
@@ -400,7 +394,7 @@ export const GPU = class GPU {
                 return sarr
             }
             get(o,k) {
-                if (k == Symbol.iterator || isNaN(k)) return Reflect.get(o,k)
+                if (k == Symbol.iterator || k.constructor == Symbol || !isFinite(k)) return Reflect.get(o,k)
                 if (o.type.isStruct) 
                     return new o.type(o.buffer, o.byteOffset + k*o.stride, o.type.size)
                 return this[`get${o.type.conv}`](k*o.stride, true)
@@ -556,6 +550,7 @@ export const V3 = class extends Float32Array {
     minc() { return min(this[0],this[1],this[2]) }
     max(b) { return v3(max(this[0],b[0]), max(this[1],b[1]), max(this[2],b[2])) }
     min(b) { return v3(min(this[0],b[0]), min(this[1],b[1]), min(this[2],b[2])) }
+    isFinite() { return isFinite(this[0]) && isFinite(this[1]) && isFinite(this[2]) }
     toString() { return 'v3('+[0,1,2].map(i => this[i].toFixed(5).replace(/\.?0+$/g, '').replace(/^-0$/,'0')).join(',')+')' }
 
     static getset = (off, type) => ({
@@ -616,15 +611,20 @@ export const M3 = GPU.array({
         toString: function() {
             return [this[0].toString(), this[1].toString(), this[2].toString()].join('\n')
         },
-        inverse: function() {
-            const [[m00,m01,m02],[m10,m11,m12],[m20,m21,m22]] = this
-            const n = m3([[m22*m11 - m12*m21, -m22*m01 + m02*m21, m12*m01 - m02*m11], 
-                          [-m22*m10 + m12*m20, m22*m00 - m02*m20, -m12*m00 + m02*m10],
-                          [m21*m10 - m11*m20, -m21*m00 + m01*m20, m11*m00 - m01*m10]])
-            return n.mulc(1 / (n[0][0]*m00+ n[1][0]*m01 + n[2][0]*m02));
+        invert: function() {
+            let p = M3.of(this)
+            let shifts = [[0,1,2],[1,2,0],[2,0,1]]
+            for (let [i,a,b] of shifts)
+                for (let [j,c,d] of shifts)
+                    this[i][j] = p[c][a]*p[d][b] - p[d][a]*p[c][b]
+            let det = p[0].dot(this.col(0))
+            let invdet = 1/det
+            for (const i of range(3))
+                for (const j of range(3))
+                    this[i][j] *= invdet
+            return det
         }
     }
-    
 })
 
 export const m3 = (...args) => M3.of(...args)
@@ -773,6 +773,9 @@ export const M4 = GPU.array({
 })
 
 export const m4 = (...args) => M4.of(...args)
+export const m3Array = GPU.array({ type:M3 })
+export const v3array = GPU.array({ type:V3 })
+
 
 for (const meth of Object.getOwnPropertyNames(GPUDevice.prototype)) {
     if (!(meth == 'destroy' || meth.startsWith('create')) || meth == 'createCommandEncoder') continue;
@@ -789,3 +792,7 @@ hijack(GPUQueue, 'submit', (real, obj, args) => {
     real.apply(obj, args)
     obj.holder.popErrorScope().then(err => obj.holder.holder.fatal(err))
 })
+
+
+
+

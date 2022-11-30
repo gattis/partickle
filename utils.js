@@ -7,7 +7,7 @@ export const roundUp = (n,k) => ceil(n/k)*k
 export const roundUpPow = (n,e) => e ** ceil(log(n)/log(e))
 export const I32MIN = -(2**31)
 export const I32MAX = 2**31-1
-
+export const roundEps = x => round(1e7*x) / 1e7
 export const range = function* (a,b,step) {
     const [start,stop] = b == undefined ? [0,a] : [a,b]
     step ||= 1
@@ -63,9 +63,20 @@ export const BitField = class BitField {
     
 }
 
-EventTarget.prototype.on = function(type, fn, options = {}) {
-    if (this.cbs?.[type]) this.removeEventListener(type, this.cbs[type])
-    this.addEventListener(type, (this.cbs||={})[type] = fn, options)
+EventTarget.prototype.on = function(types, fn, options = {}) {
+    if (!(types instanceof Array)) types = [types]
+    for (let type of types) {
+        if (this.cbs?.[type]) this.removeEventListener(type, this.cbs[type])
+        this.addEventListener(type, (this.cbs||={})[type] = fn, options)
+    }
+    return this
+}
+
+EventTarget.prototype.off = function(types, fn, options = {}) {
+    if (!(types instanceof Array)) types = [types]
+    for (let type of types) {
+        if (this.cbs?.[type]) this.removeEventListener(type, this.cbs[type])
+    }
     return this
 }
 
@@ -199,11 +210,8 @@ Map.prototype.setDefault = function(key, def) {
     return val
 }
 
-export const hashTuple = (tup) => {
-    tup.sort((a,b) => a - b)
-    while (tup.length < 4) tup.push(0)
-    return (new Float64Array((new Uint16Array(tup)).buffer))[0]
-}
+export const hashPair = (a,b) => (new Float64Array((new Uint32Array(a <= b ? [a,b] : [b,a])).buffer))[0]
+export const unhashPair = hash => [...new Uint32Array((new Float64Array([hash])).buffer)]
 
 export const randomShuffle = (arr) => {
     if (!(arr instanceof Array)) arr = [...arr]
