@@ -7,7 +7,8 @@ export const roundUp = (n,k) => ceil(n/k)*k
 export const roundUpPow = (n,e) => e ** ceil(log(n)/log(e))
 export const I32MIN = -(2**31)
 export const I32MAX = 2**31-1
-export const roundEps = x => round(1e7*x) / 1e7
+export const EPS = 1e-6
+export const roundEps = x => round(1e6 * x) / 1e6
 export const range = function* (a,b,step) {
     const [start,stop] = b == undefined ? [0,a] : [a,b]
     step ||= 1
@@ -16,6 +17,20 @@ export const range = function* (a,b,step) {
         for (let val = start; val < stop; val += step) yield val
     else
         for (let val = start; val > stop; val += step) yield val
+}
+
+export const scope = (cb) => {
+    return new Proxy({}, {
+        get(target,prop) {
+            if (prop != 'then')
+                try { return cb(prop) }
+                catch(err) {
+                    if (!(err instanceof ReferenceError))
+                        throw err
+                }
+            return Reflect.get(...arguments)
+        }
+    })
 }
 
 export const range3d = function* (nx,ny,nz) {
@@ -53,14 +68,14 @@ export const BitField = class BitField {
         const byte = floor(k/8), bit = k % 8
         return (o.data[byte] >> bit) & 1
     }
-    
+
     set(o,k,v) {
         if (isNaN(k)) return Reflect.set(o,k,v)
         const byte = floor(k/8), bit = k % 8
         o.data[byte] = (o.data[byte] & ~(1 << bit)) | (Number(v) << bit)
         return true
     }
-    
+
 }
 
 EventTarget.prototype.on = function(types, fn, options = {}) {
@@ -147,47 +162,45 @@ export const hijack = (cls, meth, replacement) => {
 
 export class Preferences {
     constructor(name) {
-        this.name = name
-        this.data = JSON.parse(localStorage[name] || '{}')
-        this.keys = []
-        this.keyWatch = {}
-        this.ival = {}
-        this.lo = {}
-        this.hi = {}
-        this.step = {}
-        this.opts = {}
-        this.type = {}
+        Object.assign(this, {
+            name, keys:[], keyWatch:{}, ival:{}, lo:{}, hi:{}, step:{}, opts:{}, type:{}, hidden:{},
+            data: JSON.parse(localStorage[name] || '{}')
+        })
     }
     addNum(key, ival, lo, hi, step) {
         this.lo[key] = lo
         this.hi[key] = hi
         this.step[key] = step
-        this.type[key] = 'num'
-        this.addField(key,ival)
+        this.addField(key, ival, 'num')
     }
     addChoice(key, ival, opts) {
         this.opts[key] = opts
-        this.type[key] = 'choice'
-        this.addField(key,ival)
+        this.addField(key, ival, 'choice')
     }
     addBool(key, ival) {
-        this.type[key] = 'bool'
-        this.addField(key,ival)
+        this.addField(key, ival, 'bool')
     }
-    addField(key,ival) {
+    addVector(key, ivec) {
+        this.addField(key, ivec, 'vec')
+    }
+    addField(key,ival,type) {
+        this.type[key] = type
         this.keys.push(key)
         this.ival[key] = ival
         this.keyWatch[key] = []
-        Object.defineProperty(this, key, { 
+        Object.defineProperty(this, key, {
             get: () => this.getval(key),
             set: (val) => this.setval(key,val)
         })
-        if (!(key in this.data)) this[key] = ival        
+        if (!(key in this.data)) this[key] = ival
+        else if (type == 'vec')
+            this.data[key] = v3(this.data[key][0], this.data[key][1], this.data[key][2])
     }
     getval(key) {
         return this.data[key]
     }
     setval(key,val) {
+        if (this.data[key] == val) return
         this.data[key] = val
         localStorage[this.name] = JSON.stringify(this.data)
         for (const cb of this.keyWatch[key])
@@ -226,7 +239,7 @@ export const repr = (v) => {
     if (typeof v == 'number')
         return (Math.round(v * 100000) / 100000).toString()
     if (v instanceof Array | v instanceof Set) {
-        if ((v.length || v.size || Infinity) <= 4)
+        if ((v.length || v.size || Infinity) <= 3)
             return `< ${[...v].map(x => repr(x)).join(' ')} >`
         else return `[sz=${v.length || v.size || 0}]`
     }
@@ -235,10 +248,10 @@ export const repr = (v) => {
 
 
 
-export const dbg = (vars) => {
+export const dbg = (vars, indent = 0) => {
     let [fname,lineno] = new Error().stack.split('\n')[2].split('/').at(-1).split(':').slice(0,2)
     let prefix = [
-        `%c${fname}|${lineno}:%c`, 
+        ' '.repeat(indent*4) + `%c${fname}|${lineno}:%c`,
         'color: yellow; font-weight:bold;', 'color: unset; font-weight:unset;'
     ]
     if (typeof vars == 'string') {
@@ -250,9 +263,9 @@ export const dbg = (vars) => {
             console.group(k)
             console.dir(v)
             console.groupEnd()
-        }       
+        }
         console.groupEnd()
-    }    
+    }
 }
 
 console.out = console.log
@@ -272,5 +285,5 @@ console.out = console.log
 
 
 
-        
-   
+
+

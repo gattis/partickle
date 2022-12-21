@@ -125,59 +125,72 @@ export class BVHTree {
         return result
     }
 
-    nearestOnTri(p,tri) {
-        let [a,b,c] = tri
-        let ab = b.sub(a), ac = c.sub(a), ap = p.sub(a), bp = p.sub(b), d1 = ab.dot(ap), d2 = ac.dot(ap)
-        if (d1 <= 0 && d2 <= 0) return a    
-        let d3 = ab.dot(bp), d4 = ac.dot(bp)
-        if (d3 >= 0 && d4 <= d3) return b
-        let vc = d1*d4 - d3*d2
-        if (vc <= 0 && d1 >= 0 && d3 < 0)
-            return a.add(ab.mulc(d1/(d1-d3)))
-        let cp = p.sub(c), d5 = ab.dot(cp), d6 = ac.dot(cp)
-        if (d6 >= 0 && d5 <= d6) return c    
-        let vb = d5*d2 - d1*d6
-        if (vb <= 0 && d2 >= 0 && d6 <= 0)
-            return a.add(ac.mulc(d2/(d2-d6)))
-        let bc = c.sub(b), va = d3*d6 - d5*d4
-        if (va < 0 && d4-d3 > 0 && d5-d6 > 0)
-            return b.add(bc.mulc((d4-d3)/(d4-d3+d5-d6)))    
-        return a.add(ab.mulc(vb).add(ac.mulc(vc)).divc(va+vb+vc))
-    }
-
     distToNode(p, node) {
         if (!node) return Infinity
         let dmin = node.min.sub(p), dmax = p.sub(node.max)
         return v3(max(dmin.x, 0, dmax.x), max(dmin.y, 0, dmax.y), max(dmin.z, 0, dmax.z)).mag()
     }
 
-    signedDist(p) {
-        const tris = this.tris, result = { d: Infinity }
-        const recurse = node => {
-            if (node.faces.length == 1) {
-                const tri = tris[node.faces[0]]
-                const nearest = this.nearestOnTri(p, tri)
-                const d = p.dist(nearest)
-                if (abs(d-result.d) < 0.00001) result.tris.push(tri)
-                else if (d < result.d) result.tris = [tri]
-                if (d < result.d) ([result.d, result.p] = [d, nearest])
-            }
-            let dists = [node.left, node.right].map(child => [child, this.distToNode(p, child)])
-            dists.sort((a,b) => a[1] - b[1])
-            for (const [child,dist] of dists)
-                if (dist <= result.d)
-                    recurse(child)  
-        }
-        recurse(this.root)
-        if (result.d == Infinity) return Infinity
-        let n = v3(0)
-        for (let [a,b,c] of result.tris)
-            n = n.add(b.sub(a).cross(c.sub(a)))
-        let ap = p.sub(result.p)
-        let d = result.d * sign(n.dot(ap))
-        return d
+    nearestOnTri(p,tri) {
+        let res, [a,b,c] = tri
+        let ab = b.sub(a), ac = c.sub(a), bc = c.sub(b), ap = p.sub(a), bp = p.sub(b), cp = p.sub(c)
+        let n = ab.cross(ac).normalized()
+        let d1 = ab.dot(ap), d2 = ac.dot(ap)
+        if (d1 <= 0 && d2 <= 0) return [a, n]
+        let d3 = ab.dot(bp), d4 = ac.dot(bp)
+        if (d3 >= 0 && d4 <= d3) return  [b, n]
+        let vc = d1*d4 - d3*d2
+        if (vc <= 0 && d1 >= 0 && d3 < 0)
+            return  [a.add(ab.mulc(d1/(d1-d3))), n]
+        let d5 = ab.dot(cp), d6 = ac.dot(cp)
+        if (d6 >= 0 && d5 <= d6) return  [c, n]
+        let vb = d5*d2 - d1*d6
+        if (vb <= 0 && d2 >= 0 && d6 <= 0)
+            return  [a.add(ac.mulc(d2/(d2-d6))), n]
+        let va = d3*d6 - d5*d4
+        if (va < 0 && d4-d3 > 0 && d5-d6 > 0)
+            return  [b.add(bc.mulc((d4-d3)/(d4-d3+d5-d6))), n]
+        return [a.add(ab.mulc(vb).add(ac.mulc(vc)).divc(va+vb+vc)), n]
     }
 
+
+
+    signedDist(query) {
+        query.d = Infinity
+        const recurse = node => {
+            if (node.faces.length == 1) {
+                const tri = this.tris[node.faces[0]]
+                let [ptri,n] = this.nearestOnTri(query.p, tri)
+                let delta = query.p.sub(ptri)
+                let d = delta.mag()
+                if (abs(d - query.d) <= 0.00001) query.tris.push([ ptri, tri, n ])
+                else if (d < query.d) query.tris = [[ ptri, tri, n ]]
+                if (d < query.d) ([query.d, query.delta] = [d, delta])
+            }
+            let dists = [node.left, node.right].map(child => [child, this.distToNode(query.p, child)])
+            dists.sort((a,b) => a[1] - b[1])
+            for (const [child,dist] of dists)
+                if (dist <= query.d + 0.00001)
+                    recurse(child)
+        }
+        recurse(this.root)
+        if (query.d == Infinity) return query
+        let un = v3(0), wn = v3(0)
+        for (let [ptri, tri, n] of query.tris) {
+            let weight = 1
+            if (query.tris.length > 2) {
+                let [a,b,c] = [...tri].sort((a,b) => a.dist(ptri) - b.dist(ptri))
+                weight = acos(b.sub(a).normalized().dot(c.sub(a).normalized()))
+            }
+            un = un.add(n)
+            wn = wn.add(n.mulc(weight))
+        }
+        query.n = wn.normalized()
+        query.sdf = query.d * sign(un.dot(query.delta))
+        return query
+    }
+
+ 
 }
 
 class GeoDB extends IDBDatabase {

@@ -1,4 +1,4 @@
-const { Sim, Params, render, phys, sampleMesh, loadWavefront, loadBitmap } = await import('./sim.js')
+const { Sim, render, phys, sampleMesh, loadWavefront, loadBitmap } = await import('./sim.js')
 window.render = render
 window.phys = phys
 const doc = document
@@ -44,7 +44,7 @@ const createCtrl = {
     },
     'num': (prefs, key, elem) => {
         const ctrl = html('output', {}, prefs[key])
-        ctrl.on('pointerdown', e => { 
+        ctrl.on('pointerdown', e => {
             window.on('pointermove', e => {
                 let step = prefs.step[key]
                 prefs[key] = roundEps(clamp(prefs[key] + e.movementX*step, prefs.lo[key], prefs.hi[key]))
@@ -65,20 +65,21 @@ const createCtrl = {
             select.append(option)
         }
         createCtrl.common(prefs, key, elem, select)
-    }    
+    }
 }
 
 for (const key of phys.keys)
-    createCtrl[phys.type[key]](phys, key, '#pedit')   
+    createCtrl[phys.type[key]](phys, key, '#pedit')
 
 for (const key of render.keys)
-    createCtrl[render.type[key]](render,key,'#rpref')
+    if (!render.hidden[key])
+        createCtrl[render.type[key]](render,key,'#rpref')
 
 cv.on('pointerdown', down => {
     if (!window.sim) return
     if (down.button == 2) {
        sim.grabParticle(down.x, down.y)
-       cv.style.cursor = 'grabbing'      
+       cv.style.cursor = 'grabbing'
     } else if (down.button == 1 || down.button == 0) {
         cv.style.cursor = 'all-scroll'
     }
@@ -98,7 +99,7 @@ cv.on('pointerdown', down => {
 
 cv.on('wheel', wheel => {
     if (!window.sim) return
-    sim.advanceCam(-0.001 * wheel.deltaY)  
+    sim.advanceCam(-0.001 * wheel.deltaY)
 }, { passive: true })
 
 cv.on('contextmenu', menu => menu.preventDefault())
@@ -109,38 +110,39 @@ window.on('resize', () => {
     sim.resize(cv.width, cv.height)
 })
 
-const step = html('button', {id: 'step'}, '\u{1F463}').on('click', () => { sim.compute.fwdstep = true })
+const step = html('button', {id: 'step'}, '\u{1F463}').on('click', () => { sim.computer.fwdstep() })
 step.style.display = phys.paused ? 'inline' : 'none'
 phys.watch(['paused'], () => {
     step.style.display = phys.paused ? 'inline' : 'none'
+})
+render.watch(['color_src','color_dst','alpha_src','alpha_dst'], (k,v) => {
+    $('#'+k).value = v
 })
 const paused = $`input[name="paused"]`
 paused.parentNode.insertBefore(step,paused.nextSibling.nextSibling)
 
 async function updateInfo() {
-    if (sim.stopRequest) return
-    const lines = [`cam pos: ${sim.camPos.toString()}`]
-    let physStat = await sim.compute.stats(), renderStat = await sim.render.stats()
+    const lines = []
+    let physStat = await sim.computer.stats(), renderStat = await sim.renderer.stats()
+    let ttotal = 0n
     for (const { kind, fps, profile } of [physStat, renderStat]) {
         lines.push(`${kind} fps:${fps.toFixed(2)}`)
         if (!profile) continue
         for (const [label, nsecs] of profile) lines.push(`${label}: ${nsecs / 1000n} &mu;s`)
-        lines.push(`total: ${profile.sum(([label, nsecs]) => nsecs, 0n) / 1000n} &mu;s`)
+        let steptot = profile.sum(([label, nsecs]) => nsecs, 0n) / 1000n
+        lines.push(`${kind} tot: ${steptot} &mu;s`)
         lines.push('&nbsp;')
+        ttotal += steptot * (kind == 'render' ? 1n : BigInt(phys.frameratio))
     }
     lines.push(`frameratio(avg): ${(physStat.fps / renderStat.fps).toFixed(3)}`)
+    lines.push(`total: ${ttotal} &mu;s`)
+    lines.push('&nbsp;')
+    lines.push(`cam pos: ${sim.uniforms.cam_pos}`)
     $`#info`.innerHTML = lines.join('<br/>')
     setTimeout(updateInfo, 500)
 }
 
 
-$`#hand`.on('click', () => cv.requestPointerLock())
-doc.on('pointerlockchange', () => {
-    let exiting = doc.pointerLockElement != cv
-    sim.activateHand(!exiting)
-    doc.on('mousemove', exiting ? null : (e) => sim.moveHand(e.movementX, e.movementY, 0))
-    doc.on('wheel', exiting ? handleInput : (e) => sim.moveHand(0, 0, e.deltaY * .0001))
-})
 
 $`#fix`.on('click', () => sim.fixParticle())
 
@@ -159,21 +161,25 @@ class EditorTable extends HTMLDivElement {
         dis.table = html('table')
         dis.summary = html('div', { class:'summary' }, [html('b', {}, dis.name+': '), dis.back, dis.fwd, dis.counting])
         dis.append(dis.summary, dis.table)
+        dis.tabButton = html('button',{},name).on('click', () => dis.show())
         return dis
     }
     show() {
         this.style.display = 'flex'
         this.parentNode.active = this
         for (const sibling of this.parentNode.children)
-            if (sibling instanceof EditorTable) 
-                if (sibling != this) 
+            if (sibling instanceof EditorTable)
+                if (sibling != this) {
                     sibling.style.display = 'none'
+                    sibling.tabButton.className = ''
+                }
         this.update()
+        this.tabButton.className = 'opentab'
     }
 
 
     async update() {
-        
+
         const start = this.page * this.nrows
         let results = await transact([this.name],'readonly', async x => await x.query(this.name))
         let ntot = results.size
@@ -184,7 +190,7 @@ class EditorTable extends HTMLDivElement {
         this.counting.textContent = ` 0 found`
         this.table.replaceChildren()
         if (results.length == 0) return
-        
+
         this.counting.textContent = ` ${start + 1}-${stop} of ${ntot}`
         const cols = Object.keys(results[0][1])
         const rows = [html('tr', {}, [html('th',{},'id'), ...cols.map(col => html('th',{},col))])]
@@ -216,7 +222,7 @@ class EditorTable extends HTMLDivElement {
                     else if (orig instanceof Array) val = eval(val)
                     transact([this.name], 'readwrite', async x => {
                         await x.update(this.name, id, col, val)
-                        edit.textContent = str(val)    
+                        edit.textContent = str(val)
                     })
                 })
                 return edit
@@ -230,7 +236,7 @@ class EditorTable extends HTMLDivElement {
                     })
                 }))
             return row
-            
+
         }))
         this.table.append(...rows)
     }
@@ -259,12 +265,12 @@ let transact = async (stores, perm, cb) => {
 
 const stores = {}
 const storeBtns = []
-for (const name of db.storeNames) {
+for (const name of ['meshes', 'verts', 'faces', 'bitmaps', 'cache']) {
     const table = new EditorTable(name)
     stores[name] = table
-    storeBtns.push(html('button',{},name).on('click', () => table.show()))
+    storeBtns.push(table.tabButton)
 }
-const storeNav = html('div', { class:'stores' }, storeBtns)       
+const storeNav = html('div', { class:'stores' }, storeBtns)
 const storeFooter = html('div', { class:'footer' });
 
 [
@@ -274,38 +280,32 @@ const storeFooter = html('div', { class:'footer' });
     storeFooter.append(html('input', { id, type:'file', accept }).on('change', function() {
         const file = this.files[0]
         if (!file) return
-        const reader = new FileReader().on('load', e => { 
+        const reader = new FileReader().on('load', e => {
             transact(db.storeNames, 'readwrite', async x => await cb(x,file, e.target.result))
-        })       
+        })
         if (dataUrl) reader.readAsDataURL(file)
         else reader.readAsText(file)
         this.value = ''
     }), html('label', {for:id, class:'enabled'}, 'Load '+accept)))
 
-storeFooter.append(html('button', {}, 'reset').on('click', async () => { 
+storeFooter.append(html('button', {}, 'reset').on('click', async () => {
     await GeoDB.reset()
     window.editor.active.update()
 }))
 window.editor = html('dialog', { id:'editor', class:'editor' }, [storeNav, ...Object.values(stores), storeFooter])
 stores['meshes'].show()
 doc.body.append(editor)
-
-window.sim = null
 $`#scene`.on('click', e => editor.open ? editor.close() : editor.show())
-$`#restart`.on('click', async e => {
-    if (window.sim) await sim.stop()
-    runSim()
-})
 
-
-const runSim = async () => {
-    window.sim = await new Sim().init(cv.width, cv.height, ctx, db)
-    window.sim.run()
-    setTimeout(updateInfo, 500)
+window.sim = await Sim(cv.width, cv.height, ctx)
+window.sim.run()
+window.debug = (n = 18) => {
+    sim.pull('debug').then(data => {
+        window.d = new Float32Array(data.buffer)
+        dbg({debug:window.d.subarray(0,n).map(x => round(x*1e5)/1e5).join(' ')})
+    })
 }
-
-
-runSim()
+setTimeout(updateInfo, 500)
 
 
 

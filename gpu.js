@@ -25,14 +25,14 @@ const FF = Boolean(globalThis.navigator && navigator.userAgent.match(/(Firefox|D
 const NODE = globalThis.process && process.release.name == 'node'
 
 export const GPU = class GPU {
-    
+
     async init(width, height, ctx) {
         let promise = navigator.gpu.requestAdapter({ powerPreference: 'high-performance' })
         const adapter = await promise
         const limits = {}, features = []
         for (const feature of adapter.features.keys())
             if (feature != 'multi-planar-formats' && feature != 'clear-texture')
-               features.push(feature)        
+               features.push(feature)
         for (const prop of Object.getOwnPropertyNames(adapter.limits.constructor.prototype)) {
             if (prop == 'maxInterStageShaderVariables') continue
             const val = adapter.limits[prop]
@@ -42,19 +42,25 @@ export const GPU = class GPU {
         const desc = { requiredFeatures: features }
         if (!FF) desc.requiredLimits = limits
         const dev = await adapter.requestDevice(desc)
-        dev.onuncapturederror = ev => { this.fatal(ev.error) }
+        dev.onuncapturederror = ev => { this.fatal('uncaptured', 'unknown', ev.error) }
         dev.queue.holder = dev
         dev.holder = this
         this.copyBufs = []
         if (features.includes('timestamp-query')) this.ts = true
-        
+
         const threads = floor(sqrt(limits.maxComputeWorkgroupsPerDimension))
 
         Object.assign(this, { dev, adapter, threads } )
-        
+
 
     }
-    
+
+    fatal(meth, args, err) {
+        if (!err) return
+        this.alive = false
+        dbg({error:`gpu.${meth}`, args, err })
+    }
+
     configure(ctx, width, height, pref) {
         this.pref = pref
         this.ctx = ctx
@@ -63,14 +69,12 @@ export const GPU = class GPU {
         if (this.depthTex) this.depthTex.destroy()
         if (this.colorTex) this.colorTex.destroy()
         const usage = GPUTextureUsage.RENDER_ATTACHMENT
-        this.depthTex = this.dev.createTexture({ size, sampleCount: pref.samples, format:pref.depth_fmt, usage })
-        this.colorTex = this.dev.createTexture({ size, sampleCount: pref.samples, format:pref.format, usage })
+        this.depthTex = this.dev.createTexture({ size, sampleCount:pref.samples, format:pref.depth_fmt, usage })
+        this.colorTex = this.dev.createTexture({ size, sampleCount:pref.samples, format:pref.format, usage })
+        this.alive = true
     }
 
-    cleanup() {
-        this.dev.destroy()
-    }
-        
+
     buf(args) {
         if ('data' in args) [args.type, args.length] = [args.data.constructor, args.data.length]
         args.length = args.length == undefined ? 1 : args.length
@@ -116,7 +120,7 @@ export const GPU = class GPU {
     write(buf, data) {
         this.dev.queue.writeBuffer(buf.buffer, buf.resource.offset, data.buffer, data.byteOffset, buf.size)
     }
-    
+
     async shader(args) {
         const { compute, wgsl, defs, storage, uniform, textures, samplers } = args
         const binds = []
@@ -146,7 +150,7 @@ export const GPU = class GPU {
         } catch(err) {}
         return args
     }
-    
+
     computePipe(args) {
         const { shader, entryPoint, binds } = args
         const visibility = GPUShaderStage.COMPUTE
@@ -166,7 +170,7 @@ export const GPU = class GPU {
               color_op, color_src, color_dst, alpha_op, alpha_src, alpha_dst } = args
         color_op ||= pref.color_op; color_src ||= pref.color_src; color_dst ||= pref.color_dst
         alpha_op ||= pref.alpha_op; alpha_src ||= pref.alpha_src; alpha_dst ||= pref.alpha_dst
-        
+
         if (depthWriteEnabled == undefined) depthWriteEnabled = pref.depth_wr
         if (depthCompare == undefined) depthCompare = pref.depth_cmp
         if (atc == undefined) atc = pref.atc
@@ -181,14 +185,14 @@ export const GPU = class GPU {
                         alpha: { operation: alpha_op, srcFactor: alpha_src, dstFactor: alpha_dst } }
         const pipeDesc = {
             layout: this.dev.createPipelineLayout({ bindGroupLayouts: [ args.layout ] }),
-            multisample: { count: pref.samples, alphaToCoverageEnabled: atc && pref.samples > 1},
+            multisample: { count:pref.samples, alphaToCoverageEnabled:atc && pref.samples > 1},
             vertex: { module: shader.module, entryPoint:entry+'_vert', buffers:vertBufs },
             fragment: { module: shader.module , entryPoint:entry+'_frag', targets: [{ format: pref.format, blend }]},
             primitive: { topology, cullMode },
             depthStencil: { depthWriteEnabled , depthCompare, format:pref.depth_fmt },
         }
-        
-        args.pipeline = this.dev.createRenderPipeline(pipeDesc)        
+
+        args.pipeline = this.dev.createRenderPipeline(pipeDesc)
         return args
     }
 
@@ -219,13 +223,13 @@ export const GPU = class GPU {
         const entries = pipe.shader.binds.filter(b => b.label in binds).map(b => ({ binding: b.idx, resource: binds[b.label].resource }))
         return this.dev.createBindGroup({ entries, layout: pipe.layout})
     }
-    
+
     computePass(args) {
         let { pipe, dispatch, binds, offsets } = args
         if (dispatch.length == undefined) dispatch = [dispatch]
         const bg = this.bindGroup(pipe, binds, offsets)
-        return (encoder) => { 
-            const pass = encoder.beginComputePass()            
+        return (encoder) => {
+            const pass = encoder.beginComputePass()
             pass.setPipeline(pipe.pipeline)
             pass.setBindGroup(0, bg)
             pass.dispatchWorkgroups(...dispatch)
@@ -240,18 +244,18 @@ export const GPU = class GPU {
             const canvasTex = this.ctx.getCurrentTexture().createView()
             const [view, resolveTarget] = multisamp ? [this.colorTex.createView(), canvasTex] : [canvasTex]
             const pass = encoder.beginRenderPass({
-                colorAttachments: [{ 
+                colorAttachments: [{
                     view, resolveTarget,
                     loadOp: 'clear',
                     storeOp: 'store',
-                    clearValue: { r: 0, g: 0, b: 0, a: 0 },                    
+                    clearValue: { r: 0, g: 0, b: 0, a: 0 },
                 }],
                 depthStencilAttachment: {
                     depthClearValue: 1.0,
                     depthLoadOp: 'clear',
                     depthStoreOp: 'store',
                     stencilLoadOp: useStencil ? 'clear' : undefined,
-                    stencilStoreOp: useStencil ? 'store' : undefined,                    
+                    stencilStoreOp: useStencil ? 'store' : undefined,
                     view: this.depthTex.createView()
                 }
             })
@@ -287,11 +291,11 @@ export const GPU = class GPU {
             pass.drawIndexed(...dispatch)
         }
     }
-        
+
     clearBuffer(buf) {
         return (encoder) => {
             encoder.clearBuffer(buf.buffer, 0, buf.size)
-        }            
+        }
     }
 
     timestamp(label) {
@@ -327,6 +331,7 @@ export const GPU = class GPU {
         const cls = class extends DataView {
             static name = opt.name
             static alloc() {
+                
                 return new this(new ArrayBuffer(this.size))
             }
             static of(...args) {
@@ -346,7 +351,7 @@ export const GPU = class GPU {
             }
             static getset = (off,type) => ({
                 get() { return new type(this.buffer, this.byteOffset + off, type.size) },
-                set(v) { return new Int8Array(this.buffer,this.byteOffset+off,type.size).set(new Int8Array(v.buffer,v.byteOffset,type.size)) }   
+                set(v) { return new Int8Array(this.buffer,this.byteOffset+off,type.size).set(new Int8Array(v.buffer,v.byteOffset,type.size)) }
             })
         }
         cls.fields = []
@@ -369,11 +374,11 @@ export const GPU = class GPU {
             cls.prototype[k] = v
         for (const [k,v] of Object.entries(opt.statics || {}))
             cls[k] = v
-        return cls        
+        return cls
     }
 
 
-    static array(opt) {    
+    static array(opt) {
         const cls = class extends DataView {
             static name = opt.name ? opt.name : `array<${opt.type.name}${opt.length?','+opt.length:''}>`
             constructor(...args) {
@@ -395,10 +400,10 @@ export const GPU = class GPU {
             }
             get(o,k) {
                 if (k == Symbol.iterator || k.constructor == Symbol || !isFinite(k)) return Reflect.get(o,k)
-                if (o.type.isStruct) 
+                if (o.type.isStruct)
                     return new o.type(o.buffer, o.byteOffset + k*o.stride, o.type.size)
                 return this[`get${o.type.conv}`](k*o.stride, true)
-            }           
+            }
             set(o,k,v) {
                 if (isNaN(k)) return Reflect.set(o,k,v)
                 if (o.type.isStruct) {
@@ -429,10 +434,10 @@ export const GPU = class GPU {
             }
             static getset = (off,type) => ({
                 get() { return new type(this.buffer, this.byteOffset + off, type.size) },
-                set(v) { return new Int8Array(this.buffer,this.byteOffset+off,type.size).set(new Int8Array(v.buffer,v.byteOffset,type.size)) }   
+                set(v) { return new Int8Array(this.buffer,this.byteOffset+off,type.size).set(new Int8Array(v.buffer,v.byteOffset,type.size)) }
             })
         }
-        
+
         cls.stride = roundUp(opt.type.size, opt.type.align)
         if (opt.length != undefined) cls.size = cls.stride * opt.length
         cls.align = opt.type.align
@@ -445,12 +450,6 @@ export const GPU = class GPU {
         return cls
     }
 
-    fatal(err) {
-        if (err == null) return
-        console.error(err.message);
-        debugger;
-        //this.cleanup()
-    }
 }
 
 export const i32array = GPU.array({ type: i32 })
@@ -531,12 +530,13 @@ export const V3 = class extends Float32Array {
     mul(b) { return v3(this[0]*b[0], this[1]*b[1], this[2]*b[2]) }
     divc(b) { return v3(this[0]/b, this[1]/b, this[2]/b) }
     div(b) { return v3(this[0]/b[0], this[1]/b[1], this[2]/b[2]) }
-    mulm(m) { 
+    mulm(m) {
         return v3(this[0]*m[0][0]+ this[1]*m[1][0] + this[2]*m[2][0],
                   this[0]*m[0][1]+ this[1]*m[1][1] + this[2]*m[2][1],
                   this[0]*m[0][2]+ this[1]*m[1][2] + this[2]*m[2][2])
     }
     sum() { return this[0] + this[1] + this[2] }
+    opp() { return v3(-this[0], -this[1], -this[2]) }
     mag() { return sqrt(this[0]**2 + this[1]**2 + this[2]**2) }
     majorAxis() { let ax = abs(this[0]) > abs(this[1]) ? 0 : 1; return abs(this[ax]) > abs(this[2]) ? ax : 2 }
     round() { return [round(this[0]), round(this[1]), round(this[2])] }
@@ -555,9 +555,9 @@ export const V3 = class extends Float32Array {
 
     static getset = (off, type) => ({
         get() { return new V3(this.buffer, this.byteOffset + off, type.size) },
-        set(v) { return new Int8Array(this.buffer,this.byteOffset+off,type.size).set(new Int8Array(v.buffer,v.byteOffset,type.size)) }   
+        set(v) { return new Int8Array(this.buffer,this.byteOffset+off,type.size).set(new Int8Array(v.buffer,v.byteOffset,type.size)) }
     })
-    
+
 }
 
 export const v3 = (...args) => V3.of(...args)
@@ -658,7 +658,7 @@ export const M4 = GPU.array({
              [  0,   0,   1, 0],
              [v.x, v.y, v.z, 1]]
         ),
-        xrot: (a) => m4(   
+        xrot: (a) => m4(
             [[1,       0,      0, 0],
              [0,  cos(a), sin(a), 0],
              [0, -sin(a), cos(a), 0],
@@ -681,7 +681,7 @@ export const M4 = GPU.array({
              [  0, v.y,   0, 0],
              [  0,   0, v.z, 0],
              [  0,   0,   0, 1]]
-        ),     
+        ),
         look: (pos, dir, up) => {
             const z = dir.normalized().mulc(-1)
             const x = up.cross(z).normalized()
@@ -690,7 +690,7 @@ export const M4 = GPU.array({
                 [[        x.x,         y.x,         z.x, 0],
                  [        x.y,         y.y,         z.y, 0],
                  [        x.z,         y.z,         z.z, 0],
-                 [-x.dot(pos), -y.dot(pos), -z.dot(pos), 1]]                
+                 [-x.dot(pos), -y.dot(pos), -z.dot(pos), 1]]
             )
         },
         perspective: (deg, aspect, near, far) => {
@@ -702,7 +702,7 @@ export const M4 = GPU.array({
                  [0,        0,       Q, -1],
                  [0,        0,  Q*near,  0]])
         }
-        
+
     },
     members: {
         transposed: function() {
@@ -777,12 +777,13 @@ export const m3Array = GPU.array({ type:M3 })
 export const v3array = GPU.array({ type:V3 })
 
 
+
 for (const meth of Object.getOwnPropertyNames(GPUDevice.prototype)) {
     if (!(meth == 'destroy' || meth.startsWith('create')) || meth == 'createCommandEncoder') continue;
     hijack(GPUDevice, meth, (real, obj, args) => {
         obj.pushErrorScope('validation')
         const retval = real.apply(obj, args)
-        if (meth != 'destroy') obj.popErrorScope().then(err => obj.holder.fatal(err))
+        if (meth != 'destroy') obj.popErrorScope().then(err => obj.holder.fatal(meth, args, err))
         return retval
     })
 }
@@ -790,7 +791,7 @@ for (const meth of Object.getOwnPropertyNames(GPUDevice.prototype)) {
 hijack(GPUQueue, 'submit', (real, obj, args) => {
     obj.holder.pushErrorScope('validation')
     real.apply(obj, args)
-    obj.holder.popErrorScope().then(err => obj.holder.holder.fatal(err))
+    obj.holder.popErrorScope().then(err => obj.holder.holder.fatal('queue.submit', args, err))
 })
 
 

@@ -1,4 +1,8 @@
+type v2 = vec2<f32>;
+type v2i = vec2<i32>;
 type v3 = vec3<f32>;
+type v4 = vec4<f32>;
+
 
 @compute @workgroup_size(${threads})
 fn vertpos(@builtin(global_invocation_id) gid:vec3<u32>) {
@@ -14,10 +18,10 @@ fn vertpos(@builtin(global_invocation_id) gid:vec3<u32>) {
         var u = 1.0;
         (*v).pos = v3(0);
         for (var k = 0; k < 3; k += 1) {
-            (*v).pos += bary[k] * particles[tet[k]].pos;
+            (*v).pos += bary[k] * particles[tet[k + 1]].pos;
             u -= bary[k];
         }
-        (*v).pos += u * particles[tet[3]].pos;
+        (*v).pos += u * particles[tet[0]].pos;
     }
 }
 
@@ -51,15 +55,22 @@ fn normals(@builtin(global_invocation_id) gid:vec3<u32>) {
     let pos = (*v).pos;
     var norm = v3(0f,0f,0f);
     for (var i = 0u; i < nedges; i = i + 1u) {
-        let b = vertices[(*v).edges[i % nedges]].pos - pos;
-        let c = vertices[(*v).edges[(i+1u) % nedges]].pos - pos;
-        let n = cross(b,c);
-        let area = 0.5 * length(n);
-        let angle = acos(dot(normalize(b),normalize(c)));
-        norm += angle * normalize(n);
+        let ab = vertices[(*v).edges[i % nedges]].pos - pos;
+        let ac = vertices[(*v).edges[(i+1u) % nedges]].pos - pos;
+        let n = normalize(cross(ab,ac));
+        let angle = acos(dot(normalize(ab),normalize(ac)));
+        norm += angle * n;
     }
     norm = normalize(norm);
     (*v).norm = norm;
 
 }
+
+fn clipToPixel(clip:v2, dim:v2i) -> v2i {
+    return v2i(i32(f32(dim.x) * (1+clip.x)/2),
+               i32(f32(dim.y) * (1-clip.y)/2));
+}
+
+
+
 
