@@ -15,22 +15,26 @@ const LIGHTS = [
     { power:1.5, color:v3(1,.85,.6), pos:v3(-2,-2,2.3) },
 ]
 
+const MESH_DEFAULTS = {
+    name:'default', bitmapId:-1, color:[1,1,1,1], offset:[0,0,0], rotation:[0,0,0], gravity:1, invmass:1,
+    scale:[1,1,1], 'shape stiff':1, 'vol stiff':1, friction:1, 'collision damp':1, fluid:0, fixed: 0
+}
+
 export const phys = new Preferences('phys')
 phys.addBool('paused', false)
-phys.addNum('r', .01, 0, 0.1, 0.001)
+phys.addNum('r', .05, 0, 0.1, 0.001)
 phys.addNum('density', 1.0, 0.1, 10, 0.01)
 phys.addNum('frameratio', 3, 1, 20, 1)
 phys.addNum('speed', 1, 0.05, 5, .01)
 phys.addNum('gravity', 9.8, -5, 20, 0.1)
 phys.addNum('shape_stiff', 0, 0, 1, 0.005)
 phys.addNum('vol_stiff', .5, 0, 1, 0.005)
-phys.addNum('friction', 0.5, 0, 1, .01)
+phys.addNum('friction', 0.1, 0, 1, .01)
 phys.addNum('airdamp', 0.5, 0, 1, .001)
 phys.addNum('collidamp', .1, 0, 1, .001)
 
 export const render = new Preferences('render')
 render.addBool('particles', true)
-render.addBool('fluid', true)
 render.addBool('ground', true)
 render.addBool('normals', false)
 render.addBool('edges', false)
@@ -188,11 +192,14 @@ const Edges = GPU.array({ type:Edge })
 
 export const pointCloud = async (meshId, verts, transaction) => {
     let particles = Particles.alloc(verts.size)
-    for (const [pidx,[vertId, vert]] of enumerate(verts))
+    for (const [pidx,[vertId, vert]] of enumerate(verts)) {
         particles[pidx].pos = vert.pos
+        particles[pidx].w = 1
+    }
     let empty = new ArrayBuffer(0)
-    let cache = { meshId, particles: particles.buffer, tets:empty, verts:empty, faces:empty, edges:empty, tetGroups:[] }
+    let cache = { meshId, particles:particles.buffer, tets:empty, verts:empty, faces:empty, edges:empty, tetGroups:[] }
     transaction.objectStore('cache').put(cache)
+    return cache
 }
 
 export const sampleMesh = async (meshId, D, transaction) => {
@@ -201,8 +208,14 @@ export const sampleMesh = async (meshId, D, transaction) => {
         transaction.query('verts', { index:'meshId', key:meshId }),
         transaction.query('faces', { index:'meshId', key:meshId }),
     ])
+
+    let default_verts = [[-1,{pos:v3(0,0,1)}]]
+    default_verts.size = 1
+    if (meshId == -1) return pointCloud(meshId, default_verts, transaction)
+    
     mesh = mesh.get(meshId)
-    for (let [id,vert] of verts) vert.pos = v3(...vert.pos).mul(mesh.scale).add(mesh.offset)
+    for (let [id,vert] of verts)
+	vert.pos = v3(...vert.pos).mul(mesh.scale).add(mesh.offset)
     if (faceData.size == 0)
         return pointCloud(meshId, verts, transaction)
 
@@ -214,14 +227,10 @@ export const sampleMesh = async (meshId, D, transaction) => {
         bmax = bmax.max(vert.pos)
     }
     let bounds = bmax.sub(bmin)
-    dbg({bounds})
     let dims = [...bounds.divc(D)].map(roundEps).map(ceil).map(d=>max(1,d))
-    dbg({dims})
     dims = dims.map(d => d + (d%2 == 0 ? 1 : (d > 1 ? 2 : 1)))
-    dbg({dims})
     let space = v3(...dims).subc(1).mulc(D).sub(bounds).divc(2)
     let offset = bmin.sub(space)
-    dbg({offset})
     let [dimx,dimy,dimz] = dims
     let dimxy = dimx*dimy
 
@@ -285,9 +294,6 @@ export const sampleMesh = async (meshId, D, transaction) => {
                 }))
             }
 
-
-    dbg({particles:particles.length})
-    dbg({tets:tets.length})
 
     let cache = {
         tets: Tets.alloc(tets.length),
@@ -405,6 +411,10 @@ export async function Sim(width, height, ctx) {
     }
 
     meshData = [...meshData]
+
+    if (meshData.length == 0)
+	meshData = [[-1,{...MESH_DEFAULTS}]]
+    
     for (let [mid,mdata] of meshData) {
         let cache = caches.get(mid)
         if (cache == undefined)
@@ -417,7 +427,7 @@ export async function Sim(width, height, ctx) {
         mdata.edges = new u32array(cache.edges)
         mdata.tetGroups = cache.tetGroups
     }
-
+    
     let meshes = Meshes.alloc(meshData.length)
     let particles = Particles.alloc(meshData.map(([,mdata]) => mdata.parts.length).sum())
     let verts = Vertices.alloc(meshData.map(([,mdata]) => mdata.verts.length).sum())
@@ -425,7 +435,6 @@ export async function Sim(width, height, ctx) {
     let tets = Tets.alloc(meshData.map(([,mdata]) => mdata.tets.length).sum())
     let edges = u32array.alloc(meshData.map(([,mdata]) => mdata.edges.length).sum())
     let tetGroups = []
-    let haveFluids = false
 
     let nparticles = 0, ntets = 0, nverts = 0, ntris = 0, nedges = 0
     for (let [midx,[mid,mdata]] of enumerate(meshData)) {
@@ -444,7 +453,6 @@ export async function Sim(width, height, ctx) {
         mesh.vi = nverts
         mesh.vf = nverts + mdata.verts.length
         mesh.fluid = mdata['fluid']
-        haveFluids = haveFluids || mesh.fluid == 1
         let ti = ntets
         let wavg = 0
         let ws = new Set()
@@ -462,8 +470,6 @@ export async function Sim(width, height, ctx) {
             particles[nparticles++] = p
         }
         mesh.c0 = mesh.ci = mesh.c0.divc(mesh.pf - mesh.pi)
-
-        dbg({ws:[...ws].sort((a,b)=>a-b)})
 
         for (let [tidx,tet] of enumerate(mdata.tets))
             tets[ntets++] = Tet.of([0,1,2,3].map(i => tet[i] + mesh.pi))
@@ -520,9 +526,9 @@ export async function Sim(width, height, ctx) {
         gpu.buf({ label:'cnts', type:GPU.array({ type:i32, length:threads**3 }), usage:'STORAGE|COPY_DST|COPY_SRC' }),
         gpu.buf({ label:'work1', type:GPU.array({ type:i32, length:threads**2 }), usage:'STORAGE' }),
         gpu.buf({ label:'work2', type:GPU.array({ type:i32, length:threads }), usage:'STORAGE' }),
+	gpu.buf({ label:'work3', type:GPU.array({ type:i32, length:1 }), usage:'STORAGE' }),
         gpu.buf({ label:'sorted', type:GPU.array({ type:u32, length:particles.length }), usage:'STORAGE' }),
         gpu.buf({ label:'lights', data:lights, usage:'UNIFORM|FRAGMENT|COPY_DST' }),
-        gpu.buf({ label:'fluidtex', type:GPU.array({ type:i32, length:width*height }), usage:'STORAGE|COPY_DST' }),
         gpu.buf({ label:'debug', type:GPU.array({ type: f32, length:4096 }), usage:'STORAGE|COPY_SRC|COPY_DST' }),
     ].map(buf => [buf.label, buf]))
 
@@ -553,8 +559,6 @@ export async function Sim(width, height, ctx) {
         let fwdstep = false
         let tstart = clock(), tlast = clock()
         let frames = 0, steps = 0
-
-        if (particles.length == 0) return
 
 
         const threads = gpu.threads
@@ -602,9 +606,9 @@ export async function Sim(width, height, ctx) {
             gpu.computePass({ pipe:cntsort_cnt, dispatch:pd,
                 binds:{ particles:bufs.particles, cnts_atomic:bufs.cnts, meshes:bufs.meshes, uniforms:bufs.uniforms }}),
             gpu.timestamp('cntsort_cnt'),
-            gpu.computePass({ pipe:prefsum_down, dispatch:threads ** 2, binds:{ cnts:bufs.cnts, work:bufs.work1 }}),
+            gpu.computePass({ pipe:prefsum_down, dispatch:threads**2, binds:{ cnts:bufs.cnts, work:bufs.work1 }}),
             gpu.computePass({ pipe:prefsum_down, dispatch:threads, binds:{ cnts:bufs.work1, work:bufs.work2 }}),
-            gpu.computePass({ pipe:prefsum_down, dispatch:1, binds:{ cnts:bufs.work2, work:bufs.work2 }}),
+            gpu.computePass({ pipe:prefsum_down, dispatch:1, binds:{ cnts:bufs.work2, work:bufs.work3 }}),
             gpu.computePass({ pipe:prefsum_up, dispatch:threads - 1, binds:{ cnts:bufs.work1, work:bufs.work2 }}),
             gpu.computePass({ pipe:prefsum_up, dispatch:threads**2 - 1, binds:{ cnts:bufs.cnts, work:bufs.work1 }}),
             gpu.timestamp('prefsum'),
@@ -651,6 +655,7 @@ export async function Sim(width, height, ctx) {
         }
         cmds.push(gpu.timestamp('get rotation'))
 
+	
         cmds.push(
             gpu.computePass({
                 pipe:normalmatch, dispatch:pd,
@@ -688,7 +693,7 @@ export async function Sim(width, height, ctx) {
             stats: async () => {
                 let ret = { kind:'phys', fps:frames / (tlast - tstart) }
                 if (batch) {
-                let data = new BigInt64Array(await gpu.read(batch.stampBuf))
+                    let data = new BigInt64Array(await gpu.read(batch.stampBuf))
                     let labels = batch.stampLabels
                     ret.profile = [...range(1,labels.length)].map(i => [labels[i], data[i] - data[i-1]])
                 }
@@ -707,8 +712,9 @@ export async function Sim(width, height, ctx) {
                     frames++
                     steps++
 
-                   /* const reads = [
+		    /*const reads = [
                         'particles',
+			'meshes',
                         'debug'
                     ].filter(b=>bufs[b])
 
@@ -753,14 +759,14 @@ export async function Sim(width, height, ctx) {
             let wgsl = (await fetchtext('./prerender.wgsl')).interp({threads: gpu.threads})
             const preShader = await gpu.shader({
                 wgsl, compute: true, defs:[ Vertex, Mesh, Particle, Uniforms, TriVert, Triangle ],
-                storage:{  particles:Particles, meshes:Meshes, vertices:Vertices, tris:Triangles, tets:Tets, /*fluidtex:iatomicarray, debug:f32array*/ },
+                storage:{  particles:Particles, meshes:Meshes, vertices:Vertices, tris:Triangles, tets:Tets },
                 uniform: { uniforms:Uniforms }
             })
 
             wgsl = await fetchtext('./render.wgsl')
             wgsl = wgsl.interp({numLights: lights.length })
             const shader = await gpu.shader({ wgsl, defs:[Vertex, Particle, Mesh, Uniforms, Light],
-                                            storage:{ particles:Particles, meshes:Meshes, vertices:Vertices, /*fluidtex:i32array*/ },
+                                            storage:{ particles:Particles, meshes:Meshes, vertices:Vertices },
                                             uniform:{ uniforms:Uniforms, lights:lights.constructor },
                                             textures:{ tex:{ name:'texture_2d_array<f32>' } },
                                             samplers:{ samp:{ name:'sampler' } } })
@@ -788,14 +794,6 @@ export async function Sim(width, height, ctx) {
                 cmds.push(gpu.computePass({ pipe:updTris, dispatch:td, binds:{ vertices:bufs.vertices, tris:bufs.tris } }))
                 cmds.push(gpu.timestamp('vertexnormals'))
             }
-
-            /*if (haveFluids && render.fluid) {
-                const prefluid = gpu.computePipe({ shader: preShader, entryPoint:'fluids', binds: ['particles','meshes','fluidtex','uniforms','debug'] })
-                cmds.push(gpu.clearBuffer(bufs.fluidtex))
-                cmds.push(gpu.computePass({ pipe:prefluid, dispatch:pd, binds:{ particles:bufs.particles, meshes:bufs.meshes, fluidtex:bufs.fluidtex, debug:bufs.debug, uniforms:bufs.uniforms } }))
-                cmds.push(gpu.timestamp('prefluids'))
-            }*/
-
 
             const draws = []
             if (render.ground) {
@@ -858,22 +856,6 @@ export async function Sim(width, height, ctx) {
                 draws.push(gpu.drawIndexed({ pipe:edgePipe, dispatch:edges.length, binds:{ uniforms:bufs.uniforms }}))
             }
 
-
-
-            if (haveFluids && render.fluid) {
-
-                //const fluidQuadPipe = gpu.renderPipe({ shader, entry:'fluidquad', topology:'triangle-strip',  binds:['uniforms','lights','fluidtex'] })
-                //draws.push(gpu.draw({ pipe:fluidQuadPipe, dispatch: [4,1], binds: { uniforms:bufs.uniforms, lights:bufs.lights, fluidtex:bufs.fluidtex }}))
-
-                const fluidPipe = gpu.renderPipe({
-                    shader, entry:'fluid', binds: ['meshes', 'uniforms', 'lights', 'particles'], topology: 'triangle-list',
-                    atc:false, depthWriteEnabled:false, cullMode:'none',
-                    vertBufs: [{ buf:bufs.particles, arrayStride:Particles.stride, stepMode: 'instance',
-                                 attributes: [{ shaderLocation:0, offset:Particle.pos.off, format:'float32x3' }]}] })
-                draws.push(gpu.draw({
-                    pipe:fluidPipe, dispatch:[3, particles.length],
-                    binds:{ meshes: bufs.meshes, uniforms:bufs.uniforms, lights:bufs.lights, particles:bufs.particles }}))
-            }
 
             const lightPipe = gpu.renderPipe({ shader, entry:'lights', binds: ['uniforms','lights'], topology: 'triangle-list',
                 atc:false, depthWriteEnabled:false })
@@ -941,11 +923,11 @@ export async function Sim(width, height, ctx) {
         height = h
         dbg({width,height})
         gpu.configure(ctx,w,h,render)
-        bufs.fluidtex = gpu.buf({ label:'fluidtex', type:GPU.array({ type:i32, length:width*height }), usage:'STORAGE' })
+
     }
 
 
-     async function run () {
+     async function run() {
         while (gpu.alive) {
             const p = new Promise(resolve => requestAnimationFrame(resolve))
             const tstart = clock()
@@ -1032,10 +1014,7 @@ export async function Sim(width, height, ctx) {
 
 export const loadWavefront = async (name, data, transaction) => {
     let meshes = transaction.objectStore('meshes')
-    let meshId = await transaction.wait(meshes.add({
-        name, bitmapId:-1, color:[1,1,1,1], offset:[0,0,0], rotation:[0,0,0], gravity:1, invmass:1,
-        scale:[1,1,1], 'shape stiff':1, 'vol stiff':1, friction:1, 'collision damp':1, fluid:0, fixed: 0
-    }))
+    let meshId = await transaction.wait(meshes.add({ ...MESH_DEFAULTS, name }))
     let verts = transaction.objectStore('verts')
     let faces = transaction.objectStore('faces')
     let localVerts = 1

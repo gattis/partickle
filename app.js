@@ -112,9 +112,21 @@ window.on('resize', () => {
 
 const step = html('button', {id: 'step'}, '\u{1F463}').on('click', () => { sim.computer.fwdstep() })
 step.style.display = phys.paused ? 'inline' : 'none'
+
+const icon = (color,path) =>
+      `data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg"%3E%3Cpath style='fill:%23${color}' d='${path}'/%3E%3C/svg%3E`
+
+
+const playIcon = icon('11DD44', 'M 0,0 32,16 0,32 Z')
+const stopIcon = icon('DD1144', 'M 0,0 32,0 32,32 0,32 Z')
+$`#icon`.href = phys.paused ? stopIcon : playIcon;
+
 phys.watch(['paused'], () => {
     step.style.display = phys.paused ? 'inline' : 'none'
+    $`#icon`.href = phys.paused ? stopIcon : playIcon;
 })
+
+
 render.watch(['color_src','color_dst','alpha_src','alpha_dst'], (k,v) => {
     $('#'+k).value = v
 })
@@ -130,12 +142,12 @@ async function updateInfo() {
         if (!profile) continue
         for (const [label, nsecs] of profile) lines.push(`${label}: ${nsecs / 1000n} &mu;s`)
         let steptot = profile.sum(([label, nsecs]) => nsecs, 0n) / 1000n
-        lines.push(`${kind} tot: ${steptot} &mu;s`)
+        if (steptot > 0n) lines.push(`${kind} tot: ${steptot} &mu;s`)
         lines.push('&nbsp;')
         ttotal += steptot * (kind == 'render' ? 1n : BigInt(phys.frameratio))
     }
     lines.push(`frameratio(avg): ${(physStat.fps / renderStat.fps).toFixed(3)}`)
-    lines.push(`total: ${ttotal} &mu;s`)
+    if (ttotal > 0n) lines.push(`total: ${ttotal} &mu;s`)
     lines.push('&nbsp;')
     lines.push(`cam pos: ${sim.uniforms.cam_pos}`)
     $`#info`.innerHTML = lines.join('<br/>')
@@ -299,6 +311,7 @@ $`#scene`.on('click', e => editor.open ? editor.close() : editor.show())
 
 window.sim = await Sim(cv.width, cv.height, ctx)
 window.sim.run()
+
 window.debug = (n = 18) => {
     sim.pull('debug').then(data => {
         window.d = new Float32Array(data.buffer)

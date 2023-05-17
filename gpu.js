@@ -31,7 +31,7 @@ export const GPU = class GPU {
         const adapter = await promise
         const limits = {}, features = []
         for (const feature of adapter.features.keys())
-            if (feature != 'multi-planar-formats' && feature != 'clear-texture')
+            if (!['multi-planar-formats','clear-texture','chromium-experimental-dp4a'].includes(feature))
                features.push(feature)
         for (const prop of Object.getOwnPropertyNames(adapter.limits.constructor.prototype)) {
             if (prop == 'maxInterStageShaderVariables') continue
@@ -144,7 +144,7 @@ export const GPU = class GPU {
         args.module = this.dev.createShaderModule({ code })
 
         try {
-            const info = await args.module.compilationInfo()
+            const info = await args.module.getCompilationInfo()
             for (let msg of info.messages)
                 console.warn(msg.message)
         } catch(err) {}
@@ -241,8 +241,9 @@ export const GPU = class GPU {
         const multisamp = this.pref.samples > 1
         return (encoder) => {
             const useStencil = Boolean(this.pref.depth_fmt.match(/stencil/))
-            const canvasTex = this.ctx.getCurrentTexture().createView()
-            const [view, resolveTarget] = multisamp ? [this.colorTex.createView(), canvasTex] : [canvasTex]
+            const canvasTex = this.ctx.getCurrentTexture()
+	    const canvasView = canvasTex.createView()
+            const [view, resolveTarget] = multisamp ? [this.colorTex.createView(), canvasView] : [canvasView]
             const pass = encoder.beginRenderPass({
                 colorAttachments: [{
                     view, resolveTarget,

@@ -1,9 +1,9 @@
-type v2 = vec2<f32>;
-type v2i = vec2<i32>;
-type v4 = vec4<f32>;
-type v3 = vec3<f32>;
-type m3 = mat3x3<f32>;
-type m4 = mat4x4<f32>;
+alias v2 = vec2<f32>;
+alias v2i = vec2<i32>;
+alias v4 = vec4<f32>;
+alias v3 = vec3<f32>;
+alias m3 = mat3x3<f32>;
+alias m4 = mat4x4<f32>;
 
 const shininess = 16.0;
 const ambient = 0.2f;
@@ -16,10 +16,10 @@ const cube = array<v3,14>(v3(-1,1,1), v3(1,1,1), v3(-1,-1,1), v3(1,-1,1), v3(1,-
 fn frag(worldpos:v3, norm:v3, color:v4) -> v4 {
     var mix = color.rgb * ambient;
     for (var i = 0; i < ${numLights}; i += 1) {
-        let light = &lights[i];
-        var lightdir = (*light).pos - worldpos;
+        let light = lights[i];
+        var lightdir = light.pos - worldpos;
         let distance = length(lightdir);
-        let lightmag = (*light).color * (*light).power / (1.0 + distance);
+        let lightmag = light.color * light.power / (1.0 + distance);
         lightdir = normalize(lightdir);
 
 
@@ -75,10 +75,10 @@ struct FragDepth {
 
 
 @fragment fn surface_frag(input:SurfIn) -> @location(0) v4 {
-    let m = &meshes[input.mesh];
-    if (bool((*m).inactive)) { discard; }
-    if ((*m).fluid == 1) { discard; }
-    var color = (*m).color * select(textureSample(tex, samp, input.uv, (*m).tex), v4(1), (*m).tex < 0);
+    let m = meshes[input.mesh];
+    if (bool(m.inactive)) { discard; }
+    if (m.fluid == 1) { discard; }
+    var color = m.color * select(textureSample(tex, samp, input.uv, m.tex), v4(1), m.tex < 0);
     if (color.a < 0.0001) { discard; }
     color = frag(input.worldpos, input.norm, color);
     return v4(color.rgb, color.a);
@@ -179,42 +179,6 @@ struct PartIO {
 }
 
 
-struct FluidIO {
-    @builtin(position) position:v4,
-    @location(0) partpos:v3,
-    @location(1) vertpos:v3,
-    @location(2) uv:v2,
-    @location(3) @interpolate(flat) instidx:u32,
-};
-
-@vertex fn fluid_vert(@builtin(vertex_index) vertidx:u32,
-                      @builtin(instance_index) instidx:u32,
-                      @location(0) partpos:v3) -> FluidIO {
-    var out:FluidIO;
-    let imp = impostor(vertidx, partpos, uniforms.r*2);
-    out.vertpos = imp.vertpos;
-    out.partpos = partpos;
-    out.uv = imp.uv;
-    out.position = uniforms.mvp * v4(partpos + out.vertpos,1);
-    out.instidx = instidx;
-    return out;
-}
-
-@fragment fn fluid_frag(input:FluidIO) -> @location(0) v4 {
-    let p = particles[input.instidx];
-    let m = meshes[p.mesh];
-    if (bool(m.inactive)) { discard; }
-    if (m.fluid != 1) { discard; }
-    let r = length(input.uv);
-    if (r > 1.0) { discard; }
-    var mag = clamp(pow(1.0/(.4+r),8),0,1);
-    if (p.k < 2) { discard; }
-
-    let color = m.color.rgb * sin(uniforms.t/10);
-    return v4(color, m.color.a*mag);
-}
-
-
 struct LightIO {
     @builtin(position) position:v4,
     @location(0) lightpos:v3,
@@ -226,14 +190,14 @@ struct LightIO {
 
 @vertex fn lights_vert(@builtin(vertex_index) vertidx:u32,
                       @builtin(instance_index) instidx:u32) -> LightIO {
-    let l = &lights[instidx];
+    let l = lights[instidx];
     var out:LightIO;
-    out.lightpos = (*l).pos;
-    out.size = .4*sqrt((*l).power);
+    out.lightpos = l.pos;
+    out.size = .4*sqrt(l.power);
     let imp = impostor(vertidx, out.lightpos, out.size);
     out.vertpos = imp.vertpos;
     out.position = uniforms.mvp * v4(out.lightpos + out.vertpos,1);
-    out.color = (*l).color;
+    out.color = l.color;
     return out;
 }
 
@@ -269,9 +233,9 @@ fn trace_sphere(vertpos:v3, center:v3, r:f32) -> RayTrace {
 }
 
 @fragment fn particle_frag(input:PartIO) -> FragDepth {
-    let m = &meshes[input.mesh];
-    if (bool((*m).inactive)) { discard; }
-    let color = (*m).pcolor;
+    let m = meshes[input.mesh];
+    if (bool(m.inactive)) { discard; }
+    let color = m.pcolor;
     if (color.a < 0.5) { discard; }
     var rgb = color.rgb;
     if (input.selected == 1u) {

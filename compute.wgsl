@@ -1,10 +1,10 @@
-type v3 = vec3<f32>;
-type v4 = vec4<f32>;
-type v3i = vec3<i32>;
-type m3 = mat3x3<f32>;
-type m43 = mat4x3<f32>;
-type m2 = mat2x2<f32>;
-type u3 = array<u32,3>;
+alias v3 = vec3<f32>;
+alias v4 = vec4<f32>;
+alias v3i = vec3<i32>;
+alias m3 = mat3x3<f32>;
+alias m43 = mat4x3<f32>;
+alias m2 = mat2x2<f32>;
+alias u3 = array<u32,3>;
 
 const MAXNN = ${MAXNN}u;
 const REXPAND = 1.1f;
@@ -38,15 +38,15 @@ fn predict(@builtin(global_invocation_id) gid:vec3<u32>) {
         p.vel = v3(0);
     }
     p.pos += p.vel * uniforms.dt;
-    particles[pid] =  p;
+    particles[pid] = p;
 }
 
 @compute @workgroup_size(${threads})
 fn centroid_prep(@builtin(global_invocation_id) gid:vec3<u32>) {
-    let m = &meshes[0];
-    if (bool((*m).inactive)) { return; }
-    let pstart = (*m).pi;
-    let pstop = (*m).pf;
+    let m = meshes[0];
+    if (bool(m.inactive)) { return; }
+    let pstart = m.pi;
+    let pstop = m.pf;
     let i = pstart + gid.x;
     if (i < pstop) {
         centroidwork[gid.x] = particles[i].pos;
@@ -84,21 +84,19 @@ fn get_centroid(@builtin(local_invocation_id) lid:vec3<u32>,
         storageBarrier();
     }
     if (wgs.x != 1 || lid.x != 0) { return; }
-    let m = &meshes[0];
-    (*m).ci = centroidwork[0] * (1.0/(f32(N) + 0.00001));
+    meshes[0].ci = centroidwork[0] * (1.0/(f32(N) + 0.00001));
 }
 
 @compute @workgroup_size(${threads})
 fn rotate_prep(@builtin(global_invocation_id) gid:vec3<u32>) {
-    let m = &meshes[0];
-    let pstart = (*m).pi;
-    let pstop = (*m).pf;
+    let m = meshes[0];
+    let pstart = m.pi;
+    let pstop = m.pf;
     let i = pstart + gid.x;
     if (i < pstop) {
-        let part = &particles[i];
-        let p = (*part).pos - (*m).ci;
-        let q = (*part).rest_pos - (*m).c0;
-        //let w = (*part).w;
+        let part = particles[i];
+        let p = part.pos - m.ci;
+        let q = part.rest_pos - m.c0;
         shapework[gid.x] = m3(p.x*q, p.y*q, p.z*q);
     }
 }
@@ -123,14 +121,15 @@ fn extract_rotation(A:m3, q0:v4) -> v4 {
     var quat = q0;
     for (var i = 0; i < 40; i += 1) {
         var R = quat2Mat(quat);
-        var w = (cross(R[0],A[0]) + cross(R[1],A[1]) + cross(R[2],A[2])) *
-            (1.0 / abs(dot(R[0],A[0]) + dot(R[1],A[1]) + dot(R[2],A[2])) + 1.0e-9);
+	let z = abs(dot(R[0],A[0]) + dot(R[1],A[1]) + dot(R[2],A[2])) + 0.00001;
+        var w = (cross(R[0],A[0]) + cross(R[1],A[1]) + cross(R[2],A[2])) / z;
         let wmag = length(w);
-        if (wmag < 1.0e-9) { break; }
-        w = w * (1.0 / wmag);
+	if (wmag < 1e-9) { break; }
+        w /= wmag;
         let rad = wmag * 0.5;
         let s = sin(rad);
-        quat = normalize(quatMul(v4(s*w.x, s*w.y, s*w.z, cos(rad)), quat));
+	quat = quatMul(v4(s*w.x, s*w.y, s*w.z, cos(rad)), quat);
+	quat = quat / (length(quat) + 0.00001);
     }
     return quat;
 }
@@ -167,8 +166,7 @@ fn get_rotate(@builtin(local_invocation_id) lid:vec3<u32>,
     }
     if (wgs.x != 1 || lid.x != 0) { return; }
 
-    let m = &meshes[0];
-    (*m).quat = extract_rotation(transpose(shapework[0]), (*m).quat);
+    meshes[0].quat = extract_rotation(transpose(shapework[0]), meshes[0].quat);
 }
 
 
@@ -176,13 +174,13 @@ fn get_rotate(@builtin(local_invocation_id) lid:vec3<u32>,
 fn shapematch(@builtin(global_invocation_id) gid:vec3<u32>) {
     let pid = gid.x;
     if (pid >= arrayLength(&particles)) { return; }
-    let p = &particles[pid];
-    if ((*p).fixed == 1) { return; }
-    let m = &meshes[(*p).mesh];
-    if (bool((*m).inactive)) { return; }
+    let p = particles[pid];
+    if (p.fixed == 1) { return; }
+    let m = meshes[p.mesh];
+    if (bool(m.inactive)) { return; }
     if (uniforms.shape_stiff == 0) { return; }
-    let goal = (*m).ci + quat2Mat((*m).quat) * ((*p).rest_pos - (*m).c0);
-    (*p).pos += pow(uniforms.shape_stiff,3) * (goal - (*p).pos);
+    let goal = m.ci + quat2Mat(m.quat) * (p.rest_pos - m.c0);
+    particles[pid].pos += pow(uniforms.shape_stiff,3) * (goal - p.pos);
 }
 
 @compute @workgroup_size(${threads})
@@ -326,8 +324,7 @@ fn cntsort_cnt(@builtin(global_invocation_id) gid:vec3<u32>) {
     let pid:u32 = gid.x;
     if (pid >= arrayLength(&particles)) { return; }
     let p = &particles[pid];
-    let m = &meshes[(*p).mesh];
-    if (bool((*m).inactive)) { return; }
+    if (bool(meshes[(*p).mesh].inactive)) { return; }
     (*p).pos += (*p).delta_pos;
     (*p).delta_pos = v3(0);
     let sd = v3i((*p).pos * (1.0 / (uniforms.r * 2 * REXPAND)) + ${threads/2}f);
@@ -365,12 +362,10 @@ fn prefsum_up(@builtin(local_invocation_id) lid:vec3<u32>, @builtin(workgroup_id
 fn cntsort_sort(@builtin(global_invocation_id) gid:vec3<u32>) {
     let pid:u32 = gid.x;
     if (pid >= arrayLength(&particles)) { return; }
-    let p = &particles[pid];
-    let m = &meshes[(*p).mesh];
-    if (bool((*m).inactive)) { return; }
-    let hash = (*p).hash;
-    if (hash < 0) { return; }
-    let pos = atomicSub(&cnts_atomic[hash], 1) - 1;
+    let p = particles[pid];
+    if (bool(meshes[p.mesh].inactive)) { return; }
+    if (p.hash < 0) { return; }
+    let pos = atomicSub(&cnts_atomic[p.hash], 1) - 1;
     sorted[pos] = pid;
 }
 
@@ -378,14 +373,13 @@ fn cntsort_sort(@builtin(global_invocation_id) gid:vec3<u32>) {
 fn find_collisions(@builtin(global_invocation_id) gid:vec3<u32>) {
     let pid1:u32 = gid.x;
     if (pid1 >= arrayLength(&particles)) { return; }
-    let p1 = &particles[pid1];
-    let m = &meshes[(*p1).mesh];
-    if (bool((*m).inactive)) { return; }
-    let hash = (*p1).hash;
-    if (hash < 0) { return; }
-    var h = v3i(0, 0, hash / ${threads**2});
-    h.y = (hash - h.z * ${threads**2}) / ${threads};
-    h.x = hash - h.z * ${threads**2} - h.y * ${threads};
+    var p1 = particles[pid1];
+    if (bool(meshes[p1.mesh].inactive)) { return; }
+    let fluid = bool(meshes[p1.mesh].fluid);
+    if (p1.hash < 0) { return; }
+    var h = v3i(0, 0, p1.hash / ${threads**2});
+    h.y = (p1.hash - h.z * ${threads**2}) / ${threads};
+    h.x = p1.hash - h.z * ${threads**2} - h.y * ${threads};
     let hstart = max(h - 1, v3i(0,0,0));
     let hstop = min(h + 1, v3i(${threads-1}));
 
@@ -398,16 +392,16 @@ fn find_collisions(@builtin(global_invocation_id) gid:vec3<u32>) {
         for (var i = cnts[ohash]; i < ostop; i = i + 1) {
             let pid2 = sorted[i];
             if (pid2 == pid1) { continue; }
-            let p2 = &particles[pid2];
-            if ((*p1).mesh == (*p2).mesh && !bool((*m).fluid)) { continue; }
-            if (length((*p1).pos - (*p2).pos) >= (uniforms.r * 2 * REXPAND)) { continue; }
-            let k = (*p1).k;
-            if (k < MAXNN) {
-                (*p1).nn[k] = pid2;
-                (*p1).k = k + 1;
+	    let p2 = particles[pid2];
+            if (p1.mesh == p2.mesh && !fluid) { continue; }
+            if (length(p1.pos - p2.pos) >= (uniforms.r * 2 * REXPAND)) { continue; }
+            if (p1.k < MAXNN) {
+                p1.nn[p1.k] = pid2;
+                p1.k += 1;
             }
         }
     }}}
+    particles[pid1] = p1;
 }
 
 
@@ -416,23 +410,22 @@ fn collide(@builtin(global_invocation_id) gid:vec3<u32>) {
 
     let pid:u32 = gid.x;
     if (pid >= arrayLength(&particles)) { return; }
-    let p = &particles[pid];
-    if ((*p).fixed == 1) { return; }
-    let m = &meshes[(*p).mesh];
-    if (bool((*m).inactive)) { return; }
+    let p = particles[pid];
+    if (p.fixed == 1) { return; }
+    if (bool(meshes[p.mesh].inactive)) { return; }
 
-    var pos = (*p).pos;
+    var pos = p.pos;
     let ipos = pos;
     var delta_pos = v3(0);
-    let w = max(0.00001, (*p).w);
+    let w = max(0.00001, p.w);
 
-    let k = min(MAXNN, (*p).k);
+    let k = min(MAXNN, p.k);
     let dsq = 4.0 * uniforms.r * uniforms.r;
     for (var i = 0u; i < k; i += 1) {
-        let p2 = &particles[(*p).nn[i]];
-        let w2 = max(0.00001, (*p2).w);
+        let p2 = particles[p.nn[i]];
+        let w2 = max(0.00001, p2.w);
 
-        var grad = pos - (*p2).pos;
+        var grad = pos - p2.pos;
         let dist = length(grad);
         let c = 2.0 * uniforms.r - dist;
         if (c > 0) {
@@ -441,21 +434,13 @@ fn collide(@builtin(global_invocation_id) gid:vec3<u32>) {
             } else {
                 grad = grad / dist;
             }
-            if (meshes[(*p2).mesh].fluid != 1) {
-                grad = (*p2).norm;
-                //let sdf1 = (*p).sdf;
-                //let sdf2 = (*p).sdf;
-                //if (sdf1 < 0) {
-                //   grad *= 1 + 10*abs(sdf1);
-                //}
-                //if (sdf2 < 0) {
-                //    grad *= 1 + 10*abs(sdf2);
-                //}
+            if (meshes[p2.mesh].fluid != 1 && length(p2.norm) > 0) {
+                grad = p2.norm;
             }
 
 
             delta_pos += uniforms.collidamp * c * grad;
-            let dp = (*p).prev_pos - pos;
+            let dp = p.prev_pos - pos;
             let dpt = -cross(cross(dp, grad), grad);
             delta_pos += dpt * min(1.0, uniforms.dt * 100.0 * uniforms.friction);
 
@@ -469,12 +454,12 @@ fn collide(@builtin(global_invocation_id) gid:vec3<u32>) {
         let grad = v3(0,0,1);
         pos += uniforms.collidamp * c * grad;
 
-        let dp = (*p).prev_pos - pos;
+        let dp = p.prev_pos - pos;
         pos += v3(dp.xy * min(1.0, uniforms.dt * 100.0 * uniforms.friction), 0);
 
     }
 
-    (*p).delta_pos = 1.0 * (pos - ipos);
+    particles[pid].delta_pos = pos - ipos;
 
 
 }
@@ -484,20 +469,20 @@ fn collide(@builtin(global_invocation_id) gid:vec3<u32>) {
 fn update_vel(@builtin(global_invocation_id) gid:vec3<u32>) {
     let pid = gid.x;
     if (pid >= arrayLength(&particles)) { return; }
-    let p = &particles[pid];
-    if ((*p).fixed == 1) { return; }
-    let m = &meshes[(*p).mesh];
-    if (bool((*m).inactive)) { return; }
-    (*p).pos += (*p).delta_pos;
-    (*p).delta_pos = v3(0);
+    var p = particles[pid];
+    if (p.fixed == 1) { return; }
+    if (bool(meshes[p.mesh].inactive)) { return; }
+    p.pos += p.delta_pos;
+    p.delta_pos = v3(0);
 
-    if (distance((*p).pos,(*p).prev_pos) < 0.00001) {
-        (*p).pos = (*p).prev_pos;
+    if (distance(p.pos,p.prev_pos) < 0.00001) {
+        p.pos = p.prev_pos;
     }
 
-    let delta = (*p).pos - (*p).prev_pos;
+    let delta = p.pos - p.prev_pos;
 
-    (*p).vel = delta / uniforms.dt;
+    p.vel = delta / uniforms.dt;
+    particles[pid] = p;
 
 }
 
