@@ -7,7 +7,8 @@ alias m2 = mat2x2<f32>;
 alias u3 = array<u32,3>;
 
 const MAXNN = ${MAXNN}u;
-const REXPAND = 1.1f;
+const DEXPAND = 2.4f;
+const DFLUID = 2.2f; 
 
 fn softmin(a:f32, b:f32, k:f32) -> f32 {
     let kb = k*b;
@@ -327,7 +328,7 @@ fn cntsort_cnt(@builtin(global_invocation_id) gid:vec3<u32>) {
     if (bool(meshes[(*p).mesh].inactive)) { return; }
     (*p).pos += (*p).delta_pos;
     (*p).delta_pos = v3(0);
-    let sd = v3i((*p).pos * (1.0 / (uniforms.r * 2 * REXPAND)) + ${threads/2}f);
+    let sd = v3i((*p).pos * (1.0 / (uniforms.r * DEXPAND)) + ${threads/2}f);
     if (sd.x < 0 || sd.y < 0 || sd.z < 0 || sd.x >= ${threads} || sd.y >= ${threads} || sd.z >= ${threads}) {
         (*p).hash = -1;
         return;
@@ -393,8 +394,8 @@ fn find_collisions(@builtin(global_invocation_id) gid:vec3<u32>) {
             let pid2 = sorted[i];
             if (pid2 == pid1) { continue; }
 	    let p2 = particles[pid2];
-            if (p1.mesh == p2.mesh && !fluid) { continue; }
-            if (length(p1.pos - p2.pos) >= (uniforms.r * 2 * REXPAND)) { continue; }
+            //if (p1.mesh == p2.mesh && !fluid) { continue; }
+            if (length(p1.pos - p2.pos) >= (uniforms.r * DEXPAND)) { continue; }
             if (p1.k < MAXNN) {
                 p1.nn[p1.k] = pid2;
                 p1.k += 1;
@@ -417,50 +418,67 @@ fn collide(@builtin(global_invocation_id) gid:vec3<u32>) {
     var pos = p.pos;
     let ipos = pos;
     var delta_pos = v3(0);
-    let w = max(0.00001, p.w);
 
+    var p1fluid = meshes[p.mesh].fluid == 1;
     let k = min(MAXNN, p.k);
-    let dsq = 4.0 * uniforms.r * uniforms.r;
+
     for (var i = 0u; i < k; i += 1) {
         let p2 = particles[p.nn[i]];
-        let w2 = max(0.00001, p2.w);
-
+	let p2fluid = meshes[p2.mesh].fluid == 1;
         var grad = pos - p2.pos;
         let dist = length(grad);
-        let c = 2.0 * uniforms.r - dist;
-        if (c > 0) {
-            if (dist == 0.0) {
-                grad = v3(0,0,1);
-            } else {
-                grad = grad / dist;
-            }
-            if (meshes[p2.mesh].fluid != 1 && length(p2.norm) > 0) {
-                grad = p2.norm;
-            }
-
-
-            delta_pos += uniforms.collidamp * c * grad;
-            let dp = p.prev_pos - pos;
-            let dpt = -cross(cross(dp, grad), grad);
-            delta_pos += dpt * min(1.0, uniforms.dt * 100.0 * uniforms.friction);
-
+	if (dist == 0.0) {
+            grad = v3(0,0,1);
+        } else {
+            grad = grad / dist;
         }
-   }
-
-   pos += delta_pos;
-
-   let c = uniforms.r - pos.z;
-   if (c >= 0 && uniforms.ground != 0) {
-        let grad = v3(0,0,1);
-        pos += uniforms.collidamp * c * grad;
-
-        let dp = p.prev_pos - pos;
-        pos += v3(dp.xy * min(1.0, uniforms.dt * 100.0 * uniforms.friction), 0);
-
+	if (p1fluid && p2fluid) {
+	   var c = uniforms.r * DFLUID - dist;
+	   let s = select(-1.0, 1.0, c > 0);
+	   //delta_pos += s * pow(.00001*abs(c),.5) * grad;
+           //delta_pos += .01 * s * abs(c) * grad;
+	} else {
+	    let c = 2.0 * uniforms.r - dist;
+	    if (c > 0) { 
+                if (!p2fluid && length(p2.norm) > 0) {
+                    grad = p2.norm;
+	        }
+	        delta_pos += uniforms.collidamp * c * grad;
+	        let dp = p.prev_pos - pos;
+	        let dpt = -cross(cross(dp, grad), grad);
+	        delta_pos += dpt * min(1.0, uniforms.dt * 100.0 * uniforms.friction);
+            }
+	}
     }
 
-    particles[pid].delta_pos = pos - ipos;
+    pos += delta_pos;
 
+
+    let damp = select(uniforms.collidamp, 0.6, p1fluid);
+    let dfric = (p.prev_pos - pos) * min(1.0, uniforms.dt * 100.0 * uniforms.friction);
+    //let dfric = v3(0,0,0);
+    let cgmin = v3(-uniforms.xspace/2, -uniforms.yspace/2, 0) - (pos - uniforms.r);
+    let cgmax = v3(uniforms.xspace/2, uniforms.yspace/2, uniforms.zspace) - (pos + uniforms.r);
+    
+    if (cgmin.x >= 0 || cgmax.x <= 0) {
+        pos.x += damp * select(cgmin.x, cgmax.x, cgmax.x <= 0);
+        pos.y += dfric.y;
+        pos.z += dfric.z;
+    } else if (cgmin.y >= 0 || cgmax.y <= 0) {
+        pos.y += damp * select(cgmin.y, cgmax.y, cgmax.y <= 0);
+        pos.x += dfric.x;
+        pos.z += dfric.z;
+    } else if (cgmin.z >= 0 || cgmax.z <= 0) {
+        pos.z += damp * select(cgmin.z, cgmax.z, cgmax.z <= 0);
+        pos.x += dfric.x;
+        pos.y += dfric.y;
+    }
+
+
+    
+
+
+   particles[pid].delta_pos = pos - ipos;
 
 }
 

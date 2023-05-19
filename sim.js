@@ -32,6 +32,10 @@ phys.addNum('vol_stiff', .5, 0, 1, 0.005)
 phys.addNum('friction', 0.1, 0, 1, .01)
 phys.addNum('airdamp', 0.5, 0, 1, .001)
 phys.addNum('collidamp', .1, 0, 1, .001)
+phys.addNum('xspace', 100, 0, 100, 0.1)
+phys.addNum('yspace', 100, 0, 100, 0.1)
+phys.addNum('zspace', 100, 0, 100, 0.1)
+
 
 export const render = new Preferences('render')
 render.addBool('particles', true)
