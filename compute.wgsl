@@ -7,8 +7,8 @@ alias m2 = mat2x2<f32>;
 alias u3 = array<u32,3>;
 
 const MAXNN = ${MAXNN}u;
-const DEXPAND = 2.4f;
-const DFLUID = 2.2f; 
+const DEXPAND = 2.3f;
+
 
 fn softmin(a:f32, b:f32, k:f32) -> f32 {
     let kb = k*b;
@@ -220,16 +220,13 @@ fn invert(m:ptr<function,m3>) -> f32 {
     return det;
 }
 
-
-
 @compute @workgroup_size(${threads})
 fn neohookean(@builtin(global_invocation_id) gid:vec3<u32>) {
     var tidx = gid.x;
     let ntets = arrayLength(&tetgroup);
     if (tidx >= ntets) { return; }
     if (uniforms.vol_stiff == 0) { return; }
-    var stiff = clamp(1-pow(uniforms.vol_stiff, 0.2), 0, 1);
-    stiff = stiff / (1.3 - stiff) + 0.005;
+    var stiff = 1.1/(1.1 - uniforms.vol_stiff);
     let tid = tetgroup[tidx];
     let pids = tets[tid];
     let pid0 = pids[0];
@@ -394,23 +391,26 @@ fn find_collisions(@builtin(global_invocation_id) gid:vec3<u32>) {
             let pid2 = sorted[i];
             if (pid2 == pid1) { continue; }
 	    let p2 = particles[pid2];
-            //if (p1.mesh == p2.mesh && !fluid) { continue; }
+            if (p1.mesh == p2.mesh && !(p1.nedges == 0 || p2.nedges == 0)) { continue; }
             if (length(p1.pos - p2.pos) >= (uniforms.r * DEXPAND)) { continue; }
-            if (p1.k < MAXNN) {
-                p1.nn[p1.k] = pid2;
-                p1.k += 1;
+            let k = particles[pid1].k;
+            if (k < MAXNN) {
+                particles[pid1].nn[k] = pid2;
+                particles[pid1].k = k + 1;
+            } else {
+                return;
             }
         }
     }}}
-    particles[pid1] = p1;
+
 }
 
 
 @compute @workgroup_size(${threads})
 fn collide(@builtin(global_invocation_id) gid:vec3<u32>) {
-
     let pid:u32 = gid.x;
-    if (pid >= arrayLength(&particles)) { return; }
+    let nparticles = arrayLength(&particles);
+    if (pid >= nparticles) { return; }
     let p = particles[pid];
     if (p.fixed == 1) { return; }
     if (bool(meshes[p.mesh].inactive)) { return; }
@@ -419,9 +419,10 @@ fn collide(@builtin(global_invocation_id) gid:vec3<u32>) {
     let ipos = pos;
     var delta_pos = v3(0);
 
-    var p1fluid = meshes[p.mesh].fluid == 1;
+    let p1fluid = meshes[p.mesh].fluid == 1;
     let k = min(MAXNN, p.k);
-
+    let e = 4.0;
+    
     for (var i = 0u; i < k; i += 1) {
         let p2 = particles[p.nn[i]];
 	let p2fluid = meshes[p2.mesh].fluid == 1;
@@ -433,10 +434,13 @@ fn collide(@builtin(global_invocation_id) gid:vec3<u32>) {
             grad = grad / dist;
         }
 	if (p1fluid && p2fluid) {
-	   var c = uniforms.r * DFLUID - dist;
-	   let s = select(-1.0, 1.0, c > 0);
-	   //delta_pos += s * pow(.00001*abs(c),.5) * grad;
-           //delta_pos += .01 * s * abs(c) * grad;
+            if (dist < uniforms.r * DEXPAND) {
+                var c = 2 * uniforms.r - dist;
+                if (c < 0) {
+                    c += pow(c, e) / pow(uniforms.r * (DEXPAND - 2), e - 1.0);
+                }
+                delta_pos += uniforms.collidamp * c * grad;
+           }
 	} else {
 	    let c = 2.0 * uniforms.r - dist;
 	    if (c > 0) { 
@@ -446,39 +450,40 @@ fn collide(@builtin(global_invocation_id) gid:vec3<u32>) {
 	        delta_pos += uniforms.collidamp * c * grad;
 	        let dp = p.prev_pos - pos;
 	        let dpt = -cross(cross(dp, grad), grad);
-	        delta_pos += dpt * min(1.0, uniforms.dt * 100.0 * uniforms.friction);
+	        delta_pos += dpt * min(1.0, uniforms.dt * 10.0 * uniforms.friction);
             }
 	}
     }
 
     pos += delta_pos;
 
-
-    let damp = select(uniforms.collidamp, 0.6, p1fluid);
-    let dfric = (p.prev_pos - pos) * min(1.0, uniforms.dt * 100.0 * uniforms.friction);
-    //let dfric = v3(0,0,0);
-    let cgmin = v3(-uniforms.xspace/2, -uniforms.yspace/2, 0) - (pos - uniforms.r);
-    let cgmax = v3(uniforms.xspace/2, uniforms.yspace/2, uniforms.zspace) - (pos + uniforms.r);
-    
-    if (cgmin.x >= 0 || cgmax.x <= 0) {
-        pos.x += damp * select(cgmin.x, cgmax.x, cgmax.x <= 0);
-        pos.y += dfric.y;
-        pos.z += dfric.z;
-    } else if (cgmin.y >= 0 || cgmax.y <= 0) {
-        pos.y += damp * select(cgmin.y, cgmax.y, cgmax.y <= 0);
-        pos.x += dfric.x;
-        pos.z += dfric.z;
-    } else if (cgmin.z >= 0 || cgmax.z <= 0) {
-        pos.z += damp * select(cgmin.z, cgmax.z, cgmax.z <= 0);
-        pos.x += dfric.x;
-        pos.y += dfric.y;
+    let pmin = -v3(uniforms.xspace/2, uniforms.yspace/2, 0) + uniforms.r;
+    let pmax = v3(uniforms.xspace/2, uniforms.yspace/2, uniforms.zspace) - uniforms.r;
+    var cgrad = v3(0.0);
+    let dp = pos - p.prev_pos;
+    for (var axis = 0; axis < 3; axis += 1) {
+        if (pos[axis] < pmin[axis]) {
+            cgrad[axis] = pmin[axis] - pos[axis];
+            pos[axis] = pmin[axis];
+            particles[pid].prev_pos[axis] = pos[axis] + uniforms.collidamp * dp[axis];
+            
+        }
+        if (pos[axis] > pmax[axis]) {
+            cgrad[axis] = pmax[axis] - pos[axis];    
+            pos[axis] = pmax[axis];
+            particles[pid].prev_pos[axis] = pos[axis] + uniforms.collidamp * dp[axis];
+        }
     }
-
+    
+    
+    let c = length(cgrad);
+    let grad = select(v3(0),cgrad/c,c > 0);
+    let dpt = -cross(cross(p.prev_pos - pos, grad), grad);
+    pos += dpt * min(1.0, uniforms.dt * 10.0 * uniforms.friction);
 
     
-
-
-   particles[pid].delta_pos = pos - ipos;
+        
+    particles[pid].delta_pos = pos - ipos;
 
 }
 
@@ -493,13 +498,13 @@ fn update_vel(@builtin(global_invocation_id) gid:vec3<u32>) {
     p.pos += p.delta_pos;
     p.delta_pos = v3(0);
 
-    if (distance(p.pos,p.prev_pos) < 0.00001) {
-        p.pos = p.prev_pos;
-    }
+    //if (distance(p.pos,p.prev_pos) < 0.00001) {
+    //    p.pos = p.prev_pos;
+    //}
 
     let delta = p.pos - p.prev_pos;
-
     p.vel = delta / uniforms.dt;
+    
     particles[pid] = p;
 
 }

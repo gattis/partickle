@@ -3,9 +3,9 @@ import * as gpu from './gpu.js'
 import * as geo from './geometry.js'
 Object.assign(globalThis, util, gpu, geo)
 
-const MAXNN = 18
+const MAXNN = 32
 const MAXEDGES = 18
-const TETLIM = sqrt(2)
+const TETLIM = 0.5 //sqrt(2)
 
 const particleColors = [v4(.3,.6,.8,1), v4(.99,.44,.57, 1), v4(.9, .48, .48, 1)]
 const LIGHTS = [
@@ -16,14 +16,13 @@ const LIGHTS = [
 ]
 
 const MESH_DEFAULTS = {
-    name:'default', bitmapId:-1, color:[1,1,1,1], offset:[0,0,0], rotation:[0,0,0], gravity:1, invmass:1,
+    name:'default', bitmapId:-1, color:[1,1,1,1], offset:[0,0,0], rotation:[0,0,0], gravity:1, invmass:10,
     scale:[1,1,1], 'shape stiff':1, 'vol stiff':1, friction:1, 'collision damp':1, fluid:0, fixed: 0
 }
 
 export const phys = new Preferences('phys')
 phys.addBool('paused', false)
-phys.addNum('r', .05, 0, 0.1, 0.001)
-phys.addNum('density', 1.0, 0.1, 10, 0.01)
+phys.addNum('r', .01, 0.01, 0.1, 0.01)
 phys.addNum('frameratio', 3, 1, 20, 1)
 phys.addNum('speed', 1, 0.05, 5, .01)
 phys.addNum('gravity', 9.8, -5, 20, 0.1)
@@ -230,6 +229,7 @@ export const sampleMesh = async (meshId, D, transaction) => {
         bmin = bmin.min(vert.pos)
         bmax = bmax.max(vert.pos)
     }
+    
     let bounds = bmax.sub(bmin)
     let dims = [...bounds.divc(D)].map(roundEps).map(ceil).map(d=>max(1,d))
     dims = dims.map(d => d + (d%2 == 0 ? 1 : (d > 1 ? 2 : 1)))
@@ -238,6 +238,7 @@ export const sampleMesh = async (meshId, D, transaction) => {
     let [dimx,dimy,dimz] = dims
     let dimxy = dimx*dimy
 
+    
     let tetsA = [[6,3,5,0], [4,6,5,0], [2,3,6,0], [1,5,3,0], [6,5,3,7]]
     let tetsB = [[1,4,2,0], [1,2,4,7], [7,2,4,6], [4,1,7,5], [2,7,1,3]]
 
@@ -298,7 +299,9 @@ export const sampleMesh = async (meshId, D, transaction) => {
                 }))
             }
 
+    if (particles.length == 0) return pointCloud(meshId, default_verts, transaction)
 
+    
     let cache = {
         tets: Tets.alloc(tets.length),
         particles: Particles.of(particles),
@@ -459,7 +462,6 @@ export async function Sim(width, height, ctx) {
         mesh.fluid = mdata['fluid']
         let ti = ntets
         let wavg = 0
-        let ws = new Set()
         for (let pidx of range(mdata.parts.length))  {
             let p = mdata.parts[pidx]
             p.prev_pos = p.rest_pos = p.pos
@@ -468,7 +470,6 @@ export async function Sim(width, height, ctx) {
             p.quat = v4(0,0,0,1);
             p.w = 1.0 / p.w * mdata.invmass
             p.fixed = mdata.fixed
-            ws.add(p.w)
             for (let i of range(p.nedges))
                 p.edges[i] += mesh.pi
             particles[nparticles++] = p
@@ -517,6 +518,7 @@ export async function Sim(width, height, ctx) {
     }
 
     dbg({ nparts:particles.length, nverts:verts.length, nmeshes:meshes.length, ntets:tets.length, ntris:tris.length })
+
     const threads = gpu.threads
 
     const bufs = Object.fromEntries([
@@ -718,14 +720,13 @@ export async function Sim(width, height, ctx) {
 
 		    /*const reads = [
                         'particles',
-			'meshes',
                         'debug'
                     ].filter(b=>bufs[b])
 
                     const data = await Promise.all(reads.map(b => gpu.read(bufs[b])))
                     for (let i of range(reads.length))
                         globalThis[reads[i]] = new bufs[reads[i]].type(data[i])
-                    window.debug = [...debug]*/
+                        window.debug = [...debug]*/
 
                 }
                 tlast = clock()

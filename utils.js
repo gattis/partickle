@@ -236,8 +236,12 @@ export const repr = (v) => {
     if (v == undefined) return 'undef'
     if (v == null) return 'null'
     if (typeof v == 'string') return v
-    if (typeof v == 'number')
-        return (Math.round(v * 100000) / 100000).toString()
+    if (typeof v == 'number') {
+        let [f,p] = v.toPrecision(5).split('e')
+        f = f.includes('.') ? f.replace(/0+$/,'').replace(/\.$/,'') : f
+        p = p ? 'e'+p : ''
+        return f + p
+    }
     if (v instanceof Array | v instanceof Set) {
         if ((v.length || v.size || Infinity) <= 3)
             return `< ${[...v].map(x => repr(x)).join(' ')} >`
