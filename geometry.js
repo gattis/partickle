@@ -225,9 +225,8 @@ class GeoDB extends IDBDatabase {
         this.createObjectStore('meshes', { autoIncrement: true })
         let verts = this.createObjectStore('verts', { autoIncrement: true })
         let faces = this.createObjectStore('faces', { autoIncrement: true })
-        let cache = this.createObjectStore('cache', { autoIncrement:false, keyPath:'meshId' })
         this.createObjectStore('bitmaps', { autoIncrement: true })
-        for (let store of [verts, faces, cache]) store.createIndex('meshId','meshId')
+        for (let store of [verts, faces]) store.createIndex('meshId','meshId')
         for (let i of range(3)) faces.createIndex(`vertId${i}`, `vertId${i}`)
     }
  
@@ -242,6 +241,94 @@ class GeoDB extends IDBDatabase {
 
 
 }
+    
+
+
+class GeoVert {
+    constructor(id, pos) {
+        Object.assign(this, {id, pos, emap:new Map(), edges:[]})
+    }
+    update_edges() {
+        let { emap, edges } = this
+        for (let edge = [...emap.values()][0]; edges.length < emap.size; edge = emap.get(edge.vert))
+            edges.push(edge)
+    }
+}
+    
+class GeoFace {
+    constructor(id, verts, uvs) {
+        for (let i of range(verts.length))
+            verts[i].emap.set(verts[mod(i+1, verts.length)], new GeoEdge(verts[mod(i-1, verts.length)], this))
+        Object.assign(this, {id, verts, uvs, edges:[]})
+    }
+}
+
+class GeoEdge {
+    constructor(vert, face) {
+        Object.assign(this, {vert, face})
+    }
+}
+
+class GeoMesh {   
+    constructor(verts, faces, uvs) {
+        verts = verts.map((v,id) => new GeoVert(id, v3(...v)))
+        faces = faces.map((vids,id) => new GeoFace(id, vids.map(vid => verts[vid]), uvs[id]))
+        for (let vert of verts) vert.update_edges()
+        Object.assign(this,{verts,faces})
+    }
+
+    dual() {
+        let newVerts = [], newFaces = [], newUvs = []
+        for (let face of this.faces)
+            newVerts.push(face.verts[0].pos.add(face.verts[1].pos).add(face.verts[2].pos).divc(3))
+        for (let vert of this.verts) {
+            newFaces.push(vert.edges.map(edge => edge.face.id))
+            newUvs.push(vert.edges.map(edge => [0,0]))
+        }
+        return new GeoMesh(newVerts, newFaces, newUvs)
+    }
+
+    fragment(minVerts, expand) {
+        if (this.verts.length < minVerts*2)
+            return [{ prime: new Set(this.verts) }]
+        let bmin = v3(Infinity), bmax = v3(-Infinity)
+        for (let v of this.verts) {
+            bmin = bmin.min(v.pos)
+            bmax = bmax.max(v.pos)
+        }
+        let span = bmax.sub(bmin)        
+        for (let s = span.minc() / 8; s <= span.maxc(); s *= 1.5) {
+            let dim = span.divc(s).ceil()
+            let smin = bmin.sub(dim.mulc(s).sub(span).divc(2))
+            let frags = [...range(dim.x * dim.y * dim.z)].map(i => [])
+            for (let v of this.verts) {
+                let d = v.pos.sub(smin).divc(s*1.000001).floor()
+                frags[d.x + d.y*dim.x + d.z*dim.x*dim.y].push(v)
+            }
+            frags = frags.filter(frag => frag.length > 0)
+            if (!frags.some(frag => frag.length < minVerts)) {
+                frags = frags.map(frag => ({ prime:new Set(frag), aux:new Set() }))
+                if (expand > 0) {
+                    for (let frag of frags) {
+                        for (let v of frag.prime)
+                            for (let e of v.edges)
+                                if (!frag.prime.has(e.vert))
+                                    frag.aux.add(e.vert)
+                        for (let iter of range(expand-1))
+                            for (let v of [...frag.aux])
+                                for (let e of v.edges)
+                                    if (!frag.prime.has(e.vert))
+                                        frag.aux.add(e.vert)
+                    }
+                }
+                return frags
+            }
+        }
+        return [{ prime: new Set(this.verts) }]
+    }
+        
+}
+
 
 
 class GeoTransact extends IDBTransaction {
@@ -260,7 +347,7 @@ class GeoTransact extends IDBTransaction {
     async deleteWithRelatives(store, key) {
         await this.delete(store, { key })
         if (store == 'meshes')
-            for (const store of ['verts','faces','cache'])
+            for (const store of ['verts','faces'])
                 await this.delete(store, { index:'meshId', key })
         else if (store == 'verts')
             for (const i of range(3))
@@ -285,6 +372,26 @@ class GeoTransact extends IDBTransaction {
         return data
     }
 
+    async meshGeometry(meshId) {
+        let [vertData,faceData] = await Promise.all([
+            this.query('verts', { index:'meshId', key:meshId }),
+            this.query('faces', { index:'meshId', key:meshId }),
+        ])
+        let vmap = {}
+        let verts = []
+        for (let [vidx,[vid,vert]] of enumerate(vertData)) {
+            vmap[vid] = vidx
+            verts.push(vert.pos)
+        }
+        let faces = [], uvs = []
+        for (let [fid,face] of faceData) {
+            let nverts = Object.keys(face).filter(key => key.startsWith('vertId')).length
+            faces.push([...range(nverts)].map(i => vmap[face['vertId'+i]]))
+            uvs.push(face.uv)
+        }           
+        return new GeoMesh(verts,faces,uvs)
+    }
+    
     op(store, args = {}) {
         let { index, key, method, startKey, count } = args
         let collection = this.objectStore(store)

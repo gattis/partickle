@@ -228,7 +228,7 @@ class EditorTable extends HTMLDivElement {
                     ctx.drawImage(orig,0,0);
                     return html('td',{},preview)
                 }
-                const edit = html('td', { contenteditable: this.name != 'cache' }, str(orig)).on('blur', () => {
+                const edit = html('td', { contenteditable: true }, str(orig)).on('blur', () => {
                     let val = edit.textContent
                     if (typeof orig == 'number') val = parseFloat(val)
                     else if (orig instanceof Array) val = eval(val)
@@ -277,7 +277,7 @@ let transact = async (stores, perm, cb) => {
 
 const stores = {}
 const storeBtns = []
-for (const name of ['meshes', 'verts', 'faces', 'bitmaps', 'cache']) {
+for (const name of ['meshes', 'verts', 'faces', 'bitmaps']) {
     const table = new EditorTable(name)
     stores[name] = table
     storeBtns.push(table.tabButton)

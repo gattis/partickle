@@ -332,7 +332,6 @@ export const GPU = class GPU {
         const cls = class extends DataView {
             static name = opt.name
             static alloc() {
-                
                 return new this(new ArrayBuffer(this.size))
             }
             static of(...args) {
@@ -349,6 +348,9 @@ export const GPU = class GPU {
             [Symbol.iterator]() {
                 let idx = 0;
                 return { next: () => idx < cls.fields.length ? { value: this[idx++], done: false } : { done: true } }
+            }
+            toString() {
+                return `[${opt.name}:${cls.fields.map((f,i) => f.name+'='+this[i].toString()).join(' ')}]`
             }
             static getset = (off,type) => ({
                 get() { return new type(this.buffer, this.byteOffset + off, type.size) },
@@ -432,6 +434,9 @@ export const GPU = class GPU {
                             return { done: true }
                     }
                 }
+            }
+            toString() {
+                return `[Array:${this.type.name} length=${this.length}]`
             }
             static getset = (off,type) => ({
                 get() { return new type(this.buffer, this.byteOffset + off, type.size) },

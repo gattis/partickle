@@ -16,7 +16,7 @@ const cube = array<v3,14>(v3(-1,1,1), v3(1,1,1), v3(-1,-1,1), v3(1,-1,1), v3(1,-
 fn frag(worldpos:v3, norm:v3, color:v4) -> v4 {
     var mix = color.rgb * ambient;
     for (var i = 0; i < ${numLights}; i += 1) {
-        let light = lights[i];
+        let light = lbuf[i];
         var lightdir = light.pos - worldpos;
         let distance = length(lightdir);
         let lightmag = light.color * light.power / (1.0 + distance);
@@ -26,7 +26,7 @@ fn frag(worldpos:v3, norm:v3, color:v4) -> v4 {
         let lambertian = max(dot(lightdir, norm), 0.0);
         var specular = 0.0f;
         if (lambertian > 0.0) {
-            let viewdir = normalize(uniforms.cam_pos - worldpos);
+            let viewdir = normalize(uni.cam_pos - worldpos);
             let reflectdir = reflect(-lightdir, norm);
             let specAngle = max(dot(reflectdir, viewdir), 0.0);
             specular = pow(specAngle, shininess);
@@ -52,7 +52,7 @@ struct SurfOut {
                      @location(3) uv:v2) -> SurfOut {
     var out:SurfOut;
     out.worldpos = pos;
-    out.position = uniforms.mvp * v4(out.worldpos, 1.0);
+    out.position = uni.mvp * v4(out.worldpos, 1.0);
     out.norm = norm;
     out.uv = uv;
     out.mesh = mesh;
@@ -75,7 +75,7 @@ struct FragDepth {
 
 
 @fragment fn surface_frag(input:SurfIn) -> @location(0) v4 {
-    let m = meshes[input.mesh];
+    let m = mbuf[input.mesh];
     if (bool(m.inactive)) { discard; }
     if (m.fluid == 1) { discard; }
     var color = m.color * select(textureSample(tex, samp, input.uv, m.tex), v4(1), m.tex < 0);
@@ -84,55 +84,18 @@ struct FragDepth {
     return v4(color.rgb, color.a);
 }
 
-
-@vertex fn axes_vert(@builtin(vertex_index) vertidx:u32,
-                     @builtin(instance_index) instidx:u32) -> @builtin(position) v4 {
-    var worldPos = v3(0);
-    worldPos[instidx] = f32(2*i32(vertidx) - 1);
-    return uniforms.mvp * v4(worldPos, 1.0);
-}
-
-@fragment fn axes_frags() -> @location(0) v4 {
-    return v4(1,1,1,1);
-}
-
-fn normals_vert(vertidx:u32, vertPos:v3, norm:v3) -> v4 {
+@vertex fn vnormals_vert(@builtin(vertex_index) vertidx:u32, @location(0) vertPos:v3,
+                         @location(1) norm:v3) -> @builtin(position) v4 {
     var worldPos = vertPos;
     if (vertidx == 1u) {
         worldPos += norm * 0.05;
     }
-    return uniforms.mvp * v4(worldPos, 1.0);
-}
-
-
-@vertex fn vnormals_vert(@builtin(vertex_index) vertidx:u32, @location(0) vertPos:v3,
-                         @location(1) norm:v3) -> @builtin(position) v4 {
-    return normals_vert(vertidx, vertPos, norm);
-}
-
-@vertex fn pnormals_vert(@builtin(vertex_index) vertidx:u32, @location(0) partPos:v3,
-                         @location(1) norm:v3) -> @builtin(position) v4 {
-    return normals_vert(vertidx, partPos, norm);
-}
-
-@fragment fn pnormals_frag() -> @location(0) v4 {
-    return v4(1,1,1,1);
+    return uni.mvp * v4(worldPos, 1.0);
 }
 
 @fragment fn vnormals_frag() -> @location(0) v4 {
-    return v4(.2,1,.1,0);
+    return v4(.2,1,.1,1);
 }
-
-@vertex fn edges_vert(@builtin(vertex_index) vertidx:u32,
-                      @location(0) pos:v3) -> @builtin(position) v4 {
-    let a = f32(vertidx);
-    return uniforms.mvp * v4(pos, 1.0);
-}
-
-@fragment fn edges_frag() -> @location(0) v4 {
-    return v4(1,1,1,1);
-}
-
 
 struct Impostor {
     vertpos:v3,
@@ -142,7 +105,7 @@ struct Impostor {
 const sq3 = 1.73205077648;
 
 fn impostor(vertidx:u32, pos:v3, r:f32) -> Impostor {
-    let fwd = normalize(pos - uniforms.cam_pos);
+    let fwd = normalize(pos - uni.cam_pos);
     let right = normalize(v3(-fwd.y, fwd.x, 0));
     let up = normalize(cross(fwd,right));
     if (vertidx == 0) {
@@ -169,12 +132,12 @@ struct PartIO {
                      @location(1) mesh:u32) -> PartIO {
 
     var out:PartIO;
-    let imp = impostor(vertidx, partpos, uniforms.r);
+    let imp = impostor(vertidx, partpos, uni.r);
     out.partpos = partpos;
     out.vertpos = imp.vertpos;
-    out.position = uniforms.mvp * v4(out.partpos + out.vertpos,1);
+    out.position = uni.mvp * v4(out.partpos + out.vertpos,1);
     out.mesh = mesh;
-    out.selected = select(0u, 1u, i32(instidx) == uniforms.selection);
+    out.selected = select(0u, 1u, i32(instidx) == uni.selection);
     return out;
 }
 
@@ -190,13 +153,13 @@ struct LightIO {
 
 @vertex fn lights_vert(@builtin(vertex_index) vertidx:u32,
                       @builtin(instance_index) instidx:u32) -> LightIO {
-    let l = lights[instidx];
+    let l = lbuf[instidx];
     var out:LightIO;
     out.lightpos = l.pos;
     out.size = .4*sqrt(l.power);
     let imp = impostor(vertidx, out.lightpos, out.size);
     out.vertpos = imp.vertpos;
-    out.position = uniforms.mvp * v4(out.lightpos + out.vertpos,1);
+    out.position = uni.mvp * v4(out.lightpos + out.vertpos,1);
     out.color = l.color;
     return out;
 }
@@ -213,8 +176,8 @@ struct RayTrace {
 
 fn trace_sphere(vertpos:v3, center:v3, r:f32) -> RayTrace {
     var trace:RayTrace;
-    trace.rd = normalize(vertpos + center - uniforms.cam_pos);
-    let co = uniforms.cam_pos - center;
+    trace.rd = normalize(vertpos + center - uni.cam_pos);
+    let co = uni.cam_pos - center;
     let b = dot(co, trace.rd);
     let c = b*b - dot(co, co) + r*r;
     if (c < 0) { discard; }
@@ -225,15 +188,15 @@ fn trace_sphere(vertpos:v3, center:v3, r:f32) -> RayTrace {
     else if (t1 < 0 && t2 >= 0) { trace.t = t2; }
     else { discard; }
     let ot = trace.rd * trace.t;
-    trace.hit = uniforms.cam_pos + ot;
+    trace.hit = uni.cam_pos + ot;
     trace.normal = normalize(ot + co);
-    let hitclip = uniforms.mvp * v4(trace.hit, 1);
+    let hitclip = uni.mvp * v4(trace.hit, 1);
     trace.clip_depth = hitclip.z / hitclip.w;
     return trace;
 }
 
 @fragment fn particle_frag(input:PartIO) -> FragDepth {
-    let m = meshes[input.mesh];
+    let m = mbuf[input.mesh];
     if (bool(m.inactive)) { discard; }
     let color = m.pcolor;
     if (color.a < 0.5) { discard; }
@@ -241,7 +204,7 @@ fn trace_sphere(vertpos:v3, center:v3, r:f32) -> RayTrace {
     if (input.selected == 1u) {
         rgb = 1 - rgb;
     }
-    let trace = trace_sphere(input.vertpos, input.partpos, uniforms.r);
+    let trace = trace_sphere(input.vertpos, input.partpos, uni.r);
     return FragDepth(frag(trace.hit, trace.normal, v4(rgb,1.0f)), trace.clip_depth);
 }
 
@@ -266,7 +229,7 @@ const gnd_color = v4(1, 1, 1, 1);
     var out:GndIO;
     let vpos = cube[vertidx];
     out.vertpos = vpos*rgnd;
-    out.position = uniforms.mvp * v4(rgnd * (vpos - v3(0,0,1)), 1);
+    out.position = uni.mvp * v4(rgnd * (vpos - v3(0,0,1)), 1);
     return out;
 }
 

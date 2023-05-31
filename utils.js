@@ -119,6 +119,8 @@ Array.prototype.uniq = function () {
     return [...new Set(this)];
 }
 
+export const mod = (n, m) => ((n % m) + m) % m
+
 
 export const coroutine = f => {
     var o = f();

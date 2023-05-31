@@ -5,7 +5,6 @@ Object.assign(globalThis, util, gpu, geo)
 
 const MAXNN = 32
 const MAXEDGES = 18
-const TETLIM = 0.5 //sqrt(2)
 
 const particleColors = [v4(.3,.6,.8,1), v4(.99,.44,.57, 1), v4(.9, .48, .48, 1)]
 const LIGHTS = [
@@ -22,25 +21,26 @@ const MESH_DEFAULTS = {
 
 export const phys = new Preferences('phys')
 phys.addBool('paused', false)
-phys.addNum('r', .01, 0.01, 0.1, 0.01)
+phys.addNum('r', 1.0, 0.1, 10, 0.1)
 phys.addNum('frameratio', 3, 1, 20, 1)
 phys.addNum('speed', 1, 0.05, 5, .01)
 phys.addNum('gravity', 9.8, -5, 20, 0.1)
 phys.addNum('shape_stiff', 0, 0, 1, 0.005)
-phys.addNum('vol_stiff', .5, 0, 1, 0.005)
+phys.addNum('surf_stiff', .5, 0, 1, 0.001)
+phys.addNum('edge_stiff', .5, 0, 2, 0.01)
 phys.addNum('friction', 0.1, 0, 1, .01)
-phys.addNum('airdamp', 0.5, 0, 1, .001)
+phys.addNum('airdamp', 0.5, 0, 1, .01)
 phys.addNum('collidamp', .1, 0, 1, .001)
 phys.addNum('xspace', 100, 0, 100, 0.1)
 phys.addNum('yspace', 100, 0, 100, 0.1)
 phys.addNum('zspace', 100, 0, 100, 0.1)
 
 
+
 export const render = new Preferences('render')
 render.addBool('particles', true)
 render.addBool('ground', true)
 render.addBool('normals', false)
-render.addBool('edges', false)
 render.addBool('depth_wr', true)
 render.addBool('atc', true)
 render.addChoice('depth_cmp', 'less', ['less-equal','less','greater-equal','greater','always','never'])
@@ -74,10 +74,9 @@ export const Mesh = GPU.struct({
     fields:[
         ['c0', V3],
         ['ci', V3],
+        ['vi', V3],
         ['pi', u32],
         ['pf', u32],
-        ['vi', u32],
-        ['vf', u32],
         ['quat', V4],
         ['tex', i32],
         ['color', V4],
@@ -90,23 +89,9 @@ export const Mesh = GPU.struct({
         ['fluid', i32],
         ['pose', i32],
         ['inactive', i32],
-        ['padding', GPU.array({ type:u32, length:25 })]
+        ['padding', GPU.array({ type:u32, length:21 })]
     ]
 })
-
-export const Vertex = GPU.struct({
-    name:'Vertex',
-    fields:[
-        ['pos', V3],
-        ['mesh', u32],
-        ['bary', V3],
-        ['tet', i32],
-        ['norm', V3],
-        ['nedges', u32],
-        ['edges', GPU.array({ type:u32, length:MAXEDGES })],
-    ]
-})
-
 
 export const Particle = GPU.struct({
     name:'Particle',
@@ -120,14 +105,12 @@ export const Particle = GPU.struct({
         ['vel', V3],
         ['k', u32],
         ['delta_pos', V3],
-        ['nedges', u32],
-        ['norm0', V3],
-        ['sdf', f32],
-        ['norm', V3],
         ['fixed', u32],
+        ['norm', V3],
+        ['nedges', u32],
         ['quat', V4],
-        ['nn', GPU.array({ type:u32, length:MAXNN })],
         ['edges', GPU.array({ type:u32, length:MAXEDGES })],
+        ['nn', GPU.array({ type:u32, length:MAXNN })],
     ]
 })
 
@@ -167,7 +150,7 @@ export const TriVert = GPU.struct({
     name:'TriVert',
     fields:[
         ['pos', V3],
-        ['vidx', u32],
+        ['pidx', u32],
         ['norm', V3],
         ['mesh', u32],
         ['uv', V2],
@@ -183,219 +166,49 @@ export const Triangle = GPU.struct({
     ]
 })
 
-export const Edge = GPU.array({ type: u32, length: 2 })
-export const Tet = GPU.array({ type: u32, length: 4 })
+export const Frag = GPU.struct({
+    name:'Frag',
+    fields:[
+        ['start',u32],
+        ['aux',u32],
+        ['stop',u32]
+    ]
+})
 
 const Meshes = GPU.array({ type:Mesh })
-const Vertices = GPU.array({ type:Vertex })
 const Particles = GPU.array({ type:Particle })
 const Triangles = GPU.array({ type:Triangle })
-const Tets = GPU.array({ type:Tet })
-const Edges = GPU.array({ type:Edge })
+const Frags = GPU.array({ type:Frag })
 
-export const pointCloud = async (meshId, verts, transaction) => {
-    let particles = Particles.alloc(verts.size)
-    for (const [pidx,[vertId, vert]] of enumerate(verts)) {
-        particles[pidx].pos = vert.pos
-        particles[pidx].w = 1
-    }
-    let empty = new ArrayBuffer(0)
-    let cache = { meshId, particles:particles.buffer, tets:empty, verts:empty, faces:empty, edges:empty, tetGroups:[] }
-    transaction.objectStore('cache').put(cache)
-    return cache
-}
+export const meshGeo = async (meshId, scale, offset, transaction) => {
+    let g = await transaction.meshGeometry(meshId)
 
-export const sampleMesh = async (meshId, D, transaction) => {
-    let [mesh,verts,faceData] = await Promise.all([
-        transaction.query('meshes', { key:meshId }),
-        transaction.query('verts', { index:'meshId', key:meshId }),
-        transaction.query('faces', { index:'meshId', key:meshId }),
-    ])
-
-    let default_verts = [[-1,{pos:v3(0,0,1)}]]
-    default_verts.size = 1
-    if (meshId == -1) return pointCloud(meshId, default_verts, transaction)
+    if (g.verts.length == 0)
+        g.verts = [{ pos:v3(0,0,1), edges:[] }]
     
-    mesh = mesh.get(meshId)
-    for (let [id,vert] of verts)
-	vert.pos = v3(...vert.pos).mul(mesh.scale).add(mesh.offset)
-    if (faceData.size == 0)
-        return pointCloud(meshId, verts, transaction)
-
-    let tree = new BVHTree([...faceData].map(([,face]) => [0,1,2].map(i => verts.get(face['vertId'+i]).pos)))
-    let bmin = v3(Infinity), bmax = v3(-Infinity)
-    for (const [vertId, vert] of verts) {
-        vert.loop = new Map()
-        bmin = bmin.min(vert.pos)
-        bmax = bmax.max(vert.pos)
+    let particles = Particles.alloc(g.verts.length)    
+    for (let vert of g.verts) {
+        let p = particles[vert.id]
+	p.pos = vert.pos.mul(scale || 1).add(offset || 0)
+        for (let edge of vert.edges)
+            p.edges[p.nedges++] = edge.vert.id
     }
-    
-    let bounds = bmax.sub(bmin)
-    let dims = [...bounds.divc(D)].map(roundEps).map(ceil).map(d=>max(1,d))
-    dims = dims.map(d => d + (d%2 == 0 ? 1 : (d > 1 ? 2 : 1)))
-    let space = v3(...dims).subc(1).mulc(D).sub(bounds).divc(2)
-    let offset = bmin.sub(space)
-    let [dimx,dimy,dimz] = dims
-    let dimxy = dimx*dimy
 
-    
-    let tetsA = [[6,3,5,0], [4,6,5,0], [2,3,6,0], [1,5,3,0], [6,5,3,7]]
-    let tetsB = [[1,4,2,0], [1,2,4,7], [7,2,4,6], [4,1,7,5], [2,7,1,3]]
-
-    let hpmap = new Map(), hvmap = new Map(), particles = [], tets = [], h = 0
-    for (let [h,[x,y,z]] of enumerate(range3d(...dims))) {
-        let pos = v3(D*x,D*y,D*z).add(offset)
-        let query = tree.signedDist({ p:pos })
-        if (query.sdf <= D*TETLIM) {
-            let p = Particle.alloc()
-            p.pos = pos
-            p.norm0 = p.norm = query.n
-            p.sdf = query.sdf
-            hpmap.set(h, p)
-            if (mesh.fluid && (x+y+z) % 2 == 0 ) particles.push(p)
+    let tris = Triangles.alloc(g.faces.map(face => face.verts.length-2).sum())
+    let tridx = 0
+    for (let face of g.faces) {
+        let nverts = face.verts.length
+        let ftris = [...range(face.verts.length-2)].map(i => [0,i+1,i+2])
+        for (let tri of ftris) {
+            let tvs = tri.map(i => TriVert.of(face.verts[i].pos, face.verts[i].id, v3(0), -1, v2(...face.uvs[i])))
+            tris[tridx++] = Triangle.of(...tvs)
         }
     }
 
-    const keepTet = (tet) => {
-        for (let p of tet)
-            if (tree.signedDist({p}).sdf <= 0)
-                return true
-        for (let i of range(4)) {
-            let faceCenter = v3(0)
-            for (let j of range(4))
-                faceCenter = faceCenter.add(tet[j].mulc(Number(i != j)))
-            faceCenter = faceCenter.divc(3)
-            if (tree.signedDist({p:faceCenter}).sdf <= 0)
-                return true
-        }
-        let [a,b,c,d] = tet
-        for (let [start,end] of [[a,b],[a,c],[a,d],[b,c],[b,d],[c,d]]) {
-            let ray = end.sub(start)
-            let [rayLen,rayDir] = [ray.mag(), ray.normalized()]
-            if (tree.traceRay(start, rayDir).t <= rayLen)
-                return true
-        }
-        return false
-    }
+    let frags = g.fragment(8,0)
+    frags = frags.map(frag => ({ prime:[...frag.prime].map(v => v.id), aux:[...frag.aux].map(v => v.id) }))
 
-    if (!mesh.fluid)
-        for (let [xi,yi,zi] of range3d(...dims))
-            for (let reltet of (xi+yi+zi) % 2 == 1 ? tetsA : tetsB) {
-                let xyzs = reltet.map(vid => [xi + (vid&1), yi + Number(Boolean(vid&2)), zi + Number(Boolean(vid&4))])
-                if (xyzs.some(([x,y,z]) => x >= dimx || y >= dimy || z >= dimz)) continue
-
-                let hs = xyzs.map(([x,y,z]) => x + y*dimx + z*dimxy)
-                let hps = hs.map(h => [h, hpmap.get(h)])
-                if (hps.some(([h,p]) => p == undefined)) continue
-                if (!keepTet(hps.map(([h,p]) => p.pos))) continue
-                tets.push(hps.map(([h,p]) => {
-                    let pidx = hvmap.get(h)
-                    if (pidx == undefined) {
-                        pidx = particles.length
-                        particles.push(p)
-                        hvmap.set(h, pidx)
-                    }
-                    return pidx
-                }))
-            }
-
-    if (particles.length == 0) return pointCloud(meshId, default_verts, transaction)
-
-    
-    let cache = {
-        tets: Tets.alloc(tets.length),
-        particles: Particles.of(particles),
-        verts: Vertices.alloc(verts.size),
-        faces: Triangles.alloc(faceData.size)
-    }
-
-    let centers = []
-    let tmats = []
-    for (let [tidx,pids] of enumerate(tets)) {
-        cache.tets[tidx] = Tet.of(pids)
-        let ps = pids.map(pid => cache.particles[pid].pos)
-        centers.push(ps[0].add(ps[1]).add(ps[2]).add(ps[3]).divc(4))
-        let tmat =  m3([ps[1].sub(ps[0]), ps[2].sub(ps[0]), ps[3].sub(ps[0])])
-        let vol = tmat.invert() / 6
-        if (vol < 0) throw new Error('got zero or negative volume')
-        let pm = vol / 4
-        for (let pid of pids)
-            cache.particles[pid].w += pm
-        tmats.push(tmat)
-    }
-
-    for (let [id,face] of faceData)
-        for (let [i,j,k] of [[0,1,2],[1,2,0],[2,0,1]])
-            verts.get(face['vertId'+i]).loop.set(face['vertId'+j],face['vertId'+k])
-
-    let vertIdMap = new Map()
-    for (let [vidx,[vid,vert]] of enumerate(verts))
-        vertIdMap[vid] = vidx
-
-    for (let [vidx,[vid,vert]] of enumerate(verts)) {
-        let v = cache.verts[vidx]
-        v.pos = vert.pos
-        let [heads,tails] = [[...vert.loop.keys()], [...vert.loop.values()]]
-        heads = heads.filter(head => !tails.includes(head))
-        if (heads.length == 0) heads = [tails[0]]
-        for (let estart of heads) {
-            let evert = estart
-            do {
-                v.edges[v.nedges++] = vertIdMap[evert]
-                evert = vert.loop.get(evert)
-            } while (evert != estart && evert != undefined)
-        }
-        let tetbest = { dist: Infinity }
-        for (let t of range(tmats.length)) {
-            let dist = centers[t].dist(v.pos)
-            if (dist < tetbest.dist) tetbest = { t, dist }
-        }
-        if (tetbest.dist != Infinity) {
-            v.tet = tetbest.t
-            v.bary = v.pos.sub(cache.particles[tets[v.tet][0]].pos).mulm(tmats[tetbest.t])
-        } else v.tet = -1
-    }
-
-    for (let [fidx,face] of enumerate(faceData.values()))
-        cache.faces[fidx] = Triangle.of(...[0,1,2].map(i => TriVert.of(
-            v3(0), vertIdMap[face['vertId'+i]], v3(0), -1, v2(...face.uv[i]))))
-
-    let edges = new Set()
-    for (let [a,b,c,d] of cache.tets)
-        for (let [pid1,pid2] of [[a,b],[a,c],[a,d],[b,c],[b,d],[c,d]])
-            edges.add(hashPair(pid1,pid2))
-    edges = [...edges].map(hash => unhashPair(hash))
-
-    for (let [pid1,pid2] of edges) {
-        cache.particles[pid1].edges[cache.particles[pid1].nedges++] = pid2
-        cache.particles[pid2].edges[cache.particles[pid2].nedges++] = pid1
-    }
-
-    cache.edges = u32array.of(edges.flat())
-
-    for (let prop in cache) cache[prop] = cache[prop].buffer
-    cache.meshId = meshId
-
-    let tetGroups = []
-    let yetGroups = new Set([...range(tets.length)])
-    while (yetGroups.size > 0) {
-        let group = []
-        let groupPids = new Set()
-        for (const tid of yetGroups) {
-            let pids = [...tets[tid]]
-            if (group.length == 0 || !pids.some(pid => groupPids.has(pid))) {
-                group.push(tid)
-                yetGroups.delete(tid)
-                for (const pid of pids)
-                    groupPids.add(pid)
-            }
-        }
-        tetGroups.push(group)
-    }
-    cache.tetGroups = tetGroups
-    transaction.objectStore('cache').put(cache)
-    dbg('sampled')
-    return cache
+    return { particles, tris, frags }
 }
 
 
@@ -408,8 +221,8 @@ export async function Sim(width, height, ctx) {
     let bitmapIds = {'-1':-1}
 
     console.time('db load')
-    let [bitmapData, meshData, caches] = await db.transact(['bitmaps','meshes','cache'],'readonly',
-        async x => await Promise.all([x.query('bitmaps'), x.query('meshes'), x.query('cache')]))
+    let [bitmapData, meshData] = await db.transact(['bitmaps','meshes'],'readonly',
+        async tx => await Promise.all([tx.query('bitmaps'), tx.query('meshes')]))
 
     let bitmaps = []
     for (let [bidx,[bid,bdata]] of enumerate(bitmapData)) {
@@ -423,27 +236,20 @@ export async function Sim(width, height, ctx) {
 	meshData = [[-1,{...MESH_DEFAULTS}]]
     
     for (let [mid,mdata] of meshData) {
-        let cache = caches.get(mid)
-        if (cache == undefined)
-            cache = await db.transact(db.storeNames, 'readwrite', async x => await sampleMesh(mid, 2*phys.r, x))
-        mdata.parts = new Particles(cache.particles)
-        mdata.tets = new Tets(cache.tets)
-        mdata.mass = new Float32Array(cache.mass)
-        mdata.verts = new Vertices(cache.verts)
-        mdata.faces = new Triangles(cache.faces)
-        mdata.edges = new u32array(cache.edges)
-        mdata.tetGroups = cache.tetGroups
+        let { scale, offset } = mdata
+        let mg = await db.transact(db.storeNames, 'readwrite', async tx => await meshGeo(mid, scale, offset, tx))
+        mdata.parts = mg.particles
+        mdata.tris = mg.tris
+        mdata.frags = mg.frags
     }
     
-    let meshes = Meshes.alloc(meshData.length)
+    let meshes = Meshes.alloc(meshData.length)    
     let particles = Particles.alloc(meshData.map(([,mdata]) => mdata.parts.length).sum())
-    let verts = Vertices.alloc(meshData.map(([,mdata]) => mdata.verts.length).sum())
-    let tris = Triangles.alloc(meshData.map(([,mdata]) => mdata.faces.length).sum())
-    let tets = Tets.alloc(meshData.map(([,mdata]) => mdata.tets.length).sum())
-    let edges = u32array.alloc(meshData.map(([,mdata]) => mdata.edges.length).sum())
-    let tetGroups = []
-
-    let nparticles = 0, ntets = 0, nverts = 0, ntris = 0, nedges = 0
+    let tris = Triangles.alloc(meshData.map(([,mdata]) => mdata.tris.length).sum())
+    let fragidx = Frags.alloc(meshData.map(([,mdata]) => mdata.frags.length).sum())
+    let fragbuf = []
+    
+    let nparticles = 0, nverts = 0, ntris = 0, nedges = 0, nfrags = 0, maxFragSize = 0   
     for (let [midx,[mid,mdata]] of enumerate(meshData)) {
         let mesh = meshes[midx]
         mesh.color = v4(...mdata.color)
@@ -457,55 +263,68 @@ export async function Sim(width, height, ctx) {
         mesh.quat = v4(0,0,0,1)
         mesh.pi = nparticles
         mesh.pf = nparticles + mdata.parts.length
-        mesh.vi = nverts
-        mesh.vf = nverts + mdata.verts.length
         mesh.fluid = mdata['fluid']
-        let ti = ntets
-        let wavg = 0
         for (let pidx of range(mdata.parts.length))  {
             let p = mdata.parts[pidx]
             p.prev_pos = p.rest_pos = p.pos
             mesh.c0 = mesh.c0.add(p.pos)
             p.mesh = midx
-            p.quat = v4(0,0,0,1);
-            p.w = 1.0 / p.w * mdata.invmass
             p.fixed = mdata.fixed
             for (let i of range(p.nedges))
                 p.edges[i] += mesh.pi
+            p.quat = v4(0,0,0,1)
             particles[nparticles++] = p
         }
         mesh.c0 = mesh.ci = mesh.c0.divc(mesh.pf - mesh.pi)
-
-        for (let [tidx,tet] of enumerate(mdata.tets))
-            tets[ntets++] = Tet.of([0,1,2,3].map(i => tet[i] + mesh.pi))
-        for (let tri of mdata.faces) {
+        for (let tri of mdata.tris) {
             for (let i of range(3)) {
-                tri[i].vidx += nverts
+                tri[i].pidx += mesh.pi
                 tri[i].mesh = midx
             }
             tris[ntris++] = tri
         }
-        for (const vidx of range(mdata.verts.length)) {
-            let v = mdata.verts[vidx]
-            v.mesh = midx
-            for (let i of range(v.nedges))
-                v.edges[i] += mesh.vi
-            v.tet += ti
-            verts[nverts++] = v
-        }
-        for (const pidx of mdata.edges)
-            edges[nedges++] = pidx + mesh.pi
-        for (let [i,meshGroup] of enumerate(mdata.tetGroups)) {
-            if (i >= tetGroups.length) tetGroups.push([])
-            let group = tetGroups[i]
-            for (let tid of meshGroup)
-                group.push(tid + ti)
+
+        for (let frag of mdata.frags) {
+            let f = fragidx[nfrags++]
+            f.start = fragbuf.length
+            f.aux = f.start + frag.prime.length
+            f.stop = f.aux + frag.aux.length
+            for (let pidx of frag.prime.concat(frag.aux))
+                fragbuf.push(pidx + mesh.pi)
+            maxFragSize = max(maxFragSize, f.stop-f.start)
         }
     }
+    dbg({fragidx, fragbuf})
+    fragbuf = u32array.of(fragbuf)
+
+    
     console.timeEnd('db load')
 
-    tetGroups = tetGroups.map((group,i) => ({
-        buf:gpu.buf({ label:`tetgroup${i}`, data:u32array.of(group), usage:'STORAGE' }), data:group
+    let longest = 0
+    for (let p of particles)
+        for (let i of range(p.nedges))
+            longest = max(longest, p.pos.dist(particles[p.edges[i]].pos))
+    let grouped = []
+    let ungrouped = new Set([...range(particles.length)])
+    while (ungrouped.size > 0) {
+        let group = new Set()
+        for (const pid of ungrouped) {
+            let p = particles[pid]
+            let opids = [...range(p.nedges)].map(i => p.edges[i])
+            if (group.length == 0 || !opids.some(opid => group.has(opid))) {
+                group.add(pid)
+                ungrouped.delete(pid)
+            }
+        }
+        grouped.push([...group])
+    }
+    if (grouped.map(group => group.length).sum() != particles.length) {
+        throw new Error('bad groups')
+    }
+    
+    let pgroups = grouped.map((group,i) => ({
+        buf:gpu.buf({ label: 'pgroup'+i, data:u32array.of(group), usage:'STORAGE' }),
+        data:group
     }))
 
     const uniforms = Uniforms.alloc()
@@ -517,32 +336,31 @@ export async function Sim(width, height, ctx) {
         lights[i].power = l.power
     }
 
-    dbg({ nparts:particles.length, nverts:verts.length, nmeshes:meshes.length, ntets:tets.length, ntris:tris.length })
+    dbg({ nparts:particles.length, nmeshes:meshes.length, ntris:tris.length, ngroups:pgroups.length })
 
     const threads = gpu.threads
 
     const bufs = Object.fromEntries([
-        gpu.buf({ label:'particles', data:particles, usage:'STORAGE|COPY_SRC|COPY_DST|VERTEX' }),
-        gpu.buf({ label:'tets', data:tets, usage:'STORAGE|COPY_DST|COPY_SRC' }),
-        gpu.buf({ label:'edges', data:edges, usage:'STORAGE|COPY_DST|COPY_SRC|INDEX' }),
-        gpu.buf({ label:'vertices', data:verts, usage:'STORAGE|VERTEX|COPY_SRC' }),
-        gpu.buf({ label:'meshes', data:meshes, usage:'STORAGE|COPY_DST|COPY_SRC' }),
-        gpu.buf({ label:'uniforms', data:uniforms, usage:'UNIFORM|COPY_DST' }),
-        gpu.buf({ label:'tris', data:tris, usage:'STORAGE|VERTEX|COPY_SRC|COPY_DST' }),
+        gpu.buf({ label:'pbuf', data:particles, usage:'STORAGE|COPY_SRC|COPY_DST|VERTEX' }),
+        gpu.buf({ label:'mbuf', data:meshes, usage:'STORAGE|COPY_DST|COPY_SRC' }),
+        gpu.buf({ label:'uni', data:uniforms, usage:'UNIFORM|COPY_DST' }),
+        gpu.buf({ label:'tribuf', data:tris, usage:'STORAGE|VERTEX|COPY_SRC|COPY_DST' }),
         gpu.buf({ label:'cnts', type:GPU.array({ type:i32, length:threads**3 }), usage:'STORAGE|COPY_DST|COPY_SRC' }),
         gpu.buf({ label:'work1', type:GPU.array({ type:i32, length:threads**2 }), usage:'STORAGE' }),
         gpu.buf({ label:'work2', type:GPU.array({ type:i32, length:threads }), usage:'STORAGE' }),
 	gpu.buf({ label:'work3', type:GPU.array({ type:i32, length:1 }), usage:'STORAGE' }),
         gpu.buf({ label:'sorted', type:GPU.array({ type:u32, length:particles.length }), usage:'STORAGE' }),
-        gpu.buf({ label:'lights', data:lights, usage:'UNIFORM|FRAGMENT|COPY_DST' }),
-        gpu.buf({ label:'debug', type:GPU.array({ type: f32, length:4096 }), usage:'STORAGE|COPY_SRC|COPY_DST' }),
+        gpu.buf({ label:'frags', data:fragidx, usage:'STORAGE|COPY_DST' }),
+        gpu.buf({ label:'fbuf', data:fragbuf, usage:'STORAGE|COPY_DST' }),        
+        gpu.buf({ label:'lbuf', data:lights, usage:'UNIFORM|FRAGMENT|COPY_DST' }),
+        gpu.buf({ label:'dbuf', type:GPU.array({ type: f32, length:4096 }), usage:'STORAGE|COPY_SRC|COPY_DST' }),
     ].map(buf => [buf.label, buf]))
 
 
     const pd = ceil(particles.length/gpu.threads)
 
     const syncUniforms = () => {
-        uniforms.r = phys.r
+        uniforms.r = phys.r * longest/2
         uniforms.cam_pos = render.cam_pos
         uniforms.width = width
         uniforms.height = height
@@ -553,147 +371,146 @@ export async function Sim(width, height, ctx) {
         uniforms.view = M4.look(render.cam_pos, uniforms.cam_fwd, v3(0,0,1))
         uniforms.mvp = uniforms.view.mul(uniforms.proj)
 
-        phys.keys.filter(k => phys.type[k] == 'num').forEach(k => {
+        phys.keys.filter(k => phys.type[k] == 'num' && k != 'r').forEach(k => {
             uniforms[k] = phys[k]
         })
         uniforms.ground = render.ground ? 1 : 0
-        gpu.write(bufs.uniforms, uniforms)
+        gpu.write(bufs.uni, uniforms)
     }
-
+    
     async function Computer() {
 
         let fwdstep = false
         let tstart = clock(), tlast = clock()
         let frames = 0, steps = 0
 
-
         const threads = gpu.threads
-        const wgsl = (await fetchtext('./compute.wgsl')).interp({ threads, MAXNN })
+        const wgsl = (await fetchtext('./compute.wgsl')).interp({ threads, MAXNN, maxFragSize })
 
         const shader = await gpu.shader({
-            compute:true, wgsl:wgsl, defs:[Particle, Mesh, Uniforms],
+            compute:true, wgsl:wgsl, defs:[Particle, Mesh, Uniforms, Frag],
             storage:{
-                particles:Particles, meshes:Meshes, sorted:u32array, centroidwork:v3array, edges:Edges, debug:f32array,
-                tetgroup:u32array, cnts:i32array, cnts_atomic:iatomicarray, work:i32array, shapework:m3Array, tets:Tets
+                pbuf:Particles, mbuf:Meshes, sorted:u32array, centroidwork:v3array, vavgwork:v3array, dbuf:f32array,
+                cnts:i32array, cnts_atomic:iatomicarray, work:i32array, shapework:m3Array, pgroup:u32array,
+                frags:Frags, fbuf:u32array
             },
-            uniform:{ uniforms:Uniforms }
+            uniform:{ uni:Uniforms }
         })
 
-        const cmds = [gpu.timestamp('')]
+        const { uni, mbuf, pbuf, cnts, work1, work2, work3, sorted, dbuf, frags, fbuf } = bufs
 
-        const predict = gpu.computePipe({ shader, entryPoint: 'predict', binds: ['particles', 'meshes', 'uniforms'] })
-        const cntsort_cnt = gpu.computePipe({ shader, entryPoint: 'cntsort_cnt',
-            binds: ['particles', 'cnts_atomic', 'meshes', 'uniforms'] })
-        const prefsum_down = gpu.computePipe({ shader, entryPoint: 'prefsum_down', binds: ['cnts', 'work'] })
-        const prefsum_up = gpu.computePipe({ shader, entryPoint: 'prefsum_up', binds: ['cnts', 'work'] })
-        const cntsort_sort = gpu.computePipe({ shader, entryPoint: 'cntsort_sort',
-            binds: ['particles', 'meshes', 'cnts_atomic', 'sorted'] })
-        const find_collisions = gpu.computePipe({ shader, entryPoint: 'find_collisions',
-            binds: ['particles', 'meshes', 'cnts', 'sorted', 'uniforms'] })
-        const collide = gpu.computePipe({ shader, entryPoint: 'collide', binds: ['particles', 'meshes', 'uniforms', 'debug'] })
-        const update_vels = gpu.computePipe({ shader, entryPoint:'update_vel', binds:['particles', 'meshes', 'uniforms', 'debug'] })
-        const centroid_prep = gpu.computePipe({ shader, entryPoint: 'centroid_prep', binds: ['meshes', 'particles', 'centroidwork']})
-        const get_centroid = gpu.computePipe({ shader, entryPoint: 'get_centroid', binds: ['meshes', 'centroidwork'] })
-        const rotate_prep = gpu.computePipe({ shader, entryPoint: 'rotate_prep', binds: ['meshes', 'particles', 'shapework'] })
-        const get_rotate = gpu.computePipe({ shader, entryPoint: 'get_rotate', binds: ['meshes', 'shapework'] })
-        const normalmatch = gpu.computePipe({ shader, entryPoint:'normalmatch', binds:['particles', 'meshes', 'uniforms', 'debug'] })
-        const neohookean = gpu.computePipe({ shader, entryPoint:'neohookean',
-            binds:['particles', 'meshes', 'tets', 'uniforms','debug','tetgroup'] })
-        const shapematch = gpu.computePipe({ shader, entryPoint:'shapematch', binds:['particles', 'meshes', 'uniforms', 'debug'] })
+        const predict = () => [
+                gpu.computePass({ pipe:gpu.computePipe({ shader, entryPoint:'predict', binds:['pbuf','mbuf','uni'] }),
+                                  dispatch:pd, binds:{ pbuf, mbuf, uni } }),
+                gpu.timestamp('predict')
+        ]        
 
-        cmds.push(
-            gpu.computePass({ pipe:predict, dispatch:pd,
-                binds:{ particles:bufs.particles, meshes:bufs.meshes, uniforms:bufs.uniforms } }),
-            gpu.timestamp('predict')
-        )
-
-        cmds.push(
-            gpu.clearBuffer(bufs.cnts, 0, bufs.cnts.size),
-            gpu.computePass({ pipe:cntsort_cnt, dispatch:pd,
-                binds:{ particles:bufs.particles, cnts_atomic:bufs.cnts, meshes:bufs.meshes, uniforms:bufs.uniforms }}),
-            gpu.timestamp('cntsort_cnt'),
-            gpu.computePass({ pipe:prefsum_down, dispatch:threads**2, binds:{ cnts:bufs.cnts, work:bufs.work1 }}),
-            gpu.computePass({ pipe:prefsum_down, dispatch:threads, binds:{ cnts:bufs.work1, work:bufs.work2 }}),
-            gpu.computePass({ pipe:prefsum_down, dispatch:1, binds:{ cnts:bufs.work2, work:bufs.work3 }}),
-            gpu.computePass({ pipe:prefsum_up, dispatch:threads - 1, binds:{ cnts:bufs.work1, work:bufs.work2 }}),
-            gpu.computePass({ pipe:prefsum_up, dispatch:threads**2 - 1, binds:{ cnts:bufs.cnts, work:bufs.work1 }}),
-            gpu.timestamp('prefsum'),
-            gpu.computePass({ pipe:cntsort_sort, dispatch:pd,
-                binds:{ particles:bufs.particles, meshes:bufs.meshes, cnts_atomic:bufs.cnts, sorted:bufs.sorted }}),
-            gpu.timestamp('cntsort_sort'),
-            gpu.computePass({ pipe:find_collisions, dispatch:pd,
-                binds:{ particles:bufs.particles, meshes:bufs.meshes, cnts:bufs.cnts, sorted:bufs.sorted, uniforms:bufs.uniforms }}),
-            gpu.timestamp('find collisions')
-        )
-
-
-        cmds.push(
-            gpu.computePass({ pipe:collide, dispatch:pd,
-                binds:{ particles:bufs.particles, meshes:bufs.meshes, uniforms:bufs.uniforms, debug:bufs.debug } }),
-            gpu.timestamp('collide'),
-        )
-
-        for (const [i, m] of enumerate(meshes)) {
-            let n = m.pf - m.pi
-            if (n <= 0) continue
-            if (m.flags == 1) continue
-            const centroidWork = gpu.buf({ label: `centroidwork${i}`, type: v3array, size: v3array.stride * n, usage: 'STORAGE' })
-            const shapeWork = gpu.buf({ label: `shapework${i}`, type: m3Array, size: m3Array.stride * n, usage: 'STORAGE' })
-            let dp1 = ceil(n / threads), dp2 = ceil(dp1 / threads)
-            const meshBind = { meshes: gpu.offset(bufs.meshes, Meshes.stride * i) }
-            cmds.push(gpu.computePass({ pipe: centroid_prep, dispatch: dp1,
-                binds: { ...meshBind, particles: bufs.particles, centroidwork: centroidWork } }))
-            cmds.push(gpu.computePass({ pipe: get_centroid, dispatch: dp1, binds: { ...meshBind, centroidwork: centroidWork } }))
-            if (dp1 > 1) {
-                cmds.push(gpu.computePass({ pipe: get_centroid, dispatch: dp2, binds: { ...meshBind, centroidwork: centroidWork } }))
-                if (dp2 > 1)
-                    cmds.push(gpu.computePass({ pipe: get_centroid, dispatch: 1, binds: { ...meshBind, centroidwork: centroidWork } }))
-            }
-            if (n <= 1) continue
-            cmds.push(gpu.computePass({ pipe: rotate_prep, dispatch: dp1,
-                binds: { ...meshBind, particles: bufs.particles, shapework: shapeWork } }))
-            cmds.push(gpu.computePass({ pipe: get_rotate, dispatch: dp1, binds: { ...meshBind, shapework: shapeWork } }))
-            if (dp1 > 1) {
-                cmds.push(gpu.computePass({ pipe: get_rotate, dispatch: dp2, binds: { ...meshBind, shapework: shapeWork } }))
-                if (dp2 > 1)
-                    cmds.push(gpu.computePass({ pipe: get_rotate, dispatch: 1, binds: { ...meshBind, shapework: shapeWork } }))
-            }
+        const update_pos = gpu.computePipe({ shader, entryPoint:'update_pos', binds:['pbuf'] })
+        
+        const collisions = () => {
+            const cntsort_cnt = gpu.computePipe({ shader, entryPoint:'cntsort_cnt', binds:['pbuf','cnts_atomic','mbuf','uni']})
+            const prefsum_down = gpu.computePipe({ shader, entryPoint:'prefsum_down', binds:['cnts','work']})
+            const prefsum_up = gpu.computePipe({ shader, entryPoint:'prefsum_up', binds:['cnts','work']})
+            const cntsort_sort = gpu.computePipe({ shader, entryPoint:'cntsort_sort', binds:['pbuf','mbuf','cnts_atomic','sorted']})
+            const find_collisions = gpu.computePipe({ shader, entryPoint:'find_collisions', binds:['pbuf','mbuf','cnts','sorted','uni']})
+            const collide = gpu.computePipe({ shader, entryPoint: 'collide', binds:['pbuf', 'mbuf', 'uni','dbuf']})
+            return [
+                gpu.clearBuffer(cnts, 0, cnts.size),
+                gpu.computePass({ pipe:cntsort_cnt, dispatch:pd, binds:{ pbuf, cnts_atomic:cnts, mbuf, uni }}),
+                gpu.timestamp('cntsort_cnt'),
+                gpu.computePass({ pipe:prefsum_down, dispatch:threads**2, binds:{ cnts, work:work1 }}),
+                gpu.computePass({ pipe:prefsum_down, dispatch:threads, binds:{ cnts:work1, work:work2 }}),
+                gpu.computePass({ pipe:prefsum_down, dispatch:1, binds:{ cnts:work2, work:work3 }}),
+                gpu.computePass({ pipe:prefsum_up, dispatch:threads - 1, binds:{ cnts:work1, work:work2 }}),
+                gpu.computePass({ pipe:prefsum_up, dispatch:threads**2 - 1, binds:{ cnts, work:work1 }}),
+                gpu.timestamp('prefsum'),
+                gpu.computePass({ pipe:cntsort_sort, dispatch:pd, binds:{ pbuf, mbuf, cnts_atomic:cnts, sorted }}),
+                gpu.timestamp('cntsort_sort'),
+                gpu.computePass({ pipe:find_collisions, dispatch:pd, binds:{ pbuf, mbuf, cnts, sorted, uni }}),
+                gpu.timestamp('find collisions'),
+                gpu.computePass({ pipe:collide, dispatch:pd, binds:{ pbuf, mbuf, uni, dbuf } }),
+                gpu.timestamp('collide'),
+                gpu.computePass({ pipe:update_pos, dispatch:pd, binds:{ pbuf }}),
+                gpu.timestamp('update pos')
+            ]
         }
-        cmds.push(gpu.timestamp('get rotation'))
+        
+        const surfmatch = () => {
+            return [
+                gpu.computePass({ pipe:gpu.computePipe({ shader, entryPoint:'surfmatch', binds:['pbuf','mbuf','uni','frags','fbuf']}),
+                                  dispatch:ceil(fragidx.length/gpu.threads), binds:{ pbuf, mbuf, uni, frags, fbuf }}),
+                gpu.computePass({ pipe:update_pos, dispatch:pd, binds:{ pbuf }}),
+                gpu.timestamp('surface match')
+            ]
+        }
 
-	
-        cmds.push(
-            gpu.computePass({
-                pipe:normalmatch, dispatch:pd,
-                binds:{ particles:bufs.particles, meshes:bufs.meshes, uniforms:bufs.uniforms, debug:bufs.debug },
-            }),
-            gpu.timestamp('normal match')
-        )
+        const shapematch = () => {
+            const centroid_prep = gpu.computePipe({ shader, entryPoint:'centroid_prep', binds:['mbuf', 'pbuf', 'centroidwork']})
+            const get_centroid = gpu.computePipe({ shader, entryPoint:'get_centroid', binds:['mbuf','centroidwork'] })
+            const rotate_prep = gpu.computePipe({ shader, entryPoint:'rotate_prep', binds:['mbuf', 'pbuf', 'shapework'] })
+            const get_rotate = gpu.computePipe({ shader, entryPoint: 'get_rotate', binds:['mbuf', 'shapework'] })
+            let cmds = []
+            for (const [i, m] of enumerate(meshes)) {
+                let n = m.pf - m.pi
+                if (n <= 0) continue
+                const centroidwork = gpu.buf({ label: `centroidwork${i}`, type: v3array, size: v3array.stride * n, usage: 'STORAGE' })
+                const shapework = gpu.buf({ label: `shapework${i}`, type: m3Array, size: m3Array.stride * n, usage: 'STORAGE' })
+                let dp1 = ceil(n / threads), dp2 = ceil(dp1 / threads)
+                const mbuf = gpu.offset(bufs.mbuf, Meshes.stride * i)
+                cmds.push(gpu.computePass({ pipe:centroid_prep, dispatch:dp1, binds:{ mbuf, pbuf, centroidwork } }))
+                cmds.push(gpu.computePass({ pipe:get_centroid, dispatch:dp1, binds:{ mbuf, centroidwork } }))
+                if (dp1 > 1) {
+                    cmds.push(gpu.computePass({ pipe:get_centroid, dispatch:dp2, binds:{ mbuf, centroidwork }}))
+                    if (dp2 > 1) cmds.push(gpu.computePass({ pipe:get_centroid, dispatch:1, binds:{ mbuf, centroidwork }}))
+                }
+                if (n <= 1) continue
+                cmds.push(gpu.computePass({ pipe:rotate_prep, dispatch:dp1, binds:{ mbuf, pbuf, shapework } }))
+                cmds.push(gpu.computePass({ pipe:get_rotate, dispatch:dp1, binds:{ mbuf, shapework } }))
+                if (dp1 > 1) {
+                    cmds.push(gpu.computePass({ pipe:get_rotate, dispatch:dp2, binds:{ mbuf, shapework } }))
+                    if (dp2 > 1)
+                        cmds.push(gpu.computePass({ pipe:get_rotate, dispatch:1, binds:{ mbuf, shapework } }))
+                }
+            }
+            cmds.push(gpu.timestamp('get rotation'))
+            cmds.push(gpu.computePass({ pipe: gpu.computePipe({ shader, entryPoint:'shapematch', binds:['pbuf', 'mbuf', 'uni', 'dbuf'] }),
+                                        dispatch:pd, binds:{ pbuf, mbuf, uni, dbuf }}))
+            cmds.push(gpu.timestamp('shape match'))
+            return cmds
+        }
 
-        cmds.push(...tetGroups.map(group => gpu.computePass({
-            pipe: neohookean, dispatch:ceil(group.data.length/gpu.threads),
-            binds:{ particles:bufs.particles, meshes: bufs.meshes, tets: bufs.tets,
-                    uniforms: bufs.uniforms, debug:bufs.debug, tetgroup:group.buf }
-        })))
-        cmds.push(gpu.timestamp('neohookean'))
-
-        cmds.push(
-            gpu.computePass({
-                pipe: shapematch, dispatch:pd,
-                binds:{ particles:bufs.particles, meshes:bufs.meshes, uniforms:bufs.uniforms, debug:bufs.debug },
-            }),
-            gpu.timestamp('shape match')
-        )
-
-        cmds.push(
-            gpu.computePass({
-                pipe:update_vels, dispatch:pd,
-                binds:{ particles:bufs.particles, meshes:bufs.meshes, uniforms:bufs.uniforms, debug:bufs.debug }
-            }),
-            gpu.timestamp('update vel')
-        )
-
-        const batch = gpu.encode(cmds)
+        const update_vel = () => {
+            let cmds = []
+            cmds.push(gpu.computePass({ pipe:gpu.computePipe({ shader, entryPoint:'update_vel', binds:['pbuf', 'mbuf', 'uni', 'dbuf'] }),
+                                        dispatch:pd, binds:{ pbuf, mbuf, uni, dbuf }}))
+            cmds.push(gpu.timestamp('update vel'))
+            const vavg_prep = gpu.computePipe({ shader, entryPoint:'vavg_prep', binds:['mbuf', 'pbuf', 'vavgwork']})
+            const get_vavg = gpu.computePipe({ shader, entryPoint:'get_vavg', binds:['mbuf', 'vavgwork'] })
+            for (const [i, m] of enumerate(meshes)) {
+                let n = m.pf - m.pi
+                if (n <= 0) continue
+                const vavgwork = gpu.buf({ label: `vavgwork${i}`, type: v3array, size: v3array.stride * n, usage: 'STORAGE' })
+                let dp1 = ceil(n / threads), dp2 = ceil(dp1 / threads)
+                const mbuf = gpu.offset(bufs.mbuf, Meshes.stride * i)
+                cmds.push(gpu.computePass({ pipe:vavg_prep, dispatch:dp1, binds:{ mbuf, pbuf, vavgwork } }))
+                cmds.push(gpu.computePass({ pipe:get_vavg, dispatch:dp1, binds:{ mbuf, vavgwork } }))
+                if (dp1 > 1) {
+                    cmds.push(gpu.computePass({ pipe:get_vavg, dispatch:dp2, binds:{ mbuf, vavgwork } }))
+                    if (dp2 > 1)
+                        cmds.push(gpu.computePass({ pipe:get_vavg, dispatch:1, binds:{ mbuf, vavgwork } }))
+                }
+            }
+            return cmds
+        }
+            
+        const batch = gpu.encode([
+            gpu.timestamp(''),
+            ...predict(),
+            ...collisions(),
+            ...surfmatch(),
+            ...shapematch(),
+            ...update_vel()
+        ])
 
         return {
             stats: async () => {
@@ -718,15 +535,8 @@ export async function Sim(width, height, ctx) {
                     frames++
                     steps++
 
-		    /*const reads = [
-                        'particles',
-                        'debug'
-                    ].filter(b=>bufs[b])
-
-                    const data = await Promise.all(reads.map(b => gpu.read(bufs[b])))
-                    for (let i of range(reads.length))
-                        globalThis[reads[i]] = new bufs[reads[i]].type(data[i])
-                        window.debug = [...debug]*/
+                    [pbuf,mbuf].forEach(b => gpu.read(b).then(d => { window[b.label] = new b.type(d) }));
+                    
 
                 }
                 tlast = clock()
@@ -757,117 +567,79 @@ export async function Sim(width, height, ctx) {
                 reset = true
             })
 
-            const vd = ceil(verts.length/gpu.threads)
             const td = ceil(tris.length/gpu.threads)
 
 
             let wgsl = (await fetchtext('./prerender.wgsl')).interp({threads: gpu.threads})
             const preShader = await gpu.shader({
-                wgsl, compute: true, defs:[ Vertex, Mesh, Particle, Uniforms, TriVert, Triangle ],
-                storage:{  particles:Particles, meshes:Meshes, vertices:Vertices, tris:Triangles, tets:Tets },
-                uniform: { uniforms:Uniforms }
+                wgsl, compute: true, defs:[ Mesh, Particle, Uniforms, TriVert, Triangle ],
+                storage:{  pbuf:Particles, mbuf:Meshes, tribuf:Triangles },
+                uniform: { uni:Uniforms }
             })
 
             wgsl = await fetchtext('./render.wgsl')
             wgsl = wgsl.interp({numLights: lights.length })
-            const shader = await gpu.shader({ wgsl, defs:[Vertex, Particle, Mesh, Uniforms, Light],
-                                            storage:{ particles:Particles, meshes:Meshes, vertices:Vertices },
-                                            uniform:{ uniforms:Uniforms, lights:lights.constructor },
+            const shader = await gpu.shader({ wgsl, defs:[Particle, Mesh, Uniforms, Light],
+                                            storage:{ pbuf:Particles, mbuf:Meshes },
+                                            uniform:{ uni:Uniforms, lbuf:lights.constructor },
                                             textures:{ tex:{ name:'texture_2d_array<f32>' } },
                                             samplers:{ samp:{ name:'sampler' } } })
 
             let tex = gpu.texture(bitmaps)
             let samp = gpu.sampler()
 
+            const { uni, mbuf, pbuf, lbuf, tribuf } = bufs
+            
             const cmds = []
             cmds.push(gpu.timestamp(''))
-            if (vd > 0 && particles.length > 0) {
-                if (bufs.tets.data.length > 0) {
-                    const vertpos = gpu.computePipe({
-                        shader: preShader, entryPoint:'vertpos', binds: ['vertices','particles','meshes','tets','debug'] })
-                    cmds.push(gpu.computePass({ pipe:vertpos, dispatch:vd,
-                        binds:{ vertices:bufs.vertices, particles:bufs.particles, meshes:bufs.meshes, tets:bufs.tets, debug:f32array} }))
-                    cmds.push(gpu.timestamp('vertexpositions'))
-                }
-                const normals = gpu.computePipe({ shader: preShader, entryPoint:'normals', binds: ['vertices','particles'] })
-                cmds.push(gpu.computePass({ pipe:normals, dispatch:vd,
-                    binds:{ vertices:bufs.vertices, particles:bufs.particles } }))
-                cmds.push(gpu.timestamp('vertexnormals'))
+            if (particles.length > 0) {
+                const normals = gpu.computePipe({ shader:preShader, entryPoint:'normals', binds: ['pbuf','uni'] })
+                cmds.push(gpu.computePass({ pipe:normals, dispatch:pd, binds:{ pbuf, uni } }))
+                cmds.push(gpu.timestamp('normals'))
             }
             if (td > 0) {
-                const updTris = gpu.computePipe({ shader: preShader, entryPoint:'update_tris', binds: ['tris','vertices'] })
-                cmds.push(gpu.computePass({ pipe:updTris, dispatch:td, binds:{ vertices:bufs.vertices, tris:bufs.tris } }))
-                cmds.push(gpu.timestamp('vertexnormals'))
+                const updTris = gpu.computePipe({ shader:preShader, entryPoint:'update_tris', binds: ['tribuf','pbuf'] })
+                cmds.push(gpu.computePass({ pipe:updTris, dispatch:td, binds:{ pbuf, tribuf }}))
+                cmds.push(gpu.timestamp('updatetris'))
             }
 
             const draws = []
             if (render.ground) {
-                const gndPipe = gpu.renderPipe({ shader, entry:'ground', cullMode:'none',
-                    binds:['uniforms','lights'], topology:'triangle-strip' })
-                draws.push(gpu.draw({ pipe:gndPipe, dispatch:8, binds:{ uniforms:bufs.uniforms, lights:bufs.lights }}))
+                const gndPipe = gpu.renderPipe({ shader, entry:'ground', cullMode:'none', binds:['uni','lbuf'], topology:'triangle-strip' })
+                draws.push(gpu.draw({ pipe:gndPipe, dispatch:8, binds:{ uni, lbuf }}))
             }
 
             if (tris.length > 0) {
-                const surfPipe = gpu.renderPipe({
-                    shader, entry:'surface', binds: ['meshes', 'uniforms', 'lights', 'tex', 'samp'],
-                    vertBufs: [{ buf:bufs.tris, arrayStride:TriVert.size,
+                const surfPipe = gpu.renderPipe({ shader, entry:'surface', binds:['mbuf', 'uni', 'lbuf', 'tex', 'samp'],
+                    vertBufs: [{ buf:tribuf, arrayStride:TriVert.size,
                                  attributes: [{ shaderLocation:0, offset:TriVert.pos.off, format:'float32x3' },
                                               { shaderLocation:1, offset:TriVert.norm.off, format:'float32x3' },
                                               { shaderLocation:2, offset:TriVert.mesh.off, format:'uint32' },
                                               { shaderLocation:3, offset:TriVert.uv.off, format:'float32x2' }]}]})
-                draws.push(gpu.draw({ pipe:surfPipe, dispatch:tris.length*3,
-                    binds:{ meshes: bufs.meshes, uniforms:bufs.uniforms, lights:bufs.lights, tex, samp }}))
+                draws.push(gpu.draw({ pipe:surfPipe, dispatch:tris.length*3, binds:{ mbuf, uni, lbuf, tex, samp }}))
             }
 
 
             if (render.particles && particles.length > 0) {
-                const partPipe = gpu.renderPipe({
-                    shader, entry:'particle', binds: ['meshes', 'uniforms', 'lights'], topology: 'triangle-list',
-                    vertBufs: [{ buf:bufs.particles, arrayStride:Particles.stride, stepMode: 'instance',
+                const partPipe = gpu.renderPipe({ shader, entry:'particle', binds:['mbuf', 'uni', 'lbuf'], topology:'triangle-list',
+                    vertBufs: [{ buf:pbuf, arrayStride:Particles.stride, stepMode: 'instance',
                                  attributes: [{ shaderLocation:0, offset:Particle.pos.off, format:'float32x3' },
                                               { shaderLocation:1, offset:Particle.mesh.off, format:'uint32' }]}] })
-                draws.push(gpu.draw({ pipe:partPipe, dispatch:[3, particles.length],
-                    binds:{ meshes: bufs.meshes, uniforms:bufs.uniforms, lights:bufs.lights }}))
+                draws.push(gpu.draw({ pipe:partPipe, dispatch:[3, particles.length], binds:{ mbuf, uni, lbuf }}))
             }
 
             if (render.normals) {
-                const normPipe = gpu.renderPipe({
-                    shader, entry:'vnormals', binds: ['uniforms'], topology: 'line-list',
-                    vertBufs: [{ buf:bufs.tris, arrayStride:TriVert.size, stepMode: 'instance',
+                const normPipe = gpu.renderPipe({ shader, entry:'vnormals', binds: ['uni'], topology: 'line-list',
+                    vertBufs: [{ buf:tribuf, arrayStride:TriVert.size, stepMode: 'instance',
                     attributes: [{ shaderLocation:0, offset:TriVert.pos.off, format:'float32x3' },
                                  { shaderLocation:1, offset:TriVert.norm.off, format:'float32x3' }]}]})
-                draws.push(gpu.draw({ pipe:normPipe, dispatch:[2, tris.length*3], binds:{ uniforms:bufs.uniforms }}))
-
-                if (render.particles && particles.length > 0) {
-                    const gradPipe = gpu.renderPipe({
-                        shader, entry:'pnormals', binds: ['uniforms'], topology: 'line-list',
-                        vertBufs: [{ buf:bufs.particles, arrayStride:Particles.stride, stepMode: 'instance',
-                                     attributes: [{ shaderLocation:0, offset:Particle.pos.off, format:'float32x3' },
-                                                  { shaderLocation:1, offset:Particle.norm.off, format:'float32x3' }]}]})
-                    draws.push(gpu.draw({ pipe:gradPipe, dispatch:[2, particles.length], binds:{ uniforms:bufs.uniforms }}))
-                }
-
-            }
-
-            if (render.edges && edges.length > 0) {
-                const edgePipe = gpu.renderPipe({
-                    shader, entry:'edges', binds:['uniforms'], topology:'line-list',
-                    indexBuf: { buf: bufs.edges, indexFormat: 'uint32' },
-                    vertBufs: [{
-                        buf:bufs.particles, arrayStride:Particles.stride, stepMode:'vertex',
-                        attributes: [{ shaderLocation:0, offset:Particle.pos.off, format:'float32x3'}]
-                    }]
-                })
-                draws.push(gpu.drawIndexed({ pipe:edgePipe, dispatch:edges.length, binds:{ uniforms:bufs.uniforms }}))
+                draws.push(gpu.draw({ pipe:normPipe, dispatch:[2, tris.length*3], binds:{ uni }}))
             }
 
 
-            const lightPipe = gpu.renderPipe({ shader, entry:'lights', binds: ['uniforms','lights'], topology: 'triangle-list',
-                atc:false, depthWriteEnabled:false })
-            draws.push(gpu.draw({ pipe:lightPipe, dispatch:[3, lights.length],
-                binds: { uniforms:bufs.uniforms, lights:bufs.lights }}))
-
-
+            const lightPipe = gpu.renderPipe({ shader, entry:'lights', binds: ['uni','lbuf'], topology: 'triangle-list',
+                                               atc:false, depthWriteEnabled:false })
+            draws.push(gpu.draw({ pipe:lightPipe, dispatch:[3, lights.length], binds: { uni, lbuf }}))
             cmds.push(gpu.renderPass(draws))
             cmds.push(gpu.timestamp('draws'))
 
@@ -897,7 +669,7 @@ export async function Sim(width, height, ctx) {
                 }
 
                 syncUniforms()
-                gpu.write(bufs.lights, lights)
+                gpu.write(bufs.lbuf, lights)
                 batch.execute()
                 frames++
                 tlast = clock()
@@ -965,8 +737,8 @@ export async function Sim(width, height, ctx) {
 
     async function grabParticle(x, y) {
         let ray = clipToRay(x,y)
-        let rsq = (phys.r)**2
-        let particles = new Particles(await gpu.read(bufs.particles))
+        let rsq = (uniforms.r)**2
+        let particles = new Particles(await gpu.read(bufs.pbuf))
 
         let hitdists = []
         for (const [i, p] of enumerate(particles)) {
@@ -983,7 +755,7 @@ export async function Sim(width, height, ctx) {
         hitdists.sort((a,b) => a[1]-b[1])
         uniforms.selection = hitdists[0][0]
         let p = particles[uniforms.selection]
-        dbg({pos:p.pos, w:p.w, nedges:p.nedges})
+        dbg({pid:uniforms.selection, pos:p.pos, norm:p.norm})
         let fwd = v3(sin(render.cam_lr), cos(render.cam_lr), 0).normalized()
         grabDepth = particles[uniforms.selection].pos.sub(render.cam_pos).dot(fwd)
     }
@@ -1001,7 +773,7 @@ export async function Sim(width, height, ctx) {
     async function fixParticle() {
         let pid = uniforms.selection
         if (pid < 0) return
-        let buf = gpu.chop(gpu.offset(bufs.particles, Particles.stride * pid), Particle.size)
+        let buf = gpu.chop(gpu.offset(bufs.pbuf, Particles.stride * pid), Particle.size)
         let p = new Particle(await gpu.read(buf))
         p.fixed = p.fixed == 1 ? 0 : 1
         dbg({fixed:p.fixed})
@@ -1011,11 +783,6 @@ export async function Sim(width, height, ctx) {
     return scope(stmt => eval(stmt))
 
 }
-
-
-
-
-
 
 export const loadWavefront = async (name, data, transaction) => {
     let meshes = transaction.objectStore('meshes')
@@ -1031,17 +798,14 @@ export const loadWavefront = async (name, data, transaction) => {
         if (key == 'v') {
             let vdata = toks.map(parseFloat)
             let pos = vdata.slice(0, 3)
-            let mass = vdata.length > 3 ? vdata[3] : 1.0;
-            vertIds[localVerts++] = await transaction.wait(verts.add({ pos, mass, meshId }))
+            vertIds[localVerts++] = await transaction.wait(verts.add({ pos, meshId }))
         } else if (key == 'vt') {
             let vtdata = toks.map(parseFloat)
             uvIds[localUVs++] = vtdata.slice(0, 2)
         } else if (key == 'f') {
-            if (toks.length == 3) {
-                let face = toks.map((tok,i) => [`vertId${i}`, vertIds[parseInt(tok.split('/')[0])]])
-                let uv = toks.map(tok => uvIds[parseInt(tok.split('/')[1])] || [0,0])
-                await transaction.wait(faces.add({ ...Object.fromEntries(face), uv, meshId }))
-            }
+            let face = toks.map((tok,i) => [`vertId${i}`, vertIds[parseInt(tok.split('/')[0])]])
+            let uv = toks.map(tok => uvIds[parseInt(tok.split('/')[1])] || [0,0])
+            await transaction.wait(faces.add({ ...Object.fromEntries(face), uv, meshId }))
         }
     }
 }
