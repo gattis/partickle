@@ -288,6 +288,32 @@ class GeoMesh {
         return new GeoMesh(newVerts, newFaces, newUvs)
     }
 
+
+        /*fragment(n, expand) {
+        let v0 = this.verts[0]
+        let visited = new Set([v0])
+        let q = [0]
+        let frags = []
+        let frag = []
+        while q
+
+        while len(queue) != 0:
+
+        vidx1 = queue.pop(0)
+        cluster.append(vidx1)
+        if len(cluster) > nper:
+        clusters.append(cluster)
+        cluster = []
+        v1 = bm.verts[vidx1]
+        adj = [e.other_vert(v1).index for e in v1.link_edges]
+        for vidx2 in adj:
+        if vidx2 not in queued:
+        queue.append(vidx2)
+        queued.add(vidx2)
+        clusters.append(cluster)
+
+    }*/
+    
     fragment(minVerts, expand) {
         if (this.verts.length < minVerts*2)
             return [{ prime: new Set(this.verts) }]

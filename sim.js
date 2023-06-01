@@ -180,39 +180,6 @@ const Particles = GPU.array({ type:Particle })
 const Triangles = GPU.array({ type:Triangle })
 const Frags = GPU.array({ type:Frag })
 
-export const meshGeo = async (meshId, scale, offset, transaction) => {
-    let g = await transaction.meshGeometry(meshId)
-
-    if (g.verts.length == 0)
-        g.verts = [{ pos:v3(0,0,1), edges:[] }]
-    
-    let particles = Particles.alloc(g.verts.length)    
-    for (let vert of g.verts) {
-        let p = particles[vert.id]
-	p.pos = vert.pos.mul(scale || 1).add(offset || 0)
-        for (let edge of vert.edges)
-            p.edges[p.nedges++] = edge.vert.id
-    }
-
-    let tris = Triangles.alloc(g.faces.map(face => face.verts.length-2).sum())
-    let tridx = 0
-    for (let face of g.faces) {
-        let nverts = face.verts.length
-        let ftris = [...range(face.verts.length-2)].map(i => [0,i+1,i+2])
-        for (let tri of ftris) {
-            let tvs = tri.map(i => TriVert.of(face.verts[i].pos, face.verts[i].id, v3(0), -1, v2(...face.uvs[i])))
-            tris[tridx++] = Triangle.of(...tvs)
-        }
-    }
-
-    let frags = g.fragment(8,0)
-    frags = frags.map(frag => ({ prime:[...frag.prime].map(v => v.id), aux:[...frag.aux].map(v => v.id) }))
-
-    return { particles, tris, frags }
-}
-
-
-
 export async function Sim(width, height, ctx) {
 
     const gpu = new GPU()
@@ -231,27 +198,14 @@ export async function Sim(width, height, ctx) {
     }
 
     meshData = [...meshData]
-
     if (meshData.length == 0)
 	meshData = [[-1,{...MESH_DEFAULTS}]]
+        
+    let meshes = [], particles = [], tris = [], fragtbl = [], fragbuf = []
     
-    for (let [mid,mdata] of meshData) {
-        let { scale, offset } = mdata
-        let mg = await db.transact(db.storeNames, 'readwrite', async tx => await meshGeo(mid, scale, offset, tx))
-        mdata.parts = mg.particles
-        mdata.tris = mg.tris
-        mdata.frags = mg.frags
-    }
-    
-    let meshes = Meshes.alloc(meshData.length)    
-    let particles = Particles.alloc(meshData.map(([,mdata]) => mdata.parts.length).sum())
-    let tris = Triangles.alloc(meshData.map(([,mdata]) => mdata.tris.length).sum())
-    let fragidx = Frags.alloc(meshData.map(([,mdata]) => mdata.frags.length).sum())
-    let fragbuf = []
-    
-    let nparticles = 0, nverts = 0, ntris = 0, nedges = 0, nfrags = 0, maxFragSize = 0   
+    let maxFragSize = 0   
     for (let [midx,[mid,mdata]] of enumerate(meshData)) {
-        let mesh = meshes[midx]
+        let mesh = Mesh.alloc()
         mesh.color = v4(...mdata.color)
         mesh.pcolor = particleColors[midx % particleColors.length]
         mesh.gravity = mdata.gravity
@@ -261,42 +215,60 @@ export async function Sim(width, height, ctx) {
         mesh.collidamp = mdata['collision damp']
         mesh.tex = bitmapIds[mdata.bitmapId]
         mesh.quat = v4(0,0,0,1)
-        mesh.pi = nparticles
-        mesh.pf = nparticles + mdata.parts.length
+        mesh.pi = particles.length
         mesh.fluid = mdata['fluid']
-        for (let pidx of range(mdata.parts.length))  {
-            let p = mdata.parts[pidx]
-            p.prev_pos = p.rest_pos = p.pos
+        mesh.c0 = v3(0);
+
+        let g = await db.transact(db.storeNames, 'readwrite', async tx => await tx.meshGeometry(mid))
+        if (g.verts.length == 0)
+            g.verts = [{ pos:v3(0,0,1), edges:[] }]
+
+        for (let vert of g.verts) {
+            let p = Particle.alloc()
+            p.pos = p.prev_pos = p.rest_pos = vert.pos.mul(mdata.scale || 1).add(mdata.offset || 0)
+            for (let edge of vert.edges)
+                p.edges[p.nedges++] = mesh.pi + edge.vert.id
             mesh.c0 = mesh.c0.add(p.pos)
             p.mesh = midx
             p.fixed = mdata.fixed
-            for (let i of range(p.nedges))
-                p.edges[i] += mesh.pi
             p.quat = v4(0,0,0,1)
-            particles[nparticles++] = p
+            particles.push(p)
         }
+        mesh.pf = particles.length - mesh.pi
         mesh.c0 = mesh.ci = mesh.c0.divc(mesh.pf - mesh.pi)
-        for (let tri of mdata.tris) {
-            for (let i of range(3)) {
-                tri[i].pidx += mesh.pi
-                tri[i].mesh = midx
+        
+        for (let face of g.faces) {
+            let nverts = face.verts.length
+            let ftris = [...range(face.verts.length-2)].map(i => [0,i+1,i+2])
+            for (let tri of ftris) {
+                let tvs = tri.map(i => TriVert.of(v4(0), face.verts[i].id + mesh.pi, v3(0), midx, v2(...face.uvs[i])))
+                tris.push(Triangle.of(...tvs))
             }
-            tris[ntris++] = tri
         }
 
-        for (let frag of mdata.frags) {
-            let f = fragidx[nfrags++]
+        for (let frag of g.fragment(8,0)) {
+            let f = Frag.alloc()
             f.start = fragbuf.length
-            f.aux = f.start + frag.prime.length
-            f.stop = f.aux + frag.aux.length
-            for (let pidx of frag.prime.concat(frag.aux))
-                fragbuf.push(pidx + mesh.pi)
+            f.aux = f.start + frag.prime.size
+            f.stop = f.aux + frag.aux.size
+            for (let v of frag.prime)
+                fragbuf.push(v.id + mesh.pi)
+            for (let v of frag.aux)
+                fragbuf.push(v.id + mesh.pi)
+            console.log(f.start,f.aux,f.stop)
             maxFragSize = max(maxFragSize, f.stop-f.start)
+            fragtbl.push(f)
         }
-    }
-    dbg({fragidx, fragbuf})
-    fragbuf = u32array.of(fragbuf)
 
+        meshes.push(mesh)
+    }
+    dbg({fragtbl, fragbuf})
+
+    meshes = Meshes.of(meshes)
+    particles = Particles.of(particles)
+    tris = Triangles.of(tris)
+    fragtbl = Frags.of(fragtbl)
+    fragbuf = u32array.of(fragbuf)
     
     console.timeEnd('db load')
 
@@ -350,7 +322,7 @@ export async function Sim(width, height, ctx) {
         gpu.buf({ label:'work2', type:GPU.array({ type:i32, length:threads }), usage:'STORAGE' }),
 	gpu.buf({ label:'work3', type:GPU.array({ type:i32, length:1 }), usage:'STORAGE' }),
         gpu.buf({ label:'sorted', type:GPU.array({ type:u32, length:particles.length }), usage:'STORAGE' }),
-        gpu.buf({ label:'frags', data:fragidx, usage:'STORAGE|COPY_DST' }),
+        gpu.buf({ label:'frags', data:fragtbl, usage:'STORAGE|COPY_DST' }),
         gpu.buf({ label:'fbuf', data:fragbuf, usage:'STORAGE|COPY_DST' }),        
         gpu.buf({ label:'lbuf', data:lights, usage:'UNIFORM|FRAGMENT|COPY_DST' }),
         gpu.buf({ label:'dbuf', type:GPU.array({ type: f32, length:4096 }), usage:'STORAGE|COPY_SRC|COPY_DST' }),
@@ -438,7 +410,7 @@ export async function Sim(width, height, ctx) {
         const surfmatch = () => {
             return [
                 gpu.computePass({ pipe:gpu.computePipe({ shader, entryPoint:'surfmatch', binds:['pbuf','mbuf','uni','frags','fbuf']}),
-                                  dispatch:ceil(fragidx.length/gpu.threads), binds:{ pbuf, mbuf, uni, frags, fbuf }}),
+                                  dispatch:ceil(fragtbl.length/gpu.threads), binds:{ pbuf, mbuf, uni, frags, fbuf }}),
                 gpu.computePass({ pipe:update_pos, dispatch:pd, binds:{ pbuf }}),
                 gpu.timestamp('surface match')
             ]
