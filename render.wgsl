@@ -76,7 +76,6 @@ struct FragDepth {
 
 @fragment fn surface_frag(input:SurfIn) -> @location(0) v4 {
     let m = mbuf[input.mesh];
-    if (bool(m.inactive)) { discard; }
     if (m.fluid == 1) { discard; }
     var color = m.color * select(textureSample(tex, samp, input.uv, m.tex), v4(1), m.tex < 0);
     if (color.a < 0.0001) { discard; }
@@ -197,7 +196,6 @@ fn trace_sphere(vertpos:v3, center:v3, r:f32) -> RayTrace {
 
 @fragment fn particle_frag(input:PartIO) -> FragDepth {
     let m = mbuf[input.mesh];
-    if (bool(m.inactive)) { discard; }
     let color = m.pcolor;
     if (color.a < 0.5) { discard; }
     var rgb = color.rgb;

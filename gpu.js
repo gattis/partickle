@@ -779,8 +779,8 @@ export const M4 = GPU.array({
 })
 
 export const m4 = (...args) => M4.of(...args)
-export const m3Array = GPU.array({ type:M3 })
-export const v3array = GPU.array({ type:V3 })
+export const m3arr = GPU.array({ type:M3 })
+export const v3arr = GPU.array({ type:V3 })
 
 
 

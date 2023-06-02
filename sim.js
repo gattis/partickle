@@ -16,7 +16,7 @@ const LIGHTS = [
 
 const MESH_DEFAULTS = {
     name:'default', bitmapId:-1, color:[1,1,1,1], offset:[0,0,0], rotation:[0,0,0], gravity:1, invmass:10,
-    scale:[1,1,1], 'shape stiff':1, 'vol stiff':1, friction:1, 'collision damp':1, fluid:0, fixed: 0
+    scale:[1,1,1], 'surf stiff':1, friction:1, 'collision damp':1, fluid:0, fixed: 0
 }
 
 export const phys = new Preferences('phys')
@@ -25,9 +25,7 @@ phys.addNum('r', 1.0, 0.1, 10, 0.1)
 phys.addNum('frameratio', 3, 1, 20, 1)
 phys.addNum('speed', 1, 0.05, 5, .01)
 phys.addNum('gravity', 9.8, -5, 20, 0.1)
-phys.addNum('shape_stiff', 0, 0, 1, 0.005)
 phys.addNum('surf_stiff', .5, 0, 1, 0.001)
-phys.addNum('edge_stiff', .5, 0, 2, 0.01)
 phys.addNum('friction', 0.1, 0, 1, .01)
 phys.addNum('airdamp', 0.5, 0, 1, .01)
 phys.addNum('collidamp', .1, 0, 1, .001)
@@ -75,21 +73,18 @@ export const Mesh = GPU.struct({
         ['c0', V3],
         ['ci', V3],
         ['vi', V3],
+        ['wi', V3],
         ['pi', u32],
         ['pf', u32],
-        ['quat', V4],
         ['tex', i32],
         ['color', V4],
         ['pcolor', V4],
         ['gravity', f32],
-        ['shape_stiff', f32],
-        ['vol_stiff', f32],
+        ['surf_stiff', f32],
         ['friction', f32],
         ['collidamp', f32],
         ['fluid', i32],
-        ['pose', i32],
-        ['inactive', i32],
-        ['padding', GPU.array({ type:u32, length:21 })]
+       // ['padding', GPU.array({ type:u32, length:13 })]
     ]
 })
 
@@ -101,14 +96,12 @@ export const Particle = GPU.struct({
         ['rest_pos', V3],
         ['mesh', u32],
         ['prev_pos', V3],
-        ['w', f32],
-        ['vel', V3],
-        ['k', u32],
-        ['delta_pos', V3],
         ['fixed', u32],
-        ['norm', V3],
+        ['delta_pos', V3],
+        ['k', u32],
+        ['vel', V3],
         ['nedges', u32],
-        ['quat', V4],
+        ['norm', V3],
         ['edges', GPU.array({ type:u32, length:MAXEDGES })],
         ['nn', GPU.array({ type:u32, length:MAXNN })],
     ]
@@ -166,19 +159,9 @@ export const Triangle = GPU.struct({
     ]
 })
 
-export const Frag = GPU.struct({
-    name:'Frag',
-    fields:[
-        ['start',u32],
-        ['aux',u32],
-        ['stop',u32]
-    ]
-})
-
 const Meshes = GPU.array({ type:Mesh })
 const Particles = GPU.array({ type:Particle })
 const Triangles = GPU.array({ type:Triangle })
-const Frags = GPU.array({ type:Frag })
 
 export async function Sim(width, height, ctx) {
 
@@ -201,20 +184,17 @@ export async function Sim(width, height, ctx) {
     if (meshData.length == 0)
 	meshData = [[-1,{...MESH_DEFAULTS}]]
         
-    let meshes = [], particles = [], tris = [], fragtbl = [], fragbuf = []
-    
-    let maxFragSize = 0   
+    let meshes = [], particles = [], tris = []
+   
     for (let [midx,[mid,mdata]] of enumerate(meshData)) {
         let mesh = Mesh.alloc()
         mesh.color = v4(...mdata.color)
         mesh.pcolor = particleColors[midx % particleColors.length]
         mesh.gravity = mdata.gravity
-        mesh.shape_stiff = mdata['shape stiff']
-        mesh.vol_stiff = mdata['vol stiff']
+        mesh.surf_stiff = mdata['surf stiff']
         mesh.friction = mdata.friction
         mesh.collidamp = mdata['collision damp']
         mesh.tex = bitmapIds[mdata.bitmapId]
-        mesh.quat = v4(0,0,0,1)
         mesh.pi = particles.length
         mesh.fluid = mdata['fluid']
         mesh.c0 = v3(0);
@@ -231,7 +211,6 @@ export async function Sim(width, height, ctx) {
             mesh.c0 = mesh.c0.add(p.pos)
             p.mesh = midx
             p.fixed = mdata.fixed
-            p.quat = v4(0,0,0,1)
             particles.push(p)
         }
         mesh.pf = particles.length - mesh.pi
@@ -246,29 +225,12 @@ export async function Sim(width, height, ctx) {
             }
         }
 
-        for (let frag of g.fragment(8,0)) {
-            let f = Frag.alloc()
-            f.start = fragbuf.length
-            f.aux = f.start + frag.prime.size
-            f.stop = f.aux + frag.aux.size
-            for (let v of frag.prime)
-                fragbuf.push(v.id + mesh.pi)
-            for (let v of frag.aux)
-                fragbuf.push(v.id + mesh.pi)
-            console.log(f.start,f.aux,f.stop)
-            maxFragSize = max(maxFragSize, f.stop-f.start)
-            fragtbl.push(f)
-        }
-
         meshes.push(mesh)
     }
-    dbg({fragtbl, fragbuf})
 
     meshes = Meshes.of(meshes)
     particles = Particles.of(particles)
     tris = Triangles.of(tris)
-    fragtbl = Frags.of(fragtbl)
-    fragbuf = u32array.of(fragbuf)
     
     console.timeEnd('db load')
 
@@ -276,28 +238,32 @@ export async function Sim(width, height, ctx) {
     for (let p of particles)
         for (let i of range(p.nedges))
             longest = max(longest, p.pos.dist(particles[p.edges[i]].pos))
-    let grouped = []
-    let ungrouped = new Set([...range(particles.length)])
-    while (ungrouped.size > 0) {
-        let group = new Set()
-        for (const pid of ungrouped) {
-            let p = particles[pid]
-            let opids = [...range(p.nedges)].map(i => p.edges[i])
-            if (group.length == 0 || !opids.some(opid => group.has(opid))) {
-                group.add(pid)
-                ungrouped.delete(pid)
+
+    let groups = []
+    for (let pid of range(particles.length)) {
+        let q = [pid]
+        let visited = new Set(q)
+        for (let ring of range(4))
+            for (let qpos of range(q.length)) {
+                let rp = particles[q.shift()]
+                for (let epid of [...range(rp.nedges)].map(i => rp.edges[i]).filter(epid => !visited.has(epid))) {
+                    q.push(epid)
+                    visited.add(epid)
+                }
             }
-        }
-        grouped.push([...group])
+        visited = [...visited]
+        let found = false
+        for (let group of groups)
+            if (!visited.some(vpid => group.has(vpid))) {
+                group.add(pid);
+                found = true
+                break
+            }
+        if (!found) groups.push(new Set([pid]))                
     }
-    if (grouped.map(group => group.length).sum() != particles.length) {
+    if (groups.map(group => group.size).sum() != particles.length)
         throw new Error('bad groups')
-    }
-    
-    let pgroups = grouped.map((group,i) => ({
-        buf:gpu.buf({ label: 'pgroup'+i, data:u32array.of(group), usage:'STORAGE' }),
-        data:group
-    }))
+    groups = groups.map((group,i) => gpu.buf({ label: 'group'+i, data:u32array.of([...group]), usage:'STORAGE' }))
 
     const uniforms = Uniforms.alloc()
     uniforms.selection = uniforms.grabbing = -1
@@ -308,7 +274,7 @@ export async function Sim(width, height, ctx) {
         lights[i].power = l.power
     }
 
-    dbg({ nparts:particles.length, nmeshes:meshes.length, ntris:tris.length, ngroups:pgroups.length })
+    dbg({ nparts:particles.length, nmeshes:meshes.length, ntris:tris.length, ngroups:groups.length })
 
     const threads = gpu.threads
 
@@ -322,8 +288,6 @@ export async function Sim(width, height, ctx) {
         gpu.buf({ label:'work2', type:GPU.array({ type:i32, length:threads }), usage:'STORAGE' }),
 	gpu.buf({ label:'work3', type:GPU.array({ type:i32, length:1 }), usage:'STORAGE' }),
         gpu.buf({ label:'sorted', type:GPU.array({ type:u32, length:particles.length }), usage:'STORAGE' }),
-        gpu.buf({ label:'frags', data:fragtbl, usage:'STORAGE|COPY_DST' }),
-        gpu.buf({ label:'fbuf', data:fragbuf, usage:'STORAGE|COPY_DST' }),        
         gpu.buf({ label:'lbuf', data:lights, usage:'UNIFORM|FRAGMENT|COPY_DST' }),
         gpu.buf({ label:'dbuf', type:GPU.array({ type: f32, length:4096 }), usage:'STORAGE|COPY_SRC|COPY_DST' }),
     ].map(buf => [buf.label, buf]))
@@ -357,132 +321,98 @@ export async function Sim(width, height, ctx) {
         let frames = 0, steps = 0
 
         const threads = gpu.threads
-        const wgsl = (await fetchtext('./compute.wgsl')).interp({ threads, MAXNN, maxFragSize })
+        const wgsl = (await fetchtext('./compute.wgsl')).interp({ threads, MAXNN })
 
         const shader = await gpu.shader({
-            compute:true, wgsl:wgsl, defs:[Particle, Mesh, Uniforms, Frag],
+            compute:true, wgsl:wgsl, defs:[Particle, Mesh, Uniforms],
             storage:{
-                pbuf:Particles, mbuf:Meshes, sorted:u32array, centroidwork:v3array, vavgwork:v3array, dbuf:f32array,
-                cnts:i32array, cnts_atomic:iatomicarray, work:i32array, shapework:m3Array, pgroup:u32array,
-                frags:Frags, fbuf:u32array
+                pbuf:Particles, mbuf:Meshes, sorted:u32array, dbuf:f32array,
+                cnts:i32array, cnts_atomic:iatomicarray, work:i32array, group:u32array,
+                pavg:v3arr, vavg:v3arr, lavg:v3arr, iavg:m3arr,
             },
             uniform:{ uni:Uniforms }
         })
 
-        const { uni, mbuf, pbuf, cnts, work1, work2, work3, sorted, dbuf, frags, fbuf } = bufs
+        const { uni, mbuf, pbuf, cnts, work1, work2, work3, sorted, dbuf } = bufs
 
-        const predict = () => [
-                gpu.computePass({ pipe:gpu.computePipe({ shader, entryPoint:'predict', binds:['pbuf','mbuf','uni'] }),
-                                  dispatch:pd, binds:{ pbuf, mbuf, uni } }),
-                gpu.timestamp('predict')
-        ]        
-
-        const update_pos = gpu.computePipe({ shader, entryPoint:'update_pos', binds:['pbuf'] })
-        
-        const collisions = () => {
-            const cntsort_cnt = gpu.computePipe({ shader, entryPoint:'cntsort_cnt', binds:['pbuf','cnts_atomic','mbuf','uni']})
-            const prefsum_down = gpu.computePipe({ shader, entryPoint:'prefsum_down', binds:['cnts','work']})
-            const prefsum_up = gpu.computePipe({ shader, entryPoint:'prefsum_up', binds:['cnts','work']})
-            const cntsort_sort = gpu.computePipe({ shader, entryPoint:'cntsort_sort', binds:['pbuf','mbuf','cnts_atomic','sorted']})
-            const find_collisions = gpu.computePipe({ shader, entryPoint:'find_collisions', binds:['pbuf','mbuf','cnts','sorted','uni']})
-            const collide = gpu.computePipe({ shader, entryPoint: 'collide', binds:['pbuf', 'mbuf', 'uni','dbuf']})
-            return [
-                gpu.clearBuffer(cnts, 0, cnts.size),
-                gpu.computePass({ pipe:cntsort_cnt, dispatch:pd, binds:{ pbuf, cnts_atomic:cnts, mbuf, uni }}),
-                gpu.timestamp('cntsort_cnt'),
-                gpu.computePass({ pipe:prefsum_down, dispatch:threads**2, binds:{ cnts, work:work1 }}),
-                gpu.computePass({ pipe:prefsum_down, dispatch:threads, binds:{ cnts:work1, work:work2 }}),
-                gpu.computePass({ pipe:prefsum_down, dispatch:1, binds:{ cnts:work2, work:work3 }}),
-                gpu.computePass({ pipe:prefsum_up, dispatch:threads - 1, binds:{ cnts:work1, work:work2 }}),
-                gpu.computePass({ pipe:prefsum_up, dispatch:threads**2 - 1, binds:{ cnts, work:work1 }}),
-                gpu.timestamp('prefsum'),
-                gpu.computePass({ pipe:cntsort_sort, dispatch:pd, binds:{ pbuf, mbuf, cnts_atomic:cnts, sorted }}),
-                gpu.timestamp('cntsort_sort'),
-                gpu.computePass({ pipe:find_collisions, dispatch:pd, binds:{ pbuf, mbuf, cnts, sorted, uni }}),
-                gpu.timestamp('find collisions'),
-                gpu.computePass({ pipe:collide, dispatch:pd, binds:{ pbuf, mbuf, uni, dbuf } }),
-                gpu.timestamp('collide'),
-                gpu.computePass({ pipe:update_pos, dispatch:pd, binds:{ pbuf }}),
-                gpu.timestamp('update pos')
-            ]
-        }
-        
-        const surfmatch = () => {
-            return [
-                gpu.computePass({ pipe:gpu.computePipe({ shader, entryPoint:'surfmatch', binds:['pbuf','mbuf','uni','frags','fbuf']}),
-                                  dispatch:ceil(fragtbl.length/gpu.threads), binds:{ pbuf, mbuf, uni, frags, fbuf }}),
-                gpu.computePass({ pipe:update_pos, dispatch:pd, binds:{ pbuf }}),
-                gpu.timestamp('surface match')
-            ]
-        }
-
-        const shapematch = () => {
-            const centroid_prep = gpu.computePipe({ shader, entryPoint:'centroid_prep', binds:['mbuf', 'pbuf', 'centroidwork']})
-            const get_centroid = gpu.computePipe({ shader, entryPoint:'get_centroid', binds:['mbuf','centroidwork'] })
-            const rotate_prep = gpu.computePipe({ shader, entryPoint:'rotate_prep', binds:['mbuf', 'pbuf', 'shapework'] })
-            const get_rotate = gpu.computePipe({ shader, entryPoint: 'get_rotate', binds:['mbuf', 'shapework'] })
-            let cmds = []
-            for (const [i, m] of enumerate(meshes)) {
-                let n = m.pf - m.pi
-                if (n <= 0) continue
-                const centroidwork = gpu.buf({ label: `centroidwork${i}`, type: v3array, size: v3array.stride * n, usage: 'STORAGE' })
-                const shapework = gpu.buf({ label: `shapework${i}`, type: m3Array, size: m3Array.stride * n, usage: 'STORAGE' })
-                let dp1 = ceil(n / threads), dp2 = ceil(dp1 / threads)
-                const mbuf = gpu.offset(bufs.mbuf, Meshes.stride * i)
-                cmds.push(gpu.computePass({ pipe:centroid_prep, dispatch:dp1, binds:{ mbuf, pbuf, centroidwork } }))
-                cmds.push(gpu.computePass({ pipe:get_centroid, dispatch:dp1, binds:{ mbuf, centroidwork } }))
-                if (dp1 > 1) {
-                    cmds.push(gpu.computePass({ pipe:get_centroid, dispatch:dp2, binds:{ mbuf, centroidwork }}))
-                    if (dp2 > 1) cmds.push(gpu.computePass({ pipe:get_centroid, dispatch:1, binds:{ mbuf, centroidwork }}))
-                }
-                if (n <= 1) continue
-                cmds.push(gpu.computePass({ pipe:rotate_prep, dispatch:dp1, binds:{ mbuf, pbuf, shapework } }))
-                cmds.push(gpu.computePass({ pipe:get_rotate, dispatch:dp1, binds:{ mbuf, shapework } }))
-                if (dp1 > 1) {
-                    cmds.push(gpu.computePass({ pipe:get_rotate, dispatch:dp2, binds:{ mbuf, shapework } }))
-                    if (dp2 > 1)
-                        cmds.push(gpu.computePass({ pipe:get_rotate, dispatch:1, binds:{ mbuf, shapework } }))
-                }
-            }
-            cmds.push(gpu.timestamp('get rotation'))
-            cmds.push(gpu.computePass({ pipe: gpu.computePipe({ shader, entryPoint:'shapematch', binds:['pbuf', 'mbuf', 'uni', 'dbuf'] }),
-                                        dispatch:pd, binds:{ pbuf, mbuf, uni, dbuf }}))
-            cmds.push(gpu.timestamp('shape match'))
-            return cmds
-        }
-
-        const update_vel = () => {
-            let cmds = []
-            cmds.push(gpu.computePass({ pipe:gpu.computePipe({ shader, entryPoint:'update_vel', binds:['pbuf', 'mbuf', 'uni', 'dbuf'] }),
-                                        dispatch:pd, binds:{ pbuf, mbuf, uni, dbuf }}))
-            cmds.push(gpu.timestamp('update vel'))
-            const vavg_prep = gpu.computePipe({ shader, entryPoint:'vavg_prep', binds:['mbuf', 'pbuf', 'vavgwork']})
-            const get_vavg = gpu.computePipe({ shader, entryPoint:'get_vavg', binds:['mbuf', 'vavgwork'] })
-            for (const [i, m] of enumerate(meshes)) {
-                let n = m.pf - m.pi
-                if (n <= 0) continue
-                const vavgwork = gpu.buf({ label: `vavgwork${i}`, type: v3array, size: v3array.stride * n, usage: 'STORAGE' })
-                let dp1 = ceil(n / threads), dp2 = ceil(dp1 / threads)
-                const mbuf = gpu.offset(bufs.mbuf, Meshes.stride * i)
-                cmds.push(gpu.computePass({ pipe:vavg_prep, dispatch:dp1, binds:{ mbuf, pbuf, vavgwork } }))
-                cmds.push(gpu.computePass({ pipe:get_vavg, dispatch:dp1, binds:{ mbuf, vavgwork } }))
-                if (dp1 > 1) {
-                    cmds.push(gpu.computePass({ pipe:get_vavg, dispatch:dp2, binds:{ mbuf, vavgwork } }))
-                    if (dp2 > 1)
-                        cmds.push(gpu.computePass({ pipe:get_vavg, dispatch:1, binds:{ mbuf, vavgwork } }))
-                }
-            }
-            return cmds
-        }
-            
-        const batch = gpu.encode([
+        const cmds = [
             gpu.timestamp(''),
-            ...predict(),
-            ...collisions(),
-            ...surfmatch(),
-            ...shapematch(),
-            ...update_vel()
-        ])
+            gpu.computePass({ pipe:gpu.computePipe({ shader, entryPoint:'predict', binds:['pbuf','mbuf','uni'] }),
+                              dispatch:pd, binds:{ pbuf, mbuf, uni } }),
+            gpu.timestamp('predict')
+        ]
+        
+        let cntsort_cnt = gpu.computePipe({ shader, entryPoint:'cntsort_cnt', binds:['pbuf','cnts_atomic','uni']})
+        let prefsum_down = gpu.computePipe({ shader, entryPoint:'prefsum_down', binds:['cnts','work']})
+        let prefsum_up = gpu.computePipe({ shader, entryPoint:'prefsum_up', binds:['cnts','work']})
+        let cntsort_sort = gpu.computePipe({ shader, entryPoint:'cntsort_sort', binds:['pbuf','cnts_atomic','sorted']})
+        let find_collisions = gpu.computePipe({ shader, entryPoint:'find_collisions', binds:['pbuf','cnts','sorted','uni']})
+        let collide = gpu.computePipe({ shader, entryPoint: 'collide', binds:['pbuf','mbuf','uni']})
+        let update_pos = gpu.computePipe({ shader, entryPoint:'update_pos', binds:['pbuf'] })
+        cmds.push(
+            gpu.clearBuffer(cnts, 0, cnts.size),
+            gpu.computePass({ pipe:cntsort_cnt, dispatch:pd, binds:{ pbuf, cnts_atomic:cnts, uni }}),
+            gpu.timestamp('cntsort_cnt'),
+            gpu.computePass({ pipe:prefsum_down, dispatch:threads**2, binds:{ cnts, work:work1 }}),
+            gpu.computePass({ pipe:prefsum_down, dispatch:threads, binds:{ cnts:work1, work:work2 }}),
+            gpu.computePass({ pipe:prefsum_down, dispatch:1, binds:{ cnts:work2, work:work3 }}),
+            gpu.computePass({ pipe:prefsum_up, dispatch:threads - 1, binds:{ cnts:work1, work:work2 }}),
+            gpu.computePass({ pipe:prefsum_up, dispatch:threads**2 - 1, binds:{ cnts, work:work1 }}),
+            gpu.timestamp('prefsum'),
+            gpu.computePass({ pipe:cntsort_sort, dispatch:pd, binds:{ pbuf, cnts_atomic:cnts, sorted }}),
+            gpu.timestamp('cntsort_sort'),
+            gpu.computePass({ pipe:find_collisions, dispatch:pd, binds:{ pbuf, cnts, sorted, uni }}),
+            gpu.timestamp('find collisions'),
+            gpu.computePass({ pipe:collide, dispatch:pd, binds:{ pbuf, mbuf, uni } }),
+            gpu.timestamp('collide'),
+            gpu.computePass({ pipe:update_pos, dispatch:pd, binds:{ pbuf }}),
+            gpu.timestamp('update pos')
+        )
+        
+        cmds.push(...groups.map(g =>
+            gpu.computePass({ pipe:gpu.computePipe({ shader, entryPoint:'surfmatch', binds:['pbuf','mbuf','uni','group']}),
+                              dispatch:ceil(g.data.length/gpu.threads), binds:{ pbuf, mbuf, uni, group:g }})))
+        cmds.push(gpu.timestamp('surface match'))
+
+        cmds.push(
+            gpu.computePass({ pipe:gpu.computePipe({ shader, entryPoint:'update_vel', binds:['pbuf','mbuf','uni'] }),
+                              dispatch:pd, binds:{ pbuf, mbuf, uni }}),
+            gpu.timestamp('update vel')
+        )       
+
+        let mbufs = []
+        for (let [i,m] of enumerate(meshes)) {
+            let n = m.pf - m.pi
+            if (n <= 0) continue
+            mbufs.push({
+                pavg: gpu.buf({ label:'pavg', type:v3arr, size:v3arr.stride*n, usage:'STORAGE' }),
+                vavg: gpu.buf({ label:'vavg', type:v3arr, size:v3arr.stride*n, usage:'STORAGE' }),
+                lavg: gpu.buf({ label:'lavg', type:v3arr, size:m3arr.stride*n, usage:'STORAGE' }),
+                iavg: gpu.buf({ label:'iavg', type:m3arr, size:m3arr.stride*n, usage:'STORAGE' }),
+                mbuf: gpu.offset(bufs.mbuf, Meshes.stride * i)
+            })
+        }
+        let avgs_prep = gpu.computePipe({ shader, entryPoint:'avgs_prep', binds:['mbuf','pbuf','pavg','vavg','lavg','iavg']})
+        let avgs_calc = gpu.computePipe({ shader, entryPoint:'avgs_calc', binds:['mbuf','pavg','vavg','lavg','iavg']})
+        
+        const meshavgs = (i) => {
+            let n = meshes[i].pf - meshes[i].pi
+            if (n <= 0) return []
+            let dp1 = ceil(n / threads), dp2 = ceil(dp1 / threads)
+            cmds.push(gpu.computePass({ pipe:avgs_prep, dispatch:dp1, binds:{ pbuf, ...mbufs[i] }}))
+            cmds.push(gpu.computePass({ pipe:avgs_calc, dispatch:dp1, binds:mbufs[i] }))
+            if (dp1 > 1) {
+                cmds.push(gpu.computePass({ pipe:avgs_calc, dispatch:dp2, binds:mbufs[i] }))
+                if (dp2 > 1) cmds.push(gpu.computePass({ pipe:avgs_calc, dispatch:1, binds:mbufs[i]}))
+            }
+        }
+
+        for (const i of range(meshes.length)) meshavgs(i)
+        for (const i of range(meshes.length)) meshavgs(i)
+        
+        cmds.push(gpu.timestamp('mesh avgs'))
+         
+        const batch = gpu.encode(cmds)
 
         return {
             stats: async () => {
@@ -506,10 +436,9 @@ export async function Sim(width, height, ctx) {
                     batch.execute()
                     frames++
                     steps++
-
-                    [pbuf,mbuf].forEach(b => gpu.read(b).then(d => { window[b.label] = new b.type(d) }));
-                    
-
+                    /*[mbuf].forEach(b => gpu.read(b).then(d => {
+                        window[b.label] = new b.type(d)
+                      }))*/
                 }
                 tlast = clock()
                 fwdstep = false
@@ -577,41 +506,42 @@ export async function Sim(width, height, ctx) {
 
             const draws = []
             if (render.ground) {
-                const gndPipe = gpu.renderPipe({ shader, entry:'ground', cullMode:'none', binds:['uni','lbuf'], topology:'triangle-strip' })
-                draws.push(gpu.draw({ pipe:gndPipe, dispatch:8, binds:{ uni, lbuf }}))
+                let pipe = gpu.renderPipe({ shader, entry:'ground', cullMode:'none',
+                                            binds:['uni','lbuf'], topology:'triangle-strip' })
+                draws.push(gpu.draw({ pipe, dispatch:8, binds:{ uni, lbuf }}))
             }
 
             if (tris.length > 0) {
-                const surfPipe = gpu.renderPipe({ shader, entry:'surface', binds:['mbuf', 'uni', 'lbuf', 'tex', 'samp'],
+                let pipe = gpu.renderPipe({ shader, entry:'surface', binds:['mbuf', 'uni', 'lbuf', 'tex', 'samp'],
                     vertBufs: [{ buf:tribuf, arrayStride:TriVert.size,
                                  attributes: [{ shaderLocation:0, offset:TriVert.pos.off, format:'float32x3' },
                                               { shaderLocation:1, offset:TriVert.norm.off, format:'float32x3' },
                                               { shaderLocation:2, offset:TriVert.mesh.off, format:'uint32' },
                                               { shaderLocation:3, offset:TriVert.uv.off, format:'float32x2' }]}]})
-                draws.push(gpu.draw({ pipe:surfPipe, dispatch:tris.length*3, binds:{ mbuf, uni, lbuf, tex, samp }}))
+                draws.push(gpu.draw({ pipe, dispatch:tris.length*3, binds:{ mbuf, uni, lbuf, tex, samp }}))
             }
 
 
             if (render.particles && particles.length > 0) {
-                const partPipe = gpu.renderPipe({ shader, entry:'particle', binds:['mbuf', 'uni', 'lbuf'], topology:'triangle-list',
+                let pipe = gpu.renderPipe({ shader, entry:'particle', binds:['mbuf','uni','lbuf'], topology:'triangle-list',
                     vertBufs: [{ buf:pbuf, arrayStride:Particles.stride, stepMode: 'instance',
                                  attributes: [{ shaderLocation:0, offset:Particle.pos.off, format:'float32x3' },
                                               { shaderLocation:1, offset:Particle.mesh.off, format:'uint32' }]}] })
-                draws.push(gpu.draw({ pipe:partPipe, dispatch:[3, particles.length], binds:{ mbuf, uni, lbuf }}))
+                draws.push(gpu.draw({ pipe, dispatch:[3, particles.length], binds:{ mbuf, uni, lbuf }}))
             }
 
             if (render.normals) {
-                const normPipe = gpu.renderPipe({ shader, entry:'vnormals', binds: ['uni'], topology: 'line-list',
+                let pipe = gpu.renderPipe({ shader, entry:'vnormals', binds: ['uni'], topology: 'line-list',
                     vertBufs: [{ buf:tribuf, arrayStride:TriVert.size, stepMode: 'instance',
                     attributes: [{ shaderLocation:0, offset:TriVert.pos.off, format:'float32x3' },
                                  { shaderLocation:1, offset:TriVert.norm.off, format:'float32x3' }]}]})
-                draws.push(gpu.draw({ pipe:normPipe, dispatch:[2, tris.length*3], binds:{ uni }}))
+                draws.push(gpu.draw({ pipe, dispatch:[2, tris.length*3], binds:{ uni }}))
             }
 
-
-            const lightPipe = gpu.renderPipe({ shader, entry:'lights', binds: ['uni','lbuf'], topology: 'triangle-list',
-                                               atc:false, depthWriteEnabled:false })
-            draws.push(gpu.draw({ pipe:lightPipe, dispatch:[3, lights.length], binds: { uni, lbuf }}))
+            
+            let pipe = gpu.renderPipe({ shader, entry:'lights', binds: ['uni','lbuf'], topology: 'triangle-list',
+                                        atc:false, depthWriteEnabled:false })
+            draws.push(gpu.draw({ pipe, dispatch:[3, lights.length], binds: { uni, lbuf }}))
             cmds.push(gpu.renderPass(draws))
             cmds.push(gpu.timestamp('draws'))
 
@@ -714,7 +644,6 @@ export async function Sim(width, height, ctx) {
 
         let hitdists = []
         for (const [i, p] of enumerate(particles)) {
-            if (meshes[p.mesh].inactive == 1) continue
             let co = render.cam_pos.sub(p.pos)
             let b = ray.dot(co)
             let discrim = b*b - co.dot(co) + rsq
