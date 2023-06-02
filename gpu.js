@@ -621,6 +621,13 @@ export const M3 = GPU.array({
 })
 
 export const M3js = class extends Array {
+    mulc(c) {
+        let A = M3js.of([0,0,0],[0,0,0],[0,0,0])
+        for (let i of range(3))
+            for (let j of range(3))
+                A[i][j] = this[i][j] * c
+        return A
+    }
     add(B) {
         let A = M3js.of([0,0,0],[0,0,0],[0,0,0])
         for (let i of range(3))
@@ -640,6 +647,7 @@ export const M3js = class extends Array {
                 inv[i][j] /= det
         return inv
     }
+        
 }
 
 export const m3 = (...args) => M3.of(...args)

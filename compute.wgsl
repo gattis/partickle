@@ -248,6 +248,7 @@ fn surfmatch(@builtin(global_invocation_id) gid:vec3<u32>) {
     var n = pstart.nring;
     var pids = pstart.rings;
     let Qinv = pstart.qinv;
+    let s = pstart.s;
     let c0 = pstart.c0;
     var c = v3(0);
     var pos:array<v3,64>;
@@ -265,11 +266,11 @@ fn surfmatch(@builtin(global_invocation_id) gid:vec3<u32>) {
         let r0 = pos0[i] - c0;
         P += m3(r*r0.x, r*r0.y, r*r0.z);
     }
-    var F = P * Qinv;
+    var F = s * (P * Qinv);
     var C = sqrt(dot(F[0],F[0]) + dot(F[1],F[1]) + dot(F[2],F[2]));
     if (C == 0) { return; }
     
-    var G = 1.0/C * F * transpose(Qinv);
+    var G = s/C * (F * transpose(Qinv));
     var walpha = stiff / uni.dt / uni.dt;
     for (var i = 0u; i < n; i++) {
         let grad = G * (pos0[i] - c0);
@@ -290,10 +291,10 @@ fn surfmatch(@builtin(global_invocation_id) gid:vec3<u32>) {
         let r0 = pos0[i] - c0;
         P += m3(r*r0.x, r*r0.y, r*r0.z);
     }
-    F = P * Qinv;
+    F = s * (P * Qinv);
     C = determinant(F) - 1.0;
 
-    G = m3(cross(F[1], F[2]), cross(F[2], F[0]), cross(F[0], F[1])) * transpose(Qinv);
+    G = s * (m3(cross(F[1],F[2]),cross(F[2],F[0]),cross(F[0],F[1])) * transpose(Qinv));
     walpha = 0.0;
     for (var i = 0u; i < n; i++) {
         let grad = G * (pos0[i] - c0);
@@ -314,7 +315,7 @@ fn surfmatch(@builtin(global_invocation_id) gid:vec3<u32>) {
         let r0 = pos0[i] - c0;
         P += m3(r*r0.x, r*r0.y, r*r0.z);
     }
-    F = P * Qinv;
+    F = s * (P * Qinv);
 
     for (var i = 0u; i < n; i++) {
         let pid = pids[i];

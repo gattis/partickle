@@ -100,8 +100,9 @@ export const Particle = GPU.struct({
         ['nedges', u32],
         ['norm', V3],
         ['nring',u32],        
-        ['qinv', M3],
         ['c0',V3],
+        ['s',f32],
+        ['qinv', M3],
         ['edges', GPU.array({ type:u32, length:MAXEDGES })],
         ['nn', GPU.array({ type:u32, length:MAXNN })],
         ['rings', GPU.array({ type:u32, length:MAXRING })]
@@ -217,15 +218,20 @@ export async function Sim(width, height, ctx) {
             for (let vadj of adj)
                 c = [c[0] + vadj.pos.x, c[1] + vadj.pos.y, c[2] + vadj.pos.z]
             c = c.map(val => val / adj.length)
-            let q = M3js.of([0,0,0],[0,0,0],[0,0,0])
+            p.c0 = v3(...c)
+            
+            let Q = M3js.of([0,0,0],[0,0,0],[0,0,0])
             for (let vadj of adj) {
                 let rx = vadj.pos.x - c[0], ry = vadj.pos.y - c[1], rz = vadj.pos.z - c[2]
-                q = q.add([[rx*rx, rx*ry, rx*rz], [ry*rx, ry*ry, ry*rz], [rz*rx, rz*ry, rz*rz]])
+                Q = Q.add([[rx*rx, rx*ry, rx*rz], [ry*rx, ry*ry, ry*rz], [rz*rx, rz*ry, rz*rz]])
                 p.rings[p.nring++] = vadj.id + mesh.pi
             }
-            p.c0 = v3(...c)
-            p.qinv = M3.of(q.invert())
 
+            let s = 1./max(...Q[0], ...Q[1], ...Q[2])
+            let Qs = Q.mulc(s)
+            p.qinv = M3.of(Qs.invert())
+            p.s = s
+            
             adj = vert.ringn(4)
             let group = null
             for (let i = 0; i < groups.length && !group; i++)
