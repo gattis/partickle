@@ -208,7 +208,6 @@ export async function Sim(width, height, ctx) {
         let vol = abs(g.volume())
         let area = g.surfarea()
         let thickness = vol / area
-        dbg({vol,area,thickness})
         
         for (let vert of g.verts) {
             let p = Particle.alloc()
@@ -230,7 +229,6 @@ export async function Sim(width, height, ctx) {
             for (let tri of adj.tris)
                 sa += tri.area()
             p.ringvol = sa * thickness
-            dbg({ntri:adj.tris.length, nvert:adj.verts.length, ringvol:p.ringvol})
             
             let Q = M3js.of([0,0,0],[0,0,0],[0,0,0])
             for (let vadj of adj.verts) {
@@ -455,7 +453,7 @@ export async function Sim(width, height, ctx) {
                     steps++
                     
                     //gpu.read(pbuf).then(d => { window.ps = new pbuf.type(d) })
-                    gpu.read(dbuf).then(d => { window.dbuf = new dbuf.type(d) })
+                    //gpu.read(dbuf).then(d => { window.dbuf = new dbuf.type(d) })
 
                 }
                 tlast = clock()
