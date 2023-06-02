@@ -1,4 +1,4 @@
-const { Sim, render, phys, sampleMesh, loadWavefront, loadBitmap } = await import('./sim.js')
+const { Sim, render, phys, loadWavefront, loadBitmap } = await import('./sim.js')
 window.render = render
 window.phys = phys
 const doc = document
@@ -240,13 +240,6 @@ class EditorTable extends HTMLDivElement {
                 return edit
             })
             const row = html('tr',{},[idcol, ...editcols, delcol])
-            if (this.name == 'meshes')
-                row.append(html('button',{},'sample').on('click', () => {
-                    dbg('sample click')
-                    transact(db.storeNames, 'readwrite', async x => {
-                        await sampleMesh(id, 2*phys.r, x)
-                    })
-                }))
             return row
 
         }))

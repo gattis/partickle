@@ -32,14 +32,14 @@ fn predict(@builtin(global_invocation_id) gid:vec3<u32>) {
         let ri = p.pos - m.ci;
 
 
-        p.vel += uni.airdamp * (m.vi + cross(m.wi, ri) - p.vel);
+        p.vel += uni.damp * (m.vi + cross(m.wi, ri) - p.vel);
 
 
-        /*let vel = p.vel * (1 - 0.01*pow(uni.airdamp, 4.0));
+        /*let vel = p.vel * (1 - 0.01*pow(uni.damp, 4.0));
         let velmag = length(vel);
         let veldir = select(vel/velmag, v3(0), velmag == 0);
         p.vel = softmin(velmag, 50, 1.0) * veldir;*/
-        //p.vel += uni.airdamp * (m.vi - p.vel);
+        //p.vel += uni.damp * (m.vi - p.vel);
 
         p.vel.z +=  -uni.gravity * m.gravity * uni.dt;
     } else {
@@ -233,90 +233,59 @@ fn invert(m:m3) -> m3 {
     return inv;
 }
 
-
 // Derived from "Physically Based Shape Matching" (Muller et al.)
 @compute @workgroup_size(${threads})
 fn surfmatch(@builtin(global_invocation_id) gid:vec3<u32>) {
 
     if (gid.x >= arrayLength(&group)) { return; }
-    let pid0 = group[gid.x];
-    let p0 = pbuf[pid0];
-    let m = mbuf[p0.mesh];
+    let pidstart = group[gid.x];
+    let pstart = pbuf[pidstart];
+    let m = mbuf[pstart.mesh];
     var stiff = uni.surf_stiff * m.surf_stiff;
     if (stiff == 0) { return; }
-    stiff = 1000.0 / (1.0 + 999.0*pow(stiff, 0.2)) - 0.9999;
-    
-    var pids:array<u32,64>;
+    stiff = 1.0/stiff - 1.0;
+
+    var n = pstart.nring;
+    var pids = pstart.rings;
+    let Qinv = pstart.qinv;
+    let c0 = pstart.c0;
+    var c = v3(0);
     var pos:array<v3,64>;
     var pos0:array<v3,64>;
-    pids[0] = pid0;
-    pos[0] = p0.pos;
-    pos0[0] = p0.rest_pos;
-    
-    var n = 1;
-    var queue = 1;
-    var c = p0.pos;
-    var c0 = p0.rest_pos;
-    for (var ring = 0; ring < 3; ring++) {
-        let qstart = n - queue;
-        let qstop = n;
-        queue = 0;
-        for (var i = qstart; i < qstop; i++) {
-            let p = pbuf[pids[i]];
-            for (var j = 0u; j < p.nedges; j++) {
-                let link_pid = p.edges[j];
-                var found = false;
-                for (var k = 0; k < n; k++) {
-                    if (pids[k] == link_pid) {
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found) {
-                    pids[n] = link_pid;
-                    pos[n] = pbuf[link_pid].pos;
-                    pos0[n] = pbuf[link_pid].rest_pos;
-                    c += pos[n];
-                    c0 += pos0[n];
-                    n++;
-                }
-            }
-        }
+    for (var i = 0u; i < n; i++) {
+        pos[i] = pbuf[pids[i]].pos;
+        pos0[i] = pbuf[pids[i]].rest_pos;
+        c += pos[i];
     }
-    
     c /= f32(n);
-    c0 /= f32(n);   
-        
+    
     var P = m3(0,0,0,0,0,0,0,0,0);
-    var Q = m3(0,0,0,0,0,0,0,0,0);
-    for (var i = 0; i < n; i++) {
+    for (var i = 0u; i < n; i++) {
         let r = pos[i] - c;
         let r0 = pos0[i] - c0;
         P += m3(r*r0.x, r*r0.y, r*r0.z);
-        Q += m3(r0*r0.x, r0*r0.y, r0*r0.z);
     }
-    let Qinv = invert(Q);
     var F = P * Qinv;
     var C = sqrt(dot(F[0],F[0]) + dot(F[1],F[1]) + dot(F[2],F[2]));
     if (C == 0) { return; }
     
     var G = 1.0/C * F * transpose(Qinv);
     var walpha = stiff / uni.dt / uni.dt;
-    for (var i = 0; i < n; i++) {
+    for (var i = 0u; i < n; i++) {
         let grad = G * (pos0[i] - c0);
         walpha += dot(grad,grad);
     }
 
     c = v3(0);
     var lambda = select(-C / walpha, 0.0, walpha == 0.0);
-    for (var i = 0; i < n; i++) {
+    for (var i = 0u; i < n; i++) {
         pos[i] += lambda * (G * (pos0[i] - c0));
         c += pos[i];
     }
     c /= f32(n);
 
     P = m3(0,0,0,0,0,0,0,0,0);
-    for (var i = 0; i < n; i++) {
+    for (var i = 0u; i < n; i++) {
         let r = pos[i] - c;
         let r0 = pos0[i] - c0;
         P += m3(r*r0.x, r*r0.y, r*r0.z);
@@ -326,28 +295,28 @@ fn surfmatch(@builtin(global_invocation_id) gid:vec3<u32>) {
 
     G = m3(cross(F[1], F[2]), cross(F[2], F[0]), cross(F[0], F[1])) * transpose(Qinv);
     walpha = 0.0;
-    for (var i = 0; i < n; i++) {
+    for (var i = 0u; i < n; i++) {
         let grad = G * (pos0[i] - c0);
         walpha += dot(grad,grad);
     }
 
     c = v3(0);
     lambda = select(-C / walpha, 0.0, walpha == 0.0);
-    for (var i = 0; i < n; i++) {
+    for (var i = 0u; i < n; i++) {
         pos[i] += lambda * (G * (pos0[i] - c0));
         c += pos[i];
     }
     c /= f32(n);
 
     P = m3(0,0,0,0,0,0,0,0,0);
-    for (var i = 0; i < n; i++) {
+    for (var i = 0u; i < n; i++) {
         let r = pos[i] - c;
         let r0 = pos0[i] - c0;
         P += m3(r*r0.x, r*r0.y, r*r0.z);
     }
     F = P * Qinv;
 
-    for (var i = 0; i < n; i++) {
+    for (var i = 0u; i < n; i++) {
         let pid = pids[i];
         if (pbuf[pid].fixed == 0) {
             pbuf[pid].pos = c + F * (pos0[i] - c0);

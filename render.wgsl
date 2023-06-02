@@ -11,8 +11,6 @@ const cube = array<v3,14>(v3(-1,1,1), v3(1,1,1), v3(-1,-1,1), v3(1,-1,1), v3(1,-
                           v3(1,1,1), v3(1,1,-1), v3(-1,1,1), v3(-1,1,-1), v3(-1,-1,1),
                           v3(-1,-1,-1), v3(1,-1,-1), v3(-1,1,-1), v3(1,1,-1));
 
-
-
 fn frag(worldpos:v3, norm:v3, color:v4) -> v4 {
     var mix = color.rgb * ambient;
     for (var i = 0; i < ${numLights}; i += 1) {
@@ -21,7 +19,6 @@ fn frag(worldpos:v3, norm:v3, color:v4) -> v4 {
         let distance = length(lightdir);
         let lightmag = light.color * light.power / (1.0 + distance);
         lightdir = normalize(lightdir);
-
 
         let lambertian = max(dot(lightdir, norm), 0.0);
         var specular = 0.0f;
@@ -33,9 +30,7 @@ fn frag(worldpos:v3, norm:v3, color:v4) -> v4 {
         }
         mix += lightmag * (color.rgb*lambertian + specular);
     }
-
     return v4(clamp(mix,v3(0),v3(1)), color.a);
-
 }
 
 struct SurfOut {
@@ -47,9 +42,9 @@ struct SurfOut {
 };
 
 @vertex fn surface_vert(@location(0) pos:v3,
-                     @location(1) norm:v3,
-                     @location(2) mesh:u32,
-                     @location(3) uv:v2) -> SurfOut {
+                        @location(1) norm:v3,
+                        @location(2) mesh:u32,
+                        @location(3) uv:v2) -> SurfOut {
     var out:SurfOut;
     out.worldpos = pos;
     out.position = uni.mvp * v4(out.worldpos, 1.0);
@@ -72,7 +67,6 @@ struct FragDepth {
     @location(0) color: v4,
     @builtin(frag_depth) depth:f32
 };
-
 
 @fragment fn surface_frag(input:SurfIn) -> @location(0) v4 {
     let m = mbuf[input.mesh];
@@ -115,7 +109,6 @@ fn impostor(vertidx:u32, pos:v3, r:f32) -> Impostor {
     return Impostor(r * (-sq3*right - up), v2(-sq3, -1));
 }
 
-
 struct PartIO {
     @builtin(position) position:v4,
     @location(0) partpos:v3,
@@ -126,10 +119,9 @@ struct PartIO {
 };
 
 @vertex fn particle_vert(@builtin(vertex_index) vertidx:u32,
-                     @builtin(instance_index) instidx:u32,
-                     @location(0) partpos:v3,
-                     @location(1) mesh:u32) -> PartIO {
-
+                         @builtin(instance_index) instidx:u32,
+                         @location(0) partpos:v3,
+                         @location(1) mesh:u32) -> PartIO {
     var out:PartIO;
     let imp = impostor(vertidx, partpos, uni.r);
     out.partpos = partpos;
@@ -139,7 +131,6 @@ struct PartIO {
     out.selected = select(0u, 1u, i32(instidx) == uni.selection);
     return out;
 }
-
 
 struct LightIO {
     @builtin(position) position:v4,
@@ -151,7 +142,7 @@ struct LightIO {
 };
 
 @vertex fn lights_vert(@builtin(vertex_index) vertidx:u32,
-                      @builtin(instance_index) instidx:u32) -> LightIO {
+                       @builtin(instance_index) instidx:u32) -> LightIO {
     let l = lbuf[instidx];
     var out:LightIO;
     out.lightpos = l.pos;
@@ -163,7 +154,6 @@ struct LightIO {
     return out;
 }
 
-
 struct RayTrace {
     t:f32,
     rd:v3,
@@ -171,7 +161,6 @@ struct RayTrace {
     normal:v3,
     clip_depth: f32
 };
-
 
 fn trace_sphere(vertpos:v3, center:v3, r:f32) -> RayTrace {
     var trace:RayTrace;
@@ -206,13 +195,11 @@ fn trace_sphere(vertpos:v3, center:v3, r:f32) -> RayTrace {
     return FragDepth(frag(trace.hit, trace.normal, v4(rgb,1.0f)), trace.clip_depth);
 }
 
-
 @fragment fn lights_frag(input:LightIO) -> FragDepth {
     let trace = trace_sphere(input.vertpos, input.lightpos, input.size);
     var mag = .01/(1-dot(-trace.normal, trace.rd));
     return FragDepth(v4(input.color*mag,mag), trace.clip_depth);
 }
-
 
 struct GndIO {
     @builtin(position) position:v4,
@@ -222,7 +209,6 @@ struct GndIO {
 const rgnd = 1000.0f;
 const gnd_color = v4(1, 1, 1, 1);
 
-
 @vertex fn ground_vert(@builtin(vertex_index) vertidx:u32) -> GndIO {
     var out:GndIO;
     let vpos = cube[vertidx];
@@ -230,7 +216,6 @@ const gnd_color = v4(1, 1, 1, 1);
     out.position = uni.mvp * v4(rgnd * (vpos - v3(0,0,1)), 1);
     return out;
 }
-
 
 fn checkers(xy:v2) -> f32 {
     return f32(abs(i32(floor(xy.x)) + i32(floor(xy.y))) % 2);
@@ -241,6 +226,5 @@ fn checkers(xy:v2) -> f32 {
     let pattern = .2*checkers(trace.hit.xy/.1) + .3*checkers(trace.hit.xy) + 0.1;
     let fade = 10/(10 + length(trace.hit.xy));
     var color = v4(v3(clamp(pattern,.2,.8)*fade),1);
-
     return FragDepth(frag(trace.hit, trace.normal, color), trace.clip_depth);
 }

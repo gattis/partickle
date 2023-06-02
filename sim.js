@@ -5,6 +5,7 @@ Object.assign(globalThis, util, gpu, geo)
 
 const MAXNN = 32
 const MAXEDGES = 18
+const MAXRING = 64
 
 const particleColors = [v4(.3,.6,.8,1), v4(.99,.44,.57, 1), v4(.9, .48, .48, 1)]
 const LIGHTS = [
@@ -27,13 +28,11 @@ phys.addNum('speed', 1, 0.05, 5, .01)
 phys.addNum('gravity', 9.8, -5, 20, 0.1)
 phys.addNum('surf_stiff', .5, 0, 1, 0.001)
 phys.addNum('friction', 0.1, 0, 1, .01)
-phys.addNum('airdamp', 0.5, 0, 1, .01)
+phys.addNum('damp', 0.5, 0, 1, .01)
 phys.addNum('collidamp', .1, 0, 1, .001)
 phys.addNum('xspace', 100, 0, 100, 0.1)
 phys.addNum('yspace', 100, 0, 100, 0.1)
 phys.addNum('zspace', 100, 0, 100, 0.1)
-
-
 
 export const render = new Preferences('render')
 render.addBool('particles', true)
@@ -64,13 +63,11 @@ render.hidden['cam_pos'] = true
 render.hidden['cam_ud'] = true
 render.hidden['cam_lr'] = true
 
-
 const clock = () => phys.speed*performance.now()/1000
 
 export const Mesh = GPU.struct({
     name:'Mesh',
     fields:[
-        ['c0', V3],
         ['ci', V3],
         ['vi', V3],
         ['wi', V3],
@@ -102,8 +99,12 @@ export const Particle = GPU.struct({
         ['vel', V3],
         ['nedges', u32],
         ['norm', V3],
+        ['nring',u32],        
+        ['qinv', M3],
+        ['c0',V3],
         ['edges', GPU.array({ type:u32, length:MAXEDGES })],
         ['nn', GPU.array({ type:u32, length:MAXNN })],
+        ['rings', GPU.array({ type:u32, length:MAXRING })]
     ]
 })
 
@@ -184,8 +185,7 @@ export async function Sim(width, height, ctx) {
     if (meshData.length == 0)
 	meshData = [[-1,{...MESH_DEFAULTS}]]
         
-    let meshes = [], particles = [], tris = []
-   
+    let meshes = [], particles = [], tris = [], groups = [new Set()]
     for (let [midx,[mid,mdata]] of enumerate(meshData)) {
         let mesh = Mesh.alloc()
         mesh.color = v4(...mdata.color)
@@ -197,25 +197,45 @@ export async function Sim(width, height, ctx) {
         mesh.tex = bitmapIds[mdata.bitmapId]
         mesh.pi = particles.length
         mesh.fluid = mdata['fluid']
-        mesh.c0 = v3(0);
-
-        let g = await db.transact(db.storeNames, 'readwrite', async tx => await tx.meshGeometry(mid))
+        let { scale, offset } = mdata
+        let g = await db.transact(db.storeNames, 'readwrite', async tx => await tx.meshGeometry(mid,scale||1,offset||0))
         if (g.verts.length == 0)
-            g.verts = [{ pos:v3(0,0,1), edges:[] }]
+            g.verts = [new GeoVert(0, v3(0,0,1))]
 
+        
         for (let vert of g.verts) {
             let p = Particle.alloc()
-            p.pos = p.prev_pos = p.rest_pos = vert.pos.mul(mdata.scale || 1).add(mdata.offset || 0)
+            p.pos = p.prev_pos = p.rest_pos = vert.pos
             for (let edge of vert.edges)
                 p.edges[p.nedges++] = mesh.pi + edge.vert.id
-            mesh.c0 = mesh.c0.add(p.pos)
             p.mesh = midx
             p.fixed = mdata.fixed
             particles.push(p)
+            
+            let adj = vert.ringn(3)
+            let c = [0,0,0]
+            for (let vadj of adj)
+                c = [c[0] + vadj.pos.x, c[1] + vadj.pos.y, c[2] + vadj.pos.z]
+            c = c.map(val => val / adj.length)
+            let q = M3js.of([0,0,0],[0,0,0],[0,0,0])
+            for (let vadj of adj) {
+                let rx = vadj.pos.x - c[0], ry = vadj.pos.y - c[1], rz = vadj.pos.z - c[2]
+                q = q.add([[rx*rx, rx*ry, rx*rz], [ry*rx, ry*ry, ry*rz], [rz*rx, rz*ry, rz*rz]])
+                p.rings[p.nring++] = vadj.id + mesh.pi
+            }
+            p.c0 = v3(...c)
+            p.qinv = M3.of(q.invert())
+
+            adj = vert.ringn(4)
+            let group = null
+            for (let i = 0; i < groups.length && !group; i++)
+                if (!adj.some(vadj => groups[i].has(vadj.id + mesh.pi)))
+                    group = groups[i]
+            if (group) group.add(vert.id + mesh.pi)
+            else groups.push(new Set([vert.id + mesh.pi]))
         }
-        mesh.pf = particles.length - mesh.pi
-        mesh.c0 = mesh.ci = mesh.c0.divc(mesh.pf - mesh.pi)
         
+        mesh.pf = particles.length - mesh.pi
         for (let face of g.faces) {
             let nverts = face.verts.length
             let ftris = [...range(face.verts.length-2)].map(i => [0,i+1,i+2])
@@ -224,13 +244,16 @@ export async function Sim(width, height, ctx) {
                 tris.push(Triangle.of(...tvs))
             }
         }
-
         meshes.push(mesh)
     }
-
+    
+    if (groups.map(group => group.size).sum() != particles.length)
+        throw new Error('bad groups')
+    
     meshes = Meshes.of(meshes)
     particles = Particles.of(particles)
     tris = Triangles.of(tris)
+    groups = groups.map(group => u32array.of([...group]))
     
     console.timeEnd('db load')
 
@@ -238,32 +261,6 @@ export async function Sim(width, height, ctx) {
     for (let p of particles)
         for (let i of range(p.nedges))
             longest = max(longest, p.pos.dist(particles[p.edges[i]].pos))
-
-    let groups = []
-    for (let pid of range(particles.length)) {
-        let q = [pid]
-        let visited = new Set(q)
-        for (let ring of range(4))
-            for (let qpos of range(q.length)) {
-                let rp = particles[q.shift()]
-                for (let epid of [...range(rp.nedges)].map(i => rp.edges[i]).filter(epid => !visited.has(epid))) {
-                    q.push(epid)
-                    visited.add(epid)
-                }
-            }
-        visited = [...visited]
-        let found = false
-        for (let group of groups)
-            if (!visited.some(vpid => group.has(vpid))) {
-                group.add(pid);
-                found = true
-                break
-            }
-        if (!found) groups.push(new Set([pid]))                
-    }
-    if (groups.map(group => group.size).sum() != particles.length)
-        throw new Error('bad groups')
-    groups = groups.map((group,i) => gpu.buf({ label: 'group'+i, data:u32array.of([...group]), usage:'STORAGE' }))
 
     const uniforms = Uniforms.alloc()
     uniforms.selection = uniforms.grabbing = -1
@@ -289,9 +286,8 @@ export async function Sim(width, height, ctx) {
 	gpu.buf({ label:'work3', type:GPU.array({ type:i32, length:1 }), usage:'STORAGE' }),
         gpu.buf({ label:'sorted', type:GPU.array({ type:u32, length:particles.length }), usage:'STORAGE' }),
         gpu.buf({ label:'lbuf', data:lights, usage:'UNIFORM|FRAGMENT|COPY_DST' }),
-        gpu.buf({ label:'dbuf', type:GPU.array({ type: f32, length:4096 }), usage:'STORAGE|COPY_SRC|COPY_DST' }),
+        gpu.buf({ label:'dbuf', type:GPU.array({ type: f32, length: 16384 }), usage:'STORAGE|COPY_SRC|COPY_DST' }),
     ].map(buf => [buf.label, buf]))
-
 
     const pd = ceil(particles.length/gpu.threads)
 
@@ -369,9 +365,12 @@ export async function Sim(width, height, ctx) {
             gpu.timestamp('update pos')
         )
         
-        cmds.push(...groups.map(g =>
-            gpu.computePass({ pipe:gpu.computePipe({ shader, entryPoint:'surfmatch', binds:['pbuf','mbuf','uni','group']}),
-                              dispatch:ceil(g.data.length/gpu.threads), binds:{ pbuf, mbuf, uni, group:g }})))
+        let pipe = gpu.computePipe({ shader, entryPoint:'surfmatch', binds:['pbuf','mbuf','uni','group','dbuf']})
+        for (let i of range(groups.length)) {
+            let group = gpu.buf({ label: 'group'+i, data:groups[i], usage:'STORAGE' })
+            let dispatch = ceil(groups[i].length / gpu.threads)
+            cmds.push(gpu.computePass({ pipe, dispatch, binds:{ pbuf, mbuf, uni, group, dbuf }}))
+        }
         cmds.push(gpu.timestamp('surface match'))
 
         cmds.push(
@@ -436,9 +435,10 @@ export async function Sim(width, height, ctx) {
                     batch.execute()
                     frames++
                     steps++
-                    /*[mbuf].forEach(b => gpu.read(b).then(d => {
-                        window[b.label] = new b.type(d)
-                      }))*/
+                    
+                    //gpu.read(pbuf).then(d => { window.ps = new pbuf.type(d) })
+                    //gpu.read(dbuf).then(d => { window.dbuf = new dbuf.type(d) })
+
                 }
                 tlast = clock()
                 fwdstep = false
@@ -579,8 +579,6 @@ export async function Sim(width, height, ctx) {
         }
     }
 
-
-
     const computer = await Computer()
     const renderer = await Renderer()
 
@@ -595,8 +593,6 @@ export async function Sim(width, height, ctx) {
         return v3(ray.x,ray.y,ray.z).normalized()
     }
 
-
-
     function resize(w, h) {
         width = w
         height = h
@@ -605,8 +601,7 @@ export async function Sim(width, height, ctx) {
 
     }
 
-
-     async function run() {
+    async function run() {
         while (gpu.alive) {
             const p = new Promise(resolve => requestAnimationFrame(resolve))
             const tstart = clock()

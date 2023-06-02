@@ -616,22 +616,31 @@ export const M3 = GPU.array({
         },
         toString: function() {
             return [this[0].toString(), this[1].toString(), this[2].toString()].join('\n')
-        },
-        invert: function() {
-            let p = M3.of(this)
-            let shifts = [[0,1,2],[1,2,0],[2,0,1]]
-            for (let [i,a,b] of shifts)
-                for (let [j,c,d] of shifts)
-                    this[i][j] = p[c][a]*p[d][b] - p[d][a]*p[c][b]
-            let det = p[0].dot(this.col(0))
-            let invdet = 1/det
-            for (const i of range(3))
-                for (const j of range(3))
-                    this[i][j] *= invdet
-            return det
         }
     }
 })
+
+export const M3js = class extends Array {
+    add(B) {
+        let A = M3js.of([0,0,0],[0,0,0],[0,0,0])
+        for (let i of range(3))
+            for (let j of range(3))
+                A[i][j] = this[i][j] + B[i][j]
+        return A
+    }
+    invert() {
+        let inv = M3js.of([0,0,0],[0,0,0],[0,0,0])
+        let shifts = [[0,1,2],[1,2,0],[2,0,1]]
+        for (let [i,a,b] of shifts)
+            for (let [j,c,d] of shifts)
+                inv[i][j] = this[c][a]*this[d][b] - this[d][a]*this[c][b]
+        let det = this[0][0]*inv[0][0] + this[0][1]*inv[1][0] + this[0][2]*inv[2][0]
+        for (let i of range(3))
+            for (let j of range(3))
+                inv[i][j] /= det
+        return inv
+    }
+}
 
 export const m3 = (...args) => M3.of(...args)
 

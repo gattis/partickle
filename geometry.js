@@ -49,18 +49,34 @@ class GeoDB extends IDBDatabase {
 
 }
     
-class GeoVert {
+export class GeoVert {
     constructor(id, pos) {
         Object.assign(this, {id, pos, emap:new Map(), edges:[]})
     }
+
     update_edges() {
         let { emap, edges } = this
         for (let edge = [...emap.values()][0]; edges.length < emap.size; edge = emap.get(edge.vert))
             edges.push(edge)
     }
+    
+    ringn(n) {
+        let q = [this]
+        let visited = new Set(q)
+        for (let ring of range(n))
+            for (let qpos of range(q.length)) {
+                let v = q.shift()
+                for (let edge of v.edges) {
+                    if (visited.has(edge.vert)) continue;
+                    q.push(edge.vert)
+                    visited.add(edge.vert)
+                }
+            }
+        return [...visited]
+    }
 }
     
-class GeoFace {
+export class GeoFace {
     constructor(id, verts, uvs) {
         for (let i of range(verts.length))
             verts[i].emap.set(verts[mod(i+1, verts.length)], new GeoEdge(verts[mod(i-1, verts.length)], this))
@@ -68,15 +84,15 @@ class GeoFace {
     }
 }
 
-class GeoEdge {
+export class GeoEdge {
     constructor(vert, face) {
         Object.assign(this, {vert, face})
     }
 }
 
-class GeoMesh {   
+export class GeoMesh {   
     constructor(verts, faces, uvs) {
-        verts = verts.map((v,id) => new GeoVert(id, v3(...v)))
+        verts = verts.map((v,id) => new GeoVert(id, v))
         faces = faces.map((vids,id) => new GeoFace(id, vids.map(vid => verts[vid]), uvs[id]))
         for (let vert of verts) vert.update_edges()
         Object.assign(this,{verts,faces})
@@ -123,7 +139,7 @@ class GeoTransact extends IDBTransaction {
         return data
     }
 
-    async meshGeometry(meshId) {
+    async meshGeometry(meshId,scale,offset) {
         let [vertData,faceData] = await Promise.all([
             this.query('verts', { index:'meshId', key:meshId }),
             this.query('faces', { index:'meshId', key:meshId }),
@@ -132,7 +148,7 @@ class GeoTransact extends IDBTransaction {
         let verts = []
         for (let [vidx,[vid,vert]] of enumerate(vertData)) {
             vmap[vid] = vidx
-            verts.push(vert.pos)
+            verts.push(v3(...vert.pos).mul(scale).add(offset))
         }
         let faces = [], uvs = []
         for (let [fid,face] of faceData) {
