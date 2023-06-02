@@ -5,6 +5,7 @@ Object.assign(globalThis, util, gpu, geo)
 
 const MAXNN = 32
 const MAXEDGES = 18
+const RINGITER = 2
 const MAXRING = 64
 
 const particleColors = [v4(.3,.6,.8,1), v4(.99,.44,.57, 1), v4(.9, .48, .48, 1)]
@@ -28,7 +29,7 @@ phys.addNum('speed', 1, 0.05, 5, .01)
 phys.addNum('gravity', 9.8, -5, 20, 0.1)
 phys.addNum('surf_stiff', .5, 0, 1, 0.001)
 phys.addNum('friction', 0.1, 0, 1, .01)
-phys.addNum('damp', 0.5, 0, 1, .01)
+phys.addNum('damp', 0.5, 0, 5, .01)
 phys.addNum('collidamp', .1, 0, 1, .001)
 phys.addNum('xspace', 100, 0, 100, 0.1)
 phys.addNum('yspace', 100, 0, 100, 0.1)
@@ -103,6 +104,7 @@ export const Particle = GPU.struct({
         ['c0',V3],
         ['s',f32],
         ['qinv', M3],
+        ['ringvol', f32],
         ['edges', GPU.array({ type:u32, length:MAXEDGES })],
         ['nn', GPU.array({ type:u32, length:MAXNN })],
         ['rings', GPU.array({ type:u32, length:MAXRING })]
@@ -186,7 +188,7 @@ export async function Sim(width, height, ctx) {
     if (meshData.length == 0)
 	meshData = [[-1,{...MESH_DEFAULTS}]]
         
-    let meshes = [], particles = [], tris = [], groups = [new Set()]
+    let meshes = [], particles = [], tris = [], groups = [], groups_exclude = []
     for (let [midx,[mid,mdata]] of enumerate(meshData)) {
         let mesh = Mesh.alloc()
         mesh.color = v4(...mdata.color)
@@ -203,6 +205,10 @@ export async function Sim(width, height, ctx) {
         if (g.verts.length == 0)
             g.verts = [new GeoVert(0, v3(0,0,1))]
 
+        let vol = abs(g.volume())
+        let area = g.surfarea()
+        let thickness = vol / area
+        dbg({vol,area,thickness})
         
         for (let vert of g.verts) {
             let p = Particle.alloc()
@@ -211,51 +217,57 @@ export async function Sim(width, height, ctx) {
                 p.edges[p.nedges++] = mesh.pi + edge.vert.id
             p.mesh = midx
             p.fixed = mdata.fixed
-            particles.push(p)
-            
-            let adj = vert.ringn(3)
+            particles.push(p)           
+
+            let adj = vert.ringn(RINGITER)
             let c = [0,0,0]
-            for (let vadj of adj)
+            for (let vadj of adj.verts)
                 c = [c[0] + vadj.pos.x, c[1] + vadj.pos.y, c[2] + vadj.pos.z]
-            c = c.map(val => val / adj.length)
+            c = c.map(val => val / adj.verts.length)
             p.c0 = v3(...c)
+
+            let sa = 0
+            for (let tri of adj.tris)
+                sa += tri.area()
+            p.ringvol = sa * thickness
+            dbg({ntri:adj.tris.length, nvert:adj.verts.length, ringvol:p.ringvol})
             
             let Q = M3js.of([0,0,0],[0,0,0],[0,0,0])
-            for (let vadj of adj) {
+            for (let vadj of adj.verts) {
                 let rx = vadj.pos.x - c[0], ry = vadj.pos.y - c[1], rz = vadj.pos.z - c[2]
                 Q = Q.add([[rx*rx, rx*ry, rx*rz], [ry*rx, ry*ry, ry*rz], [rz*rx, rz*ry, rz*rz]])
                 p.rings[p.nring++] = vadj.id + mesh.pi
             }
 
-            let s = 1./max(...Q[0], ...Q[1], ...Q[2])
+            let s = 1.0/(Q[0].sum() + Q[1].sum() + Q[2].sum())
             let Qs = Q.mulc(s)
             p.qinv = M3.of(Qs.invert())
             p.s = s
             
-            adj = vert.ringn(4)
-            let group = null
-            for (let i = 0; i < groups.length && !group; i++)
-                if (!adj.some(vadj => groups[i].has(vadj.id + mesh.pi)))
-                    group = groups[i]
-            if (group) group.add(vert.id + mesh.pi)
-            else groups.push(new Set([vert.id + mesh.pi]))
+            adj = vert.ringn(RINGITER+1)
+            let group = -1
+            for (let i = 0; i < groups.length && group == -1; i++)
+                if (!adj.verts.some(vadj => groups_exclude[i].has(vadj.id + mesh.pi)))
+                    group = i
+            if (group == -1) {
+                group = groups.length
+                groups.push([])
+                groups_exclude.push(new Set())                            
+            } 
+            groups[group].push(vert.id + mesh.pi)
+            for (let vadj of adj.verts)
+                groups_exclude[group].add(vadj.id + mesh.pi)           
+
         }
         
         mesh.pf = particles.length - mesh.pi
-        for (let face of g.faces) {
-            let nverts = face.verts.length
-            let ftris = [...range(face.verts.length-2)].map(i => [0,i+1,i+2])
-            for (let tri of ftris) {
-                let tvs = tri.map(i => TriVert.of(v4(0), face.verts[i].id + mesh.pi, v3(0), midx, v2(...face.uvs[i])))
-                tris.push(Triangle.of(...tvs))
-            }
+        for (let tri of g.tris) {
+            let tvs = tri.verts.map((v,i) => TriVert.of(v3(0), v.id + mesh.pi, v3(0), midx, v2(...tri.uvs[i])))
+            tris.push(Triangle.of(...tvs))
         }
         meshes.push(mesh)
     }
-    
-    if (groups.map(group => group.size).sum() != particles.length)
-        throw new Error('bad groups')
-    
+        
     meshes = Meshes.of(meshes)
     particles = Particles.of(particles)
     tris = Triangles.of(tris)
@@ -443,7 +455,7 @@ export async function Sim(width, height, ctx) {
                     steps++
                     
                     //gpu.read(pbuf).then(d => { window.ps = new pbuf.type(d) })
-                    //gpu.read(dbuf).then(d => { window.dbuf = new dbuf.type(d) })
+                    gpu.read(dbuf).then(d => { window.dbuf = new dbuf.type(d) })
 
                 }
                 tlast = clock()

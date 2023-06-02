@@ -61,42 +61,67 @@ export class GeoVert {
     }
     
     ringn(n) {
-        let q = [this]
-        let visited = new Set(q)
-        for (let ring of range(n))
-            for (let qpos of range(q.length)) {
-                let v = q.shift()
-                for (let edge of v.edges) {
-                    if (visited.has(edge.vert)) continue;
-                    q.push(edge.vert)
-                    visited.add(edge.vert)
+        let verts = [this]
+        let tris = []
+        let q = 1
+        for (let ring = 0; ring < n; ring++) {
+            let qstart = verts.length - q, qstop = verts.length
+            q = 0
+            for (let qpos = qstart; qpos < qstop; qpos += 1) {
+                for (let edge of verts[qpos].edges) {
+                    if (!tris.includes(edge.tri)) tris.push(edge.tri)
+                    if (verts.includes(edge.vert)) continue;
+                    verts.push(edge.vert)
+                    q += 1
                 }
             }
-        return [...visited]
+        }
+        return { verts,tris }
     }
 }
     
-export class GeoFace {
-    constructor(id, verts, uvs) {
+export class GeoTri {
+    constructor(id, verts, uvs) {        
         for (let i of range(verts.length))
             verts[i].emap.set(verts[mod(i+1, verts.length)], new GeoEdge(verts[mod(i-1, verts.length)], this))
         Object.assign(this, {id, verts, uvs, edges:[]})
     }
+
+    area() {
+        let ab = this.verts[1].pos.sub(this.verts[0].pos)
+        let ac = this.verts[2].pos.sub(this.verts[0].pos)
+        return ab.cross(ac).mag() / 2
+    }
 }
 
 export class GeoEdge {
-    constructor(vert, face) {
-        Object.assign(this, {vert, face})
+    constructor(vert, tri) {
+        Object.assign(this, {vert, tri})
     }
 }
 
 export class GeoMesh {   
     constructor(verts, faces, uvs) {
         verts = verts.map((v,id) => new GeoVert(id, v))
-        faces = faces.map((vids,id) => new GeoFace(id, vids.map(vid => verts[vid]), uvs[id]))
+        let tris = []
+        for (let [fid,vids] of enumerate(faces)) {
+            let fverts = vids.map(vid => verts[vid])
+            let uv = uvs[fid]
+            for (let i of range(fverts.length-2))
+                tris.push(new GeoTri(tris.length, [fverts[0], fverts[i+1], fverts[i+2]], [uv[0], uv[i+1], uv[i+2]]))
+        }
         for (let vert of verts) vert.update_edges()
-        Object.assign(this,{verts,faces})
+        Object.assign(this,{verts,tris})
     }
+
+    volume() {
+        return this.tris.map(tri => tri.verts[0].pos.cross(tri.verts[1].pos).dot(tri.verts[2].pos)).sum()
+    }
+
+    surfarea() {
+        return this.tris.map(tri => tri.area()).sum()
+    }
+    
 }
 
 class GeoTransact extends IDBTransaction {
