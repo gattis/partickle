@@ -26,26 +26,16 @@ fn predict(@builtin(global_invocation_id) gid:vec3<u32>) {
     let m = mbuf[p.mesh];
 
     if (uni.grabbing == i32(pid)) {
-        p.vel = 0.5 * (uni.grabTarget - p.prev_pos) / uni.dt;
+        p.pos = uni.grabTarget;
     } else if (p.fixed == 0u) {
-
         let ri = p.pos - m.ci;
-
-
         p.vel += min(1.0, uni.dt * 20.0 * uni.damp) * (m.vi + cross(m.wi, ri) - p.vel);
-
-
-        /*let vel = p.vel * (1 - 0.01*pow(uni.damp, 4.0));
-        let velmag = length(vel);
-        let veldir = select(vel/velmag, v3(0), velmag == 0);
-        p.vel = softmin(velmag, 50, 1.0) * veldir;*/
-
-
         p.vel.z +=  -uni.gravity * m.gravity * uni.dt;
+        p.pos += p.vel * uni.dt;
     } else {
         p.vel = v3(0);
     }
-    p.pos += p.vel * uni.dt;
+
     pbuf[pid] = p;
 }
 
@@ -241,14 +231,17 @@ fn surfmatch(@builtin(global_invocation_id) gid:vec3<u32>) {
     let pidstart = group[gid.x];
     let pstart = pbuf[pidstart];
     let m = mbuf[pstart.mesh];
-    var stiff = uni.surf_stiff * m.surf_stiff;
-    if (stiff == 0) { return; }
-    stiff = 1.0/stiff - 1.0;
+    var volstiff = uni.volstiff * m.volstiff;
+    var shearstiff = uni.shearstiff * m.shearstiff;
+    if (volstiff == 0 || shearstiff == 0) { return; }
+    shearstiff = 1.0/shearstiff - 1.0;
+    volstiff = 0.01 * (1.0/volstiff - 1.0);
     
     var n = pstart.nring;
     var pids = pstart.rings;
-    let Qinv = pstart.qinv;
     let s = pstart.s;
+    let Qinv = pstart.qinv;
+
     let c0 = pstart.c0;
     var c = v3(0);
     var pos:array<v3,64>;
@@ -265,25 +258,24 @@ fn surfmatch(@builtin(global_invocation_id) gid:vec3<u32>) {
     for (var i = 0u; i < n; i++) {
         let r = pos[i] - c;
         let r0 = pos0[i] - c0;
-        P += m3(r*r0.x, r*r0.y, r*r0.z);
+        P += m3(s*r*r0.x, s*r*r0.y, s*r*r0.z);
     }
-    P *= s;
+
     var F = P * Qinv;
     var C = sqrt(dot(F[0],F[0]) + dot(F[1],F[1]) + dot(F[2],F[2]));
     if (C == 0) { return; }
     
     var G = 1.0/C * (F * transpose(Qinv));
-    G *= s;
-    var walpha = stiff / uni.dt / uni.dt;
+    var walpha = shearstiff / uni.dt / uni.dt;
     for (var i = 0u; i < n; i++) {
-        let grad = G * (pos0[i] - c0);
+        let grad = G * (s*(pos0[i] - c0));
         walpha += dot(grad,grad);
     }
 
     c = v3(0);
     var lambda = select(-C / walpha, 0.0, walpha == 0.0);
     for (var i = 0u; i < n; i++) {
-        pos[i] += lambda * (G * (pos0[i] - c0));
+        pos[i] += lambda * (G * (s*(pos0[i] - c0)));
         c += pos[i];
     }
     c /= f32(n);
@@ -292,24 +284,23 @@ fn surfmatch(@builtin(global_invocation_id) gid:vec3<u32>) {
     for (var i = 0u; i < n; i++) {
         let r = pos[i] - c;
         let r0 = pos0[i] - c0;
-        P += m3(r*r0.x, r*r0.y, r*r0.z);
+        P += m3(s*r*r0.x, s*r*r0.y, s*r*r0.z);
     }
-    P *= s;
+
     F = P * Qinv;
     C = determinant(F) - 1.0;
 
     G = m3(cross(F[1],F[2]),cross(F[2],F[0]),cross(F[0],F[1])) * transpose(Qinv);
-    G *= s;
-    walpha = 0.0;
+    walpha = volstiff / uni.dt / uni.dt;
     for (var i = 0u; i < n; i++) {
-        let grad = G * (pos0[i] - c0);
+        let grad = G * (s*(pos0[i] - c0));
         walpha += dot(grad,grad);
     }
 
     c = v3(0);
     lambda = select(-C / walpha, 0.0, walpha == 0.0);
     for (var i = 0u; i < n; i++) {
-        pos[i] += lambda * (G * (pos0[i] - c0));
+        pos[i] += lambda * (G * (s*(pos0[i] - c0)));
         c += pos[i];
     }
     c /= f32(n);
@@ -318,9 +309,8 @@ fn surfmatch(@builtin(global_invocation_id) gid:vec3<u32>) {
     for (var i = 0u; i < n; i++) {
         let r = pos[i] - c;
         let r0 = pos0[i] - c0;
-        P += m3(r*r0.x, r*r0.y, r*r0.z);
+        P += m3(s*r*r0.x, s*r*r0.y, s*r*r0.z);
     }
-    P *= s;
     F = P * Qinv;
     for (var i = 0u; i < n; i++) {
         let pid = pids[i];

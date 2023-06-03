@@ -18,7 +18,7 @@ const LIGHTS = [
 
 const MESH_DEFAULTS = {
     name:'default', bitmapId:-1, color:[1,1,1,1], offset:[0,0,0], rotation:[0,0,0], gravity:1, invmass:10,
-    scale:[1,1,1], 'surf stiff':1, friction:1, 'collision damp':1, fluid:0, fixed: 0
+    scale:[1,1,1], volstiff:1, shearstiff:1, friction:1, 'collision damp':1, fluid:0, fixed: 0
 }
 
 export const phys = new Preferences('phys')
@@ -27,9 +27,10 @@ phys.addNum('r', 1.0, 0.1, 10, 0.1)
 phys.addNum('frameratio', 3, 1, 20, 1)
 phys.addNum('speed', 1, 0.05, 5, .01)
 phys.addNum('gravity', 9.8, -5, 20, 0.1)
-phys.addNum('surf_stiff', .5, 0, 1, 0.001)
-phys.addNum('friction', 0.1, 0, 1, .01)
-phys.addNum('damp', 0.5, 0, 5, .01)
+phys.addNum('volstiff', .5, 0, 1, 0.001)
+phys.addNum('shearstiff', .5, 0, 1, 0.001)
+phys.addNum('friction', 0.1, 0, 1.5, .01)
+phys.addNum('damp', 0.5, 0, 1.5, .01)
 phys.addNum('collidamp', .1, 0, 1, .001)
 phys.addNum('xspace', 100, 0, 100, 0.1)
 phys.addNum('yspace', 100, 0, 100, 0.1)
@@ -78,7 +79,8 @@ export const Mesh = GPU.struct({
         ['color', V4],
         ['pcolor', V4],
         ['gravity', f32],
-        ['surf_stiff', f32],
+        ['volstiff', f32],
+        ['shearstiff', f32],
         ['friction', f32],
         ['collidamp', f32],
         ['fluid', i32],
@@ -104,7 +106,6 @@ export const Particle = GPU.struct({
         ['c0',V3],
         ['s',f32],
         ['qinv', M3],
-        ['ringvol', f32],
         ['edges', GPU.array({ type:u32, length:MAXEDGES })],
         ['nn', GPU.array({ type:u32, length:MAXNN })],
         ['rings', GPU.array({ type:u32, length:MAXRING })]
@@ -194,7 +195,8 @@ export async function Sim(width, height, ctx) {
         mesh.color = v4(...mdata.color)
         mesh.pcolor = particleColors[midx % particleColors.length]
         mesh.gravity = mdata.gravity
-        mesh.surf_stiff = mdata['surf stiff']
+        mesh.volstiff = mdata.volstiff
+        mesh.shearstiff = mdata.shearstiff
         mesh.friction = mdata.friction
         mesh.collidamp = mdata['collision damp']
         mesh.tex = bitmapIds[mdata.bitmapId]
@@ -205,9 +207,9 @@ export async function Sim(width, height, ctx) {
         if (g.verts.length == 0)
             g.verts = [new GeoVert(0, v3(0,0,1))]
 
-        let vol = abs(g.volume())
-        let area = g.surfarea()
-        let thickness = vol / area
+        //let vol = g.volume()
+        //let area = g.surfarea()
+        //let thickness = vol / area
         
         for (let vert of g.verts) {
             let p = Particle.alloc()
@@ -224,11 +226,6 @@ export async function Sim(width, height, ctx) {
                 c = [c[0] + vadj.pos.x, c[1] + vadj.pos.y, c[2] + vadj.pos.z]
             c = c.map(val => val / adj.verts.length)
             p.c0 = v3(...c)
-
-            let sa = 0
-            for (let tri of adj.tris)
-                sa += tri.area()
-            p.ringvol = sa * thickness
             
             let Q = M3js.of([0,0,0],[0,0,0],[0,0,0])
             for (let vadj of adj.verts) {
