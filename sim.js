@@ -3,10 +3,9 @@ import * as gpu from './gpu.js'
 import * as geo from './geometry.js'
 Object.assign(globalThis, util, gpu, geo)
 
-const MAXNN = 32
 const MAXEDGES = 18
 const RINGITER = 2
-const MAXRING = 64
+const MAXRING = 48
 
 const particleColors = [v4(.3,.6,.8,1), v4(.99,.44,.57, 1), v4(.9, .48, .48, 1)]
 const LIGHTS = [
@@ -84,7 +83,7 @@ export const Mesh = GPU.struct({
         ['friction', f32],
         ['collidamp', f32],
         ['fluid', i32],
-       // ['padding', GPU.array({ type:u32, length:13 })]
+        ['padding', GPU.array({ type:u32, length:32 })]
     ]
 })
 
@@ -97,8 +96,6 @@ export const Particle = GPU.struct({
         ['mesh', u32],
         ['prev_pos', V3],
         ['fixed', u32],
-        ['delta_pos', V3],
-        ['k', u32],
         ['vel', V3],
         ['nedges', u32],
         ['norm', V3],
@@ -107,7 +104,6 @@ export const Particle = GPU.struct({
         ['s',f32],
         ['qinv', M3],
         ['edges', GPU.array({ type:u32, length:MAXEDGES })],
-        ['nn', GPU.array({ type:u32, length:MAXNN })],
         ['rings', GPU.array({ type:u32, length:MAXRING })]
     ]
 })
@@ -137,6 +133,7 @@ export const Uniforms = GPU.struct({
         ['height', i32],
         ['dt', f32],
         ['t', f32],
+        ['seed',u32],
         ['ground', u32],
         ['selection', i32],
         ['grabbing', i32],
@@ -234,10 +231,13 @@ export async function Sim(width, height, ctx) {
                 p.rings[p.nring++] = vadj.id + mesh.pi
             }
 
-            let s = 1.0/(Q[0].sum() + Q[1].sum() + Q[2].sum())
-            let Qs = Q.mulc(s)
-            p.qinv = M3.of(Qs.invert())
-            p.s = s
+            let qsum = Q[0].sum() + Q[1].sum() + Q[2].sum()
+            if (qsum > 0) {
+                let s = 1/qsum
+                let Qs = Q.mulc(s)
+                p.qinv = M3.of(Qs.invert())
+                p.s = s
+            }
             
             adj = vert.ringn(RINGITER+1)
             let group = -1
@@ -254,8 +254,7 @@ export async function Sim(width, height, ctx) {
                 groups_exclude[group].add(vadj.id + mesh.pi)           
 
         }
-        
-        mesh.pf = particles.length - mesh.pi
+        mesh.pf = particles.length
         for (let tri of g.tris) {
             let tvs = tri.verts.map((v,i) => TriVert.of(v3(0), v.id + mesh.pi, v3(0), midx, v2(...tri.uvs[i])))
             tris.push(Triangle.of(...tvs))
@@ -266,16 +265,18 @@ export async function Sim(width, height, ctx) {
     meshes = Meshes.of(meshes)
     particles = Particles.of(particles)
     tris = Triangles.of(tris)
-    groups = groups.map(group => u32array.of([...group]))
+    groups = groups.map(group => u32arr.of([...group]))
     
     console.timeEnd('db load')
 
-    let longest = 0
+    let diameter = -1
     for (let p of particles)
         for (let i of range(p.nedges))
-            longest = max(longest, p.pos.dist(particles[p.edges[i]].pos))
-
+            diameter = max(diameter, p.pos.dist(particles[p.edges[i]].pos))
+    if (diameter < 0) diameter = 0.02
+    
     const uniforms = Uniforms.alloc()
+    uniforms.seed = 666
     uniforms.selection = uniforms.grabbing = -1
     const lights = GPU.array({ type:Light, length:LIGHTS.length }).alloc(LIGHTS.length)
     for (const [i,l] of enumerate(LIGHTS)) {
@@ -284,7 +285,7 @@ export async function Sim(width, height, ctx) {
         lights[i].power = l.power
     }
 
-    dbg({ nparts:particles.length, nmeshes:meshes.length, ntris:tris.length, ngroups:groups.length })
+    dbg({ nparts:particles.length, nmeshes:meshes.length, ntris:tris.length, ngroups:groups.length, r:diameter/2 })
 
     const threads = gpu.threads
 
@@ -305,7 +306,7 @@ export async function Sim(width, height, ctx) {
     const pd = ceil(particles.length/gpu.threads)
 
     const syncUniforms = () => {
-        uniforms.r = phys.r * longest/2
+        uniforms.r = phys.r * diameter/2
         uniforms.cam_pos = render.cam_pos
         uniforms.width = width
         uniforms.height = height
@@ -330,67 +331,80 @@ export async function Sim(width, height, ctx) {
         let frames = 0, steps = 0
 
         const threads = gpu.threads
-        const wgsl = (await fetchtext('./compute.wgsl')).interp({ threads, MAXNN })
+        const wgsl = (await fetchtext('./compute.wgsl')).interp({ threads })
 
         const shader = await gpu.shader({
             compute:true, wgsl:wgsl, defs:[Particle, Mesh, Uniforms],
             storage:{
-                pbuf:Particles, mbuf:Meshes, sorted:u32array, dbuf:f32array,
-                cnts:i32array, cnts_atomic:iatomicarray, work:i32array, group:u32array,
-                pavg:v3arr, vavg:v3arr, lavg:v3arr, iavg:m3arr,
+                pbuf:Particles, mbuf:Meshes, sorted:u32arr, dbuf:f32arr,
+                cnts:i32arr, cnts_atomic:iatomicarr, work:i32arr, group:u32arr,
+                pavg:v3arr, vavg:v3arr, lavg:v3arr, iavg:m3arr, grid_group:u32arr
             },
             uniform:{ uni:Uniforms }
         })
 
         const { uni, mbuf, pbuf, cnts, work1, work2, work3, sorted, dbuf } = bufs
 
-        const cmds = [
-            gpu.timestamp(''),
-            gpu.computePass({ pipe:gpu.computePipe({ shader, entryPoint:'predict', binds:['pbuf','mbuf','uni'] }),
-                              dispatch:pd, binds:{ pbuf, mbuf, uni } }),
-            gpu.timestamp('predict')
-        ]
+        const cmds = []
+        const pass = (...args) => { cmds.push(gpu.computePass(...args)) }
+        const pipe = (...args) => gpu.computePipe(...args)
+        const stamp = (tag) => { cmds.push(gpu.timestamp(tag)) }
         
-        let cntsort_cnt = gpu.computePipe({ shader, entryPoint:'cntsort_cnt', binds:['pbuf','cnts_atomic','uni']})
-        let prefsum_down = gpu.computePipe({ shader, entryPoint:'prefsum_down', binds:['cnts','work']})
-        let prefsum_up = gpu.computePipe({ shader, entryPoint:'prefsum_up', binds:['cnts','work']})
-        let cntsort_sort = gpu.computePipe({ shader, entryPoint:'cntsort_sort', binds:['pbuf','cnts_atomic','sorted']})
-        let find_collisions = gpu.computePipe({ shader, entryPoint:'find_collisions', binds:['pbuf','cnts','sorted','uni']})
-        let collide = gpu.computePipe({ shader, entryPoint: 'collide', binds:['pbuf','mbuf','uni']})
-        let update_pos = gpu.computePipe({ shader, entryPoint:'update_pos', binds:['pbuf'] })
-        cmds.push(
-            gpu.clearBuffer(cnts, 0, cnts.size),
-            gpu.computePass({ pipe:cntsort_cnt, dispatch:pd, binds:{ pbuf, cnts_atomic:cnts, uni }}),
-            gpu.timestamp('cntsort_cnt'),
-            gpu.computePass({ pipe:prefsum_down, dispatch:threads**2, binds:{ cnts, work:work1 }}),
-            gpu.computePass({ pipe:prefsum_down, dispatch:threads, binds:{ cnts:work1, work:work2 }}),
-            gpu.computePass({ pipe:prefsum_down, dispatch:1, binds:{ cnts:work2, work:work3 }}),
-            gpu.computePass({ pipe:prefsum_up, dispatch:threads - 1, binds:{ cnts:work1, work:work2 }}),
-            gpu.computePass({ pipe:prefsum_up, dispatch:threads**2 - 1, binds:{ cnts, work:work1 }}),
-            gpu.timestamp('prefsum'),
-            gpu.computePass({ pipe:cntsort_sort, dispatch:pd, binds:{ pbuf, cnts_atomic:cnts, sorted }}),
-            gpu.timestamp('cntsort_sort'),
-            gpu.computePass({ pipe:find_collisions, dispatch:pd, binds:{ pbuf, cnts, sorted, uni }}),
-            gpu.timestamp('find collisions'),
-            gpu.computePass({ pipe:collide, dispatch:pd, binds:{ pbuf, mbuf, uni } }),
-            gpu.timestamp('collide'),
-            gpu.computePass({ pipe:update_pos, dispatch:pd, binds:{ pbuf }}),
-            gpu.timestamp('update pos')
-        )
+        stamp('')
+        pass({ pipe:pipe({ shader, entryPoint:'predict', binds:['pbuf','mbuf','uni']}),
+               dispatch:pd, binds:{ pbuf,mbuf,uni }})
+        stamp('predict')
+        pass({ pipe:pipe({ shader, entryPoint:'bounds', binds:['mbuf','pbuf','uni']}),
+               dispatch:pd, binds:{ pbuf,mbuf,uni } })
+        stamp('bounds collide')
         
-        let pipe = gpu.computePipe({ shader, entryPoint:'surfmatch', binds:['pbuf','mbuf','uni','group','dbuf']})
+        let prefsum_down = pipe({ shader, entryPoint:'prefsum_down', binds:['cnts','work']})
+        let prefsum_up = pipe({ shader, entryPoint:'prefsum_up', binds:['cnts','work']})
+        cmds.push(gpu.clearBuffer(cnts, 0, cnts.size))
+        pass({ pipe:pipe({ shader, entryPoint:'cntsort_cnt', binds:['pbuf','cnts_atomic','uni']}),
+               dispatch:pd, binds:{ pbuf, cnts_atomic:cnts, uni }})
+        pass({ pipe:prefsum_down, dispatch:threads**2, binds:{ cnts, work:work1 }})
+        pass({ pipe:prefsum_down, dispatch:threads, binds:{ cnts:work1, work:work2 }})
+        pass({ pipe:prefsum_down, dispatch:1, binds:{ cnts:work2, work:work3 }})
+        pass({ pipe:prefsum_up, dispatch:threads - 1, binds:{ cnts:work1, work:work2 }})
+        pass({ pipe:prefsum_up, dispatch:threads**2 - 1, binds:{ cnts, work:work1 }})
+        pass({ pipe:pipe({ shader, entryPoint:'cntsort_sort', binds:['pbuf','cnts_atomic','sorted']}),
+               dispatch:pd, binds:{ pbuf, cnts_atomic:cnts, sorted }})
+
+        console.time('gridgroups')
+        let gridGroups = []
+        for (let xm = 0; xm < 3; xm++)
+            for (let ym = 0; ym < 3; ym++)
+                for (let zm = 0; zm < 3; zm++)
+                    gridGroups.push([xm,ym,zm,[]])
+
+        for (let x = 0; x < threads; x++)
+            for (let y = 0; y < threads; y++)
+                for (let z = 0; z < threads; z++)
+                    for (let [xm,ym,zm,group] of gridGroups)
+                        if (x % 3 == xm && y % 3 == ym && z % 3 == zm)
+                            group.push(x + y*threads + z*threads**2)
+        console.timeEnd('gridgroups')
+        dbg({ngrids:threads**3, ingroups:gridGroups.map(g => g[3].length).sum()})
+        let collide = pipe({ shader, entryPoint:'collide', binds:['mbuf','pbuf','cnts','sorted','uni','grid_group']})
+        for (let [xm,ym,zm,group] of gridGroups) {
+            dbg({group})
+            let grid_group = gpu.buf({ label:'grid_group', data:u32arr.of(group), usage:'STORAGE' })
+            pass({ pipe:collide, dispatch:ceil(group.length/threads), binds:{ pbuf, mbuf, cnts, sorted, uni, grid_group }})
+        }
+        stamp('collisions')        
+        
+        let surfpipe = pipe({ shader, entryPoint:'surfmatch', binds:['pbuf','mbuf','uni','group']})
         for (let i of range(groups.length)) {
             let group = gpu.buf({ label: 'group'+i, data:groups[i], usage:'STORAGE' })
             let dispatch = ceil(groups[i].length / gpu.threads)
-            cmds.push(gpu.computePass({ pipe, dispatch, binds:{ pbuf, mbuf, uni, group, dbuf }}))
+            pass({ pipe:surfpipe, dispatch, binds:{ pbuf, mbuf, uni, group }})
         }
-        cmds.push(gpu.timestamp('surface match'))
+        stamp('surface match')
 
-        cmds.push(
-            gpu.computePass({ pipe:gpu.computePipe({ shader, entryPoint:'update_vel', binds:['pbuf','mbuf','uni'] }),
-                              dispatch:pd, binds:{ pbuf, mbuf, uni }}),
-            gpu.timestamp('update vel')
-        )       
+        pass({ pipe:pipe({ shader, entryPoint:'update_vel', binds:['pbuf','mbuf','uni'] }),
+               dispatch:pd, binds:{ pbuf, mbuf, uni }})
+        stamp('update vel')
 
         let mbufs = []
         for (let [i,m] of enumerate(meshes)) {
@@ -404,25 +418,25 @@ export async function Sim(width, height, ctx) {
                 mbuf: gpu.offset(bufs.mbuf, Meshes.stride * i)
             })
         }
-        let avgs_prep = gpu.computePipe({ shader, entryPoint:'avgs_prep', binds:['mbuf','pbuf','pavg','vavg','lavg','iavg']})
-        let avgs_calc = gpu.computePipe({ shader, entryPoint:'avgs_calc', binds:['mbuf','pavg','vavg','lavg','iavg']})
+        let avgs_prep = pipe({ shader, entryPoint:'avgs_prep', binds:['mbuf','pbuf','pavg','vavg','lavg','iavg']})
+        let avgs_calc = pipe({ shader, entryPoint:'avgs_calc', binds:['mbuf','pavg','vavg','lavg','iavg']})
         
         const meshavgs = (i) => {
             let n = meshes[i].pf - meshes[i].pi
             if (n <= 0) return []
             let dp1 = ceil(n / threads), dp2 = ceil(dp1 / threads)
-            cmds.push(gpu.computePass({ pipe:avgs_prep, dispatch:dp1, binds:{ pbuf, ...mbufs[i] }}))
-            cmds.push(gpu.computePass({ pipe:avgs_calc, dispatch:dp1, binds:mbufs[i] }))
+            pass({ pipe:avgs_prep, dispatch:dp1, binds:{ pbuf, ...mbufs[i] }})
+            pass({ pipe:avgs_calc, dispatch:dp1, binds:mbufs[i] })
             if (dp1 > 1) {
-                cmds.push(gpu.computePass({ pipe:avgs_calc, dispatch:dp2, binds:mbufs[i] }))
-                if (dp2 > 1) cmds.push(gpu.computePass({ pipe:avgs_calc, dispatch:1, binds:mbufs[i]}))
+                pass({ pipe:avgs_calc, dispatch:dp2, binds:mbufs[i] })
+                if (dp2 > 1) pass({ pipe:avgs_calc, dispatch:1, binds:mbufs[i]})
             }
         }
 
         for (const i of range(meshes.length)) meshavgs(i)
         for (const i of range(meshes.length)) meshavgs(i)
         
-        cmds.push(gpu.timestamp('mesh avgs'))
+        stamp('mesh avgs')
          
         const batch = gpu.encode(cmds)
 
@@ -444,12 +458,14 @@ export async function Sim(width, height, ctx) {
                 if (!phys.paused || fwdstep) {
                     uniforms.dt = tstep
                     uniforms.t += tstep
+                    uniforms.seed = rand.next()
                     syncUniforms()
                     batch.execute()
                     frames++
                     steps++
                     
                     //gpu.read(pbuf).then(d => { window.ps = new pbuf.type(d) })
+                    //gpu.read(mbuf).then(d => { window.ms = new mbuf.type(d) })
                     //gpu.read(dbuf).then(d => { window.dbuf = new dbuf.type(d) })
 
                 }
@@ -719,11 +735,7 @@ export const loadWavefront = async (name, data, transaction) => {
     }
 }
 
-export const loadBitmap = async (name, data, transaction) => {
-    const img = new Image()
-    img.src = data
-    await img.decode()
-    const bitmap = await createImageBitmap(img)
+export const loadBitmap = async (name, bitmap, transaction) => {
     let bitmaps = transaction.objectStore('bitmaps')
     await transaction.wait(bitmaps.add({ name, data: bitmap }))
 }

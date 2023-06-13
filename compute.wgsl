@@ -6,9 +6,6 @@ alias m43 = mat4x3<f32>;
 alias m2 = mat2x2<f32>;
 alias u3 = array<u32,3>;
 
-const MAXNN = ${MAXNN}u;
-const DEXPAND = 2.3f;
-
 fn softmin(a:f32, b:f32, k:f32) -> f32 {
     let kb = k*b;
     return a / pow(1.0 + pow(a / b, kb), 1.0/kb);
@@ -19,17 +16,18 @@ fn predict(@builtin(global_invocation_id) gid:vec3<u32>) {
     let pid:u32 = gid.x;
     if (pid >= arrayLength(&pbuf)) { return; }
     var p = pbuf[pid];
-    p.k = 0u;
     p.prev_pos = p.pos;
-    p.delta_pos = v3(0.0);
 
     let m = mbuf[p.mesh];
 
     if (uni.grabbing == i32(pid)) {
+        //p.vel = 0.9 * (uni.grabTarget - p.prev_pos) / uni.dt;
         p.pos = uni.grabTarget;
     } else if (p.fixed == 0u) {
-        let ri = p.pos - m.ci;
-        p.vel += min(1.0, uni.dt * 20.0 * uni.damp) * (m.vi + cross(m.wi, ri) - p.vel);
+        if (p.nedges != 0) {
+            let ri = p.pos - m.ci;
+            p.vel += min(1.0, uni.dt * 20.0 * uni.damp) * (m.vi + cross(m.wi, ri) - p.vel);
+        }
         p.vel.z +=  -uni.gravity * m.gravity * uni.dt;
         p.pos += p.vel * uni.dt;
     } else {
@@ -39,16 +37,17 @@ fn predict(@builtin(global_invocation_id) gid:vec3<u32>) {
     pbuf[pid] = p;
 }
 
+
+
 @compute @workgroup_size(${threads})
 fn cntsort_cnt(@builtin(global_invocation_id) gid:vec3<u32>) {
     let pid:u32 = gid.x;
     if (pid >= arrayLength(&pbuf)) { return; }
     let p = &pbuf[pid];
-    let sd = v3i((*p).pos * (1.0 / (uni.r * DEXPAND)) + ${threads/2}f);
-    if (sd.x < 0 || sd.y < 0 || sd.z < 0 || sd.x >= ${threads} || sd.y >= ${threads} || sd.z >= ${threads}) {
-        (*p).hash = -1;
-        return;
-    }
+    var sd = v3i((*p).pos / (2.0 * uni.r) + ${threads/2}f);
+    sd.x = min(max(sd.x,0),${threads});
+    sd.y = min(max(sd.y,0),${threads});
+    sd.z = min(max(sd.z,0),${threads});
     let hash = sd.x + sd.y * ${threads} + sd.z * ${threads**2};
     (*p).hash = hash;
     atomicAdd(&cnts_atomic[hash], 1);
@@ -80,131 +79,93 @@ fn cntsort_sort(@builtin(global_invocation_id) gid:vec3<u32>) {
     let pid:u32 = gid.x;
     if (pid >= arrayLength(&pbuf)) { return; }
     let p = pbuf[pid];
-    if (p.hash < 0) { return; }
     let pos = atomicSub(&cnts_atomic[p.hash], 1) - 1;
     sorted[pos] = pid;
 }
 
-@compute @workgroup_size(${threads})
-fn find_collisions(@builtin(global_invocation_id) gid:vec3<u32>) {
-    let pid1:u32 = gid.x;
-    if (pid1 >= arrayLength(&pbuf)) { return; }
-    var p1 = pbuf[pid1];
-    if (p1.hash < 0) { return; }
-    var h = v3i(0, 0, p1.hash / ${threads**2});
-    h.y = (p1.hash - h.z * ${threads**2}) / ${threads};
-    h.x = p1.hash - h.z * ${threads**2} - h.y * ${threads};
-    let hstart = max(h - 1, v3i(0,0,0));
-    let hstop = min(h + 1, v3i(${threads-1}));
+const incs = array(v3i(-1,0,1), v3i(-1,1,1), v3i(0,-1,1), v3i(0,0,1), v3i(0,1,0), v3i(0,1,1),
+                   v3i(1,-1,0), v3i(1,-1,1), v3i(1,0,0), v3i(1,0,1), v3i(1,1,-1), v3i(1,1,0), v3i(1,1,1));
 
-    for (var x = hstart.x; x <= hstop.x; x += 1) {
-    for (var y = hstart.y; y <= hstop.y; y += 1) {
-    for (var z = hstart.z; z <= hstop.z; z += 1) {
-        let ohash = x + y * ${threads} + z * ${threads**2};
-        if (ohash < 0 || ohash >= ${threads**3 - 1}) { continue; }
-        let ostop = cnts[ohash + 1];
-        for (var i = cnts[ohash]; i < ostop; i = i + 1) {
-            let pid2 = sorted[i];
-            if (pid2 == pid1) { continue; }
-	    let p2 = pbuf[pid2];
-            if (p1.nedges > 0 && p2.nedges > 0 && p1.mesh == p2.mesh) { continue; }
-
-            if (length(p1.pos - p2.pos) >= (uni.r * DEXPAND)) { continue; }
-            let k = pbuf[pid1].k;
-            if (k < MAXNN) {
-                pbuf[pid1].nn[k] = pid2;
-                pbuf[pid1].k = k + 1;
-            } else {
-                return;
-            }
-        }
-    }}}
-
+fn collide_pair(pid1:u32, pid2:u32) {
+    let p1 = &pbuf[pid1];
+    let p2 = &pbuf[pid2];
+    let m1 = mbuf[(*p1).mesh];
+    let m2 = mbuf[(*p2).mesh];
+    if ((*p1).nedges > 0 && (*p2).nedges > 0 && (*p1).mesh == (*p2).mesh) { return; }
+    let delta = (*p1).pos - (*p2).pos;
+    let dist = length(delta);
+    if (dist > 2*uni.r) { return; }
+    let dir = select(delta / dist, (*p1).pos, dist == 0);
+    let c = 2*uni.r - dist;
+    (*p1).pos += uni.collidamp * m1.collidamp * 0.5 * c * dir;
+    (*p2).pos -= uni.collidamp * m2.collidamp * 0.5 * c * dir;
 }
-
 
 @compute @workgroup_size(${threads})
 fn collide(@builtin(global_invocation_id) gid:vec3<u32>) {
-    let pid:u32 = gid.x;
-    let npbuf = arrayLength(&pbuf);
-    if (pid >= npbuf) { return; }
-    let p = pbuf[pid];
-    if (p.fixed == 1) { return; }
-
-    let m = mbuf[p.mesh];
-    let collidamp = uni.collidamp * m.collidamp;
-    let friction = uni.friction * m.friction;
+    if (gid.x >= arrayLength(&grid_group)) { return; }
+    let hash = i32(grid_group[gid.x]);
+    var bin = v3i(0, 0, hash / ${threads**2});
+    bin.y = (hash - bin.z * ${threads**2}) / ${threads};
+    bin.x = hash - bin.z * ${threads**2} - bin.y * ${threads};
+    let istart = cnts[hash];
+    let istop = cnts[hash+1];
     
-    var pos = p.pos;
-    let ipos = pos;
-    var delta_pos = v3(0);
-       
-    let k = min(MAXNN, p.k);
-    let e = 4.0;
-    
-    for (var i = 0u; i < k; i += 1) {
-        let p2 = pbuf[p.nn[i]];
-        let m2 = mbuf[p2.mesh];
-        var grad = pos - p2.pos;
-        let dist = length(grad);
-	if (dist == 0.0) {
-            grad = v3(0,0,1);
-        } else {
-            grad = grad / dist;
+    for (var i = istart; i < istop; i++) {
+        let pid1 = sorted[i];
+        for (var j = i + 1; j < istop; j++) {
+            collide_pair(pid1,sorted[j]);
         }
-	if (m.fluid == 1 && m2.fluid == 1) {
-            if (dist < uni.r * DEXPAND) {
-                var c = 2 * uni.r - dist;
-                if (c < 0) { c += pow(c, e) / pow(uni.r * (DEXPAND - 2), e - 1.0); }
-                delta_pos += collidamp * m2.collidamp * c * grad;
-           }
-	} else {
-            if (dist > 2.0 * uni.r) {
-                let c = 2.0 * uni.r - dist;
-	        delta_pos += collidamp * m2.collidamp * c * grad;
-	        let dp = p.prev_pos - pos;
-	        let dpt = -cross(cross(dp, grad), grad);
-	        delta_pos += dpt * min(1.0, uni.dt * 20.0 * friction * m2.friction);
+        for (var b = 0; b < 13; b++) {
+            let inc = incs[b];
+            let bin2 = v3i(bin.x+inc.x, bin.y+inc.y, bin.z+inc.z);
+            if (bin2.x < 0 || bin2.y < 0 || bin2.z < 0) { continue; }
+            if (bin2.x >= ${threads} || bin2.y >= ${threads} || bin2.z >= ${threads}) { continue; }
+            let hash2 = bin2.x + bin2.y * ${threads} + bin2.z * ${threads**2};
+            if (hash2 == hash || hash2 < 0 || hash2 >= ${threads**3}) { continue; }
+            let jstop = cnts[hash2 + 1];
+            for (var j = cnts[hash2]; j < jstop; j++) {
+                collide_pair(pid1, sorted[j]);
             }
-	}
-    }
-
-    pos += delta_pos;
-
-    let pmin = -v3(uni.xspace/2, uni.yspace/2, 0) + uni.r;
-    let pmax = v3(uni.xspace/2, uni.yspace/2, uni.zspace) - uni.r;
-    var cgrad = v3(0.0);
-    let dp = pos - p.prev_pos;
-    for (var axis = 0; axis < 3; axis += 1) {
-        if (pos[axis] < pmin[axis]) {
-            cgrad[axis] = pmin[axis] - pos[axis];
-            pos[axis] = pmin[axis];
-            pbuf[pid].prev_pos[axis] = pos[axis] + collidamp * dp[axis];
-            
-        }
-        if (pos[axis] > pmax[axis]) {
-            cgrad[axis] = pmax[axis] - pos[axis];    
-            pos[axis] = pmax[axis];
-            pbuf[pid].prev_pos[axis] = pos[axis] + collidamp * dp[axis];
         }
     }
-    
-    
-    let c = length(cgrad);
-    let grad = select(v3(0),cgrad/c,c > 0);
-    let dpt = -cross(cross(p.prev_pos - pos, grad), grad);
-    pos += dpt * min(1.0, uni.dt * 20.0 * friction);
-
-    pbuf[pid].delta_pos = pos - ipos;
 
 }
 
 @compute @workgroup_size(${threads})
-fn update_pos(@builtin(global_invocation_id) gid:vec3<u32>) {
+fn bounds(@builtin(global_invocation_id) gid:vec3<u32>) {
     let pid:u32 = gid.x;
-    if (pid >= arrayLength(&pbuf)) { return; }
-    pbuf[pid].pos += pbuf[pid].delta_pos;
-    pbuf[pid].delta_pos = v3(0);
+    let npbuf = arrayLength(&pbuf);
+    if (pid >= npbuf) { return; }
+    var p = pbuf[pid];
+    let m = mbuf[p.mesh];
+    let collidamp = uni.collidamp * m.collidamp;
+    let pmin = -v3(uni.xspace/2, uni.yspace/2, 0) + uni.r;
+    let pmax = v3(uni.xspace/2, uni.yspace/2, uni.zspace) - uni.r;
+    var cgrad = v3(0);
+    let dp = p.pos - p.prev_pos;
+                
+
+                   
+    for (var axis = 0; axis < 3; axis += 1) {
+        if (p.pos[axis] < pmin[axis]) {
+            //cgrad[axis] = pmin[axis] - p.pos[axis];
+            p.pos[axis] += uni.collidamp * (pmin[axis] - p.pos[axis]);
+            //pbuf[pid].prev_pos[axis] = p.pos[axis] + collidamp * dp[axis];
+            
+        }
+        if (p.pos[axis] > pmax[axis]) {
+            //cgrad[axis] = pmax[axis] - p.pos[axis];
+            p.pos[axis] += uni.collidamp * (pmax[axis] - p.pos[axis]);
+            //p.pos[axis] += pmax[axis];
+            //pbuf[pid].prev_pos[axis] = p.pos[axis] + collidamp * dp[axis];
+        }
+    }
+    
+    
+
+
+    pbuf[pid].pos = p.pos;
 }
 
 fn invert(m:m3) -> m3 {
@@ -219,16 +180,16 @@ fn invert(m:m3) -> m3 {
         }
     }
     let det = dot(m[0], v3(inv[0][0], inv[1][0], inv[2][0]));
-    inv *= 1.0/det;
+    if (det != 0) { inv *= 1.0/det; }
     return inv;
 }
 
 // Derived from "Physically Based Shape Matching" (Muller et al.)
 @compute @workgroup_size(${threads})
 fn surfmatch(@builtin(global_invocation_id) gid:vec3<u32>) {
-
-    if (gid.x >= arrayLength(&group)) { return; }
-    let pidstart = group[gid.x];
+    let ngroup = arrayLength(&group);
+    if (gid.x >= ngroup) { return; }
+    var pidstart = group[gid.x];
     let pstart = pbuf[pidstart];
     let m = mbuf[pstart.mesh];
     var volstiff = uni.volstiff * m.volstiff;
@@ -236,87 +197,90 @@ fn surfmatch(@builtin(global_invocation_id) gid:vec3<u32>) {
     if (volstiff == 0 || shearstiff == 0) { return; }
     shearstiff = 1.0/shearstiff - 1.0;
     volstiff = 0.01 * (1.0/volstiff - 1.0);
-    
+           
     var n = pstart.nring;
+    if (n < 4) { return; }
     var pids = pstart.rings;
     let s = pstart.s;
     let Qinv = pstart.qinv;
 
     let c0 = pstart.c0;
-    var c = v3(0);
+    var c = v3();
     var pos:array<v3,64>;
-    var pos0:array<v3,64>;
+    var R0:array<v3,64>;
     for (var i = 0u; i < n; i++) {
-        pos[i] = pbuf[pids[i]].pos;
-        pos0[i] = pbuf[pids[i]].rest_pos;
+        let randi = (i + uni.seed) % n;
+        pos[i] = pbuf[pids[randi]].pos;
+        R0[i] = pbuf[pids[randi]].rest_pos - c0;
         c += pos[i];
     }
-    
+
+
     c /= f32(n);
     
-    var P = m3(0,0,0,0,0,0,0,0,0);
+    var P = m3();
     for (var i = 0u; i < n; i++) {
-        let r = pos[i] - c;
-        let r0 = pos0[i] - c0;
-        P += m3(s*r*r0.x, s*r*r0.y, s*r*r0.z);
+        let rs = s*(pos[i] - c);
+        let r0 = R0[i];
+        P += m3(rs*r0.x, rs*r0.y, rs*r0.z);
     }
 
     var F = P * Qinv;
     var C = sqrt(dot(F[0],F[0]) + dot(F[1],F[1]) + dot(F[2],F[2]));
     if (C == 0) { return; }
     
-    var G = 1.0/C * (F * transpose(Qinv));
+    var G = s/C * (F * transpose(Qinv));
     var walpha = shearstiff / uni.dt / uni.dt;
     for (var i = 0u; i < n; i++) {
-        let grad = G * (s*(pos0[i] - c0));
+        let grad = G * R0[i];
         walpha += dot(grad,grad);
     }
 
-    c = v3(0);
+    c = v3();
     var lambda = select(-C / walpha, 0.0, walpha == 0.0);
     for (var i = 0u; i < n; i++) {
-        pos[i] += lambda * (G * (s*(pos0[i] - c0)));
+        pos[i] += lambda * (G * R0[i]);
         c += pos[i];
     }
     c /= f32(n);
 
-    P = m3(0,0,0,0,0,0,0,0,0);
+    P = m3();
     for (var i = 0u; i < n; i++) {
-        let r = pos[i] - c;
-        let r0 = pos0[i] - c0;
-        P += m3(s*r*r0.x, s*r*r0.y, s*r*r0.z);
+        let rs = s*(pos[i] - c);
+        let r0 = R0[i];
+        P += m3(rs*r0.x, rs*r0.y, rs*r0.z);
     }
-
     F = P * Qinv;
     C = determinant(F) - 1.0;
 
-    G = m3(cross(F[1],F[2]),cross(F[2],F[0]),cross(F[0],F[1])) * transpose(Qinv);
+    G = s * m3(cross(F[1],F[2]),cross(F[2],F[0]),cross(F[0],F[1])) * transpose(Qinv);
     walpha = volstiff / uni.dt / uni.dt;
     for (var i = 0u; i < n; i++) {
-        let grad = G * (s*(pos0[i] - c0));
+        let grad = G * R0[i];
         walpha += dot(grad,grad);
     }
 
-    c = v3(0);
+    c = v3();
     lambda = select(-C / walpha, 0.0, walpha == 0.0);
     for (var i = 0u; i < n; i++) {
-        pos[i] += lambda * (G * (s*(pos0[i] - c0)));
+        pos[i] += lambda * (G * R0[i]);
         c += pos[i];
     }
     c /= f32(n);
 
-    P = m3(0,0,0,0,0,0,0,0,0);
+    P = m3();
     for (var i = 0u; i < n; i++) {
-        let r = pos[i] - c;
-        let r0 = pos0[i] - c0;
-        P += m3(s*r*r0.x, s*r*r0.y, s*r*r0.z);
+        let rs = s*(pos[i] - c);
+        let r0 = R0[i];
+        P += m3(rs*r0.x, rs*r0.y, rs*r0.z);
     }
+
     F = P * Qinv;
     for (var i = 0u; i < n; i++) {
-        let pid = pids[i];
+        let randi = (i + uni.seed) % n;
+        let pid = pids[randi];
         if (pbuf[pid].fixed == 0) {
-            pbuf[pid].pos = c + F * (pos0[i] - c0);
-            dbuf[pid] = dbuf[pid] + 1;
+            pbuf[pid].pos = c + F * R0[i];
         }
     }
 }

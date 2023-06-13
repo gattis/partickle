@@ -33,12 +33,6 @@ export const scope = (cb) => {
     })
 }
 
-export const range3d = function* (nx,ny,nz) {
-    for (let z of range(nz))
-        for (let y of range(ny))
-            for (let x of range(nx))
-                yield [x,y,z]
-}
 
 export const enumerate = function* (iterable) {
     if (iterable[Symbol.iterator]) {
@@ -137,9 +131,8 @@ export const sleep = (s) => {
     return new Promise(done => setTimeout(done, s*1000))
 }
 
-
 export const rand = {
-    seed: Math.floor(Math.random()*(2**32-1)),
+    seed: 666,
     next:  () => {
         let t = rand.seed += 0x6D2B79F5;
         t = Math.imul(t ^ t >>> 15, t | 1);
@@ -154,9 +147,6 @@ export const rand = {
 export const fetchtext = async (url) => {
     return await (await fetch(url)).text()
 }
-
-
-
 
 export const hijack = (cls, meth, replacement) => {
     cls.prototype[meth] = new Proxy(cls.prototype[meth], { apply: replacement })
@@ -239,7 +229,8 @@ export const repr = (v) => {
     if (v == null) return 'null'
     if (typeof v == 'string') return v
     if (typeof v == 'number') {
-        let [f,p] = v.toPrecision(5).split('e')
+        if (v%1 == 0) return v.toString()
+        let [f,p] = v.toPrecision(6).split('e')
         f = f.includes('.') ? f.replace(/0+$/,'').replace(/\.$/,'') : f
         p = p ? 'e'+p : ''
         return f + p

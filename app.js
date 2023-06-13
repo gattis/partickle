@@ -276,22 +276,32 @@ for (const name of ['meshes', 'verts', 'faces', 'bitmaps']) {
     storeBtns.push(table.tabButton)
 }
 const storeNav = html('div', { class:'stores' }, storeBtns)
-const storeFooter = html('div', { class:'footer' });
+const storeFooter = html('div', { class:'footer' })
 
-[
-    ['objfile', '.obj', false, (x,f,d) => loadWavefront(f.name.split('.')[0], d, x)],
-    ['pngfile', '.png', true, (x,f,d) => loadBitmap(f.name, d, x)]
-].forEach(([id,accept,dataUrl,cb]) =>
-    storeFooter.append(html('input', { id, type:'file', accept }).on('change', function() {
-        const file = this.files[0]
-        if (!file) return
-        const reader = new FileReader().on('load', e => {
-            transact(db.storeNames, 'readwrite', async x => await cb(x,file, e.target.result))
-        })
-        if (dataUrl) reader.readAsDataURL(file)
-        else reader.readAsText(file)
-        this.value = ''
-    }), html('label', {for:id, class:'enabled'}, 'Load '+accept)))
+    
+storeFooter.append(html('input', { id:'objfile', type:'file', accept:'.obj' }).on('change', function() {
+    const file = this.files[0]
+    if (!file) return
+    const reader = new FileReader().on('load', e => {
+        transact(db.storeNames, 'readwrite', async x => loadWavefront(file.name.split('.')[0], e.target.result, x))
+    })
+    reader.readAsText(file)
+    this.value = ''
+}), html('label', {for:'objfile', class:'enabled'}, 'Load .obj'))
+
+storeFooter.append(html('input', { id:'pngfile', type:'file', accept:'.png' }).on('change', function() {
+    const file = this.files[0]
+    if (!file) return
+    const reader = new FileReader().on('load', async e => {
+        const img = new Image()
+        img.src = e.target.result
+        await img.decode()
+        const bitmap = await createImageBitmap(img)
+        transact(db.storeNames, 'readwrite', async x => loadBitmap(file.name, bitmap, x))
+    })
+    reader.readAsDataURL(file)
+    this.value = ''
+}), html('label', {for:'pngfile', class:'enabled'}, 'Load .png'))
 
 storeFooter.append(html('button', {}, 'reset').on('click', async () => {
     await GeoDB.reset()

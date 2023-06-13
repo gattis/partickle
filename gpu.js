@@ -152,13 +152,13 @@ export const GPU = class GPU {
     }
 
     computePipe(args) {
-        const { shader, entryPoint, binds } = args
+        const { shader, entryPoint, binds, constants } = args
         const visibility = GPUShaderStage.COMPUTE
         const entries = shader.binds.filter(b => binds.includes(b.label)).map(b => ({ binding:b.idx, visibility, ...b.layout }))
         args.layout = this.dev.createBindGroupLayout({ entries })
         args.pipeline = this.dev.createComputePipeline({
             layout: this.dev.createPipelineLayout({ bindGroupLayouts: [ args.layout ] }),
-            compute: { module: shader.module, entryPoint }
+            compute: { module: shader.module, entryPoint, constants }
         })
         return args
     }
@@ -458,11 +458,11 @@ export const GPU = class GPU {
 
 }
 
-export const i32array = GPU.array({ type: i32 })
-export const u32array = GPU.array({ type: u32 })
-export const f32array = GPU.array({ type: f32 })
-export const iatomicarray = GPU.array({ type: iatomic })
-export const uatomicarray = GPU.array({ type: uatomic })
+export const i32arr = GPU.array({ type: i32 })
+export const u32arr = GPU.array({ type: u32 })
+export const f32arr = GPU.array({ type: f32 })
+export const iatomicarr = GPU.array({ type: iatomic })
+export const uatomicarr = GPU.array({ type: uatomic })
 
 export const V2 = GPU.struct({
     name: 'vec2<f32>',
