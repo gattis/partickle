@@ -125,8 +125,8 @@ export const GPU = class GPU {
         const { compute, wgsl, defs, storage, uniform, textures, samplers } = args
         const binds = []
         for (const [label,type] of Object.entries(storage||{}))
-            binds.push({ label, type, as: compute ? '<storage,read_write>':'<storage>',
-                         layout:{ buffer:{ type: compute ? 'storage' : 'read-only-storage' } }, idx:binds.length })
+            binds.push({ label, type, as: compute && label != 'bounds' ? '<storage,read_write>':'<storage>',
+                         layout:{ buffer:{ type: compute && label != 'bounds' ? 'storage' : 'read-only-storage' } }, idx:binds.length })
         for (const [label,type] of Object.entries(uniform||{}))
             binds.push({ label, type, as: '<uniform>', layout:{ buffer:{ type:'uniform' } }, idx:binds.length })
         for (const [label,type] of Object.entries(textures||{}))
@@ -225,14 +225,16 @@ export const GPU = class GPU {
     }
 
     computePass(args) {
-        let { pipe, dispatch, binds, offsets } = args
-        if (dispatch.length == undefined) dispatch = [dispatch]
+        let { pipe, dispatch, indirect, binds, offsets } = args
+        
+        if (!indirect && dispatch.length == undefined) dispatch = [dispatch]
         const bg = this.bindGroup(pipe, binds, offsets)
         return (encoder) => {
             const pass = encoder.beginComputePass()
             pass.setPipeline(pipe.pipeline)
             pass.setBindGroup(0, bg)
-            pass.dispatchWorkgroups(...dispatch)
+            if (indirect) pass.dispatchWorkgroupsIndirect(...indirect)
+            else pass.dispatchWorkgroups(...dispatch)
             pass.end()
         }
     }
@@ -485,9 +487,16 @@ export const V2U = GPU.struct({
 
 export const v2u = (...args) => V2U.of(...args)
 
-export const V3U = GPU.struct({
+export const V3I = GPU.struct({
     name: 'vec3<i32>',
     fields: [['x', i32], ['y', i32], ['z', i32]],
+    size: 12,
+    align: 16
+})
+
+export const V3U = GPU.struct({
+    name: 'vec3<u32>',
+    fields: [['x', u32], ['y', u32], ['z', u32]],
     size: 12,
     align: 16
 })
