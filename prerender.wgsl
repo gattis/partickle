@@ -12,9 +12,9 @@ fn update_tris(@builtin(global_invocation_id) gid:vec3<u32>) {
     let p0 = pbuf[tri.v0.pidx];
     let p1 = pbuf[tri.v1.pidx];
     let p2 = pbuf[tri.v2.pidx];
-    tri.v0.pos = p0.pos;
-    tri.v1.pos = p1.pos;
-    tri.v2.pos = p2.pos;
+    tri.v0.x = p0.x;
+    tri.v1.x = p1.x;
+    tri.v2.x = p2.x;
     tri.v0.norm = p0.norm;
     tri.v1.norm = p1.norm;
     tri.v2.norm = p2.norm;
@@ -38,8 +38,8 @@ fn normals(@builtin(global_invocation_id) gid:vec3<u32>) {
     let p = pbuf[pid];
     var norm = v3(0f,0f,0f);
     for (var i = 0u; i < p.nedges; i = i + 1u) {
-        var ab = pbuf[p.edges[i % p.nedges]].pos - p.pos;
-        var ac = pbuf[p.edges[(i+1u) % p.nedges]].pos - p.pos;
+        var ab = pbuf[p.edges[i % p.nedges]].x - p.x;
+        var ac = pbuf[p.edges[(i+1u) % p.nedges]].x - p.x;
         var weight = 1.0;
         //weight *= length(cross(ab,ac))/2; // area
         weight *= acos(dot(safenorm(ab),safenorm(ac))); // angle

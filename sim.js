@@ -9,15 +9,15 @@ const MAXRING = 48
 
 const particleColors = [v4(.3,.6,.8,1), v4(.99,.44,.57, 1), v4(.9, .48, .48, 1)]
 const LIGHTS = [
-    { power:1.5, color:v3(1,.85,.6), pos:v3(2,2,2.3) },
-    { power:1.5, color:v3(1,.85,.6), pos:v3(2,-2,2.3) },
-    { power:1.5, color:v3(1,.85,.6), pos:v3(-2,2,2.3) },
-    { power:1.5, color:v3(1,.85,.6), pos:v3(-2,-2,2.3) },
+    { power:1.5, color:v3(1,.85,.6), x:v3(2,2,2.3) },
+    { power:1.5, color:v3(1,.85,.6), x:v3(2,-2,2.3) },
+    { power:1.5, color:v3(1,.85,.6), x:v3(-2,2,2.3) },
+    { power:1.5, color:v3(1,.85,.6), x:v3(-2,-2,2.3) },
 ]
 
 const MESH_DEFAULTS = {
     name:'default', bitmapId:-1, color:[1,1,1,1], offset:[0,0,0], rotation:[0,0,0], gravity:1, invmass:10,
-    scale:[1,1,1], volstiff:1, shearstiff:1, friction:1, 'collision damp':1, fluid:0, fixed: 0
+    scale:[1,1,1], volstiff:1, shearstiff:1, friction:1, collision:1, fluid:0, fixed: 0
 }
 
 export const phys = new Preferences('phys')
@@ -28,9 +28,9 @@ phys.addNum('speed', 1, 0.05, 5, .01)
 phys.addNum('gravity', 9.8, -5, 20, 0.1)
 phys.addNum('volstiff', .5, 0, 1, 0.001)
 phys.addNum('shearstiff', .5, 0, 1, 0.001)
-phys.addNum('friction', 0.1, 0, 1.5, .01)
-phys.addNum('damp', 0.5, 0, 1.5, .01)
-phys.addNum('collidamp', .1, 0, 1, .001)
+phys.addNum('damp', 0.5, -100, 100, .1)
+phys.addNum('friction', 1, 0, 1, .001)
+phys.addNum('collision', 1, 0, 1, .01)
 phys.addNum('xmin', -25, -25, 0, 0.1)
 phys.addNum('xmax', 25, 0.1, 25, 0.1)
 phys.addNum('ymin', -25, -25, 0, 0.1)
@@ -60,10 +60,10 @@ render.addChoice('depth_fmt', 'depth32float-stencil8',
                  ['depth16unorm','depth24plus','depth24plus-stencil8','depth32float','depth32float-stencil8'])
 render.addNum('samples', 4, 1, 4, 3)
 render.addNum('fov', 60, 1, 150, 1)
-render.addVector('cam_pos', v3(0, -2, 2))
+render.addVector('cam_x', v3(0, -2, 2))
 render.addNum('cam_ud', 0)
 render.addNum('cam_lr', 0)
-render.hidden['cam_pos'] = true
+render.hidden['cam_x'] = true
 render.hidden['cam_ud'] = true
 render.hidden['cam_lr'] = true
 
@@ -83,30 +83,32 @@ export const Mesh = GPU.struct({
         ['gravity', f32],
         ['volstiff', f32],
         ['shearstiff', f32],
-        ['friction', f32],
-        ['collidamp', f32],
         ['fluid', i32],
-        ['padding', GPU.array({ type:u32, length:32 })]
+        ['padding', GPU.array({ type:u32, length:36 })]
     ]
 })
 
 export const Particle = GPU.struct({
     name:'Particle',
     fields:[
-        ['pos', V3],
+        ['x', V3],
         ['hash', i32],
-        ['rest_pos', V3],
+        ['x0', V3],
         ['mesh', u32],
-        ['prev_pos', V3],
-        ['fixed', u32],
-        ['vel', V3],
+        ['xprev', V3],
+        ['fixed', i32],
+        ['v', V3],
         ['nedges', u32],
         ['norm', V3],
-        ['nring',u32],        
-        ['c0',V3],
-        ['s',f32],
+        ['nring', u32],        
+        ['c0', V3],
+        ['s', f32],
         ['pmin',V3],
+        ['friction',f32],
         ['pmax',V3],
+        ['collision', f32],
+        ['dv',V3],
+        ['grab', i32],
         ['qinv', M3],
         ['edges', GPU.array({ type:u32, length:MAXEDGES })],
         ['rings', GPU.array({ type:u32, length:MAXRING })]
@@ -118,7 +120,7 @@ export const Particle = GPU.struct({
 export const Light = GPU.struct({
     name:'Light',
     fields:[
-        ['pos', V3],
+        ['x', V3],
         ['dir', V3],
         ['power', f32],
         ['color', V3]
@@ -127,31 +129,39 @@ export const Light = GPU.struct({
 
 export const Uniforms = GPU.struct({
     name:'Uniforms',
-    fields:[
-        ...phys.keys.filter(k => phys.type[k] == 'num').map(k => [k, f32]),
+    fields:[       
         ['proj', M4],
         ['view', M4],
         ['mvp', M4],
-        ['cam_pos', V3],
+        ['cam_x', V3],
         ['cam_fwd', V3],
         ['width', i32],
         ['height', i32],
         ['dt', f32],
         ['t', f32],
+        ['r', f32],
         ['seed',u32],
         ['ground', u32],
         ['selection', i32],
         ['grabbing', i32],
+        ['grabStart', i32],
+        ['grabRay', V3],
         ['grabTarget', V3],
         ['spacemin',V3],
-        ['spacemax',V3]
+        ['spacemax',V3],
+        ['damp',f32],
+        ['gravity',f32],
+        ['friction',f32],
+        ['collision',f32],
+        ['volstiff',f32],
+        ['shearstiff',f32],
     ]
 })
 
 export const TriVert = GPU.struct({
     name:'TriVert',
     fields:[
-        ['pos', V3],
+        ['x', V3],
         ['pidx', u32],
         ['norm', V3],
         ['mesh', u32],
@@ -182,6 +192,22 @@ export const Bounds = GPU.struct({
         ['dispatch', V3U]
     ]
 })
+
+export const Hit = GPU.struct({
+    name:'Hit',
+    fields:[
+        ['pid', u32],
+        ['x', V3]
+    ]
+})
+
+export const HitList = GPU.struct({
+    name:'HitList',
+    fields:[
+        ['list', GPU.array({ type:Hit, length:8192 })],
+        ['len', iatomic]
+    ]
+})
                                 
 
 const Meshes = GPU.array({ type:Mesh })
@@ -189,10 +215,11 @@ const Particles = GPU.array({ type:Particle })
 const Triangles = GPU.array({ type:Triangle })
 
 export async function Sim(width, height, ctx) {
-
+    console.time('gpu init')
     const gpu = new GPU()
     await gpu.init(width,height,ctx)
-
+    console.timeEnd('gpu init')
+    
     let bitmapIds = {'-1':-1}
 
     console.time('db load')
@@ -217,8 +244,6 @@ export async function Sim(width, height, ctx) {
         mesh.gravity = mdata.gravity
         mesh.volstiff = mdata.volstiff
         mesh.shearstiff = mdata.shearstiff
-        mesh.friction = mdata.friction
-        mesh.collidamp = mdata['collision damp']
         mesh.tex = bitmapIds[mdata.bitmapId]
         mesh.pi = particles.length
         mesh.fluid = mdata['fluid']
@@ -233,23 +258,25 @@ export async function Sim(width, height, ctx) {
         
         for (let vert of g.verts) {
             let p = Particle.alloc()
-            p.pos = p.prev_pos = p.rest_pos = vert.pos
+            p.x = p.xprev = p.x0 = vert.x
             for (let edge of vert.edges)
                 p.edges[p.nedges++] = mesh.pi + edge.vert.id
             p.mesh = midx
             p.fixed = mdata.fixed
+            p.friction = mdata.friction
+            p.collision = mdata.collision
             particles.push(p)           
 
             let adj = vert.ringn(RINGITER)
             let c = [0,0,0]
             for (let vadj of adj.verts)
-                c = [c[0] + vadj.pos.x, c[1] + vadj.pos.y, c[2] + vadj.pos.z]
+                c = [c[0] + vadj.x.x, c[1] + vadj.x.y, c[2] + vadj.x.z]
             c = c.map(val => val / adj.verts.length)
             p.c0 = v3(...c)
             
             let Q = M3js.of([0,0,0],[0,0,0],[0,0,0])
             for (let vadj of adj.verts) {
-                let rx = vadj.pos.x - c[0], ry = vadj.pos.y - c[1], rz = vadj.pos.z - c[2]
+                let rx = vadj.x.x - c[0], ry = vadj.x.y - c[1], rz = vadj.x.z - c[2]
                 Q = Q.add([[rx*rx, rx*ry, rx*rz], [ry*rx, ry*ry, ry*rz], [rz*rx, rz*ry, rz*rz]])
                 p.rings[p.nring++] = vadj.id + mesh.pi
             }
@@ -289,29 +316,27 @@ export async function Sim(width, height, ctx) {
     particles = Particles.of(particles)
     tris = Triangles.of(tris)
     groups = groups.map(group => u32arr.of([...group]))
-    
-    console.timeEnd('db load')
 
     let diameter = -1
     for (let p of particles)
         for (let i of range(p.nedges))
-            diameter = max(diameter, p.pos.dist(particles[p.edges[i]].pos))
+            diameter = max(diameter, p.x.dist(particles[p.edges[i]].x))
     if (diameter < 0) diameter = 0.02
-    
+
     const uniforms = Uniforms.alloc()
     uniforms.seed = 666
     uniforms.selection = uniforms.grabbing = -1
+
     const lights = GPU.array({ type:Light, length:LIGHTS.length }).alloc(LIGHTS.length)
     for (const [i,l] of enumerate(LIGHTS)) {
         lights[i].color = l.color
-        lights[i].pos = l.pos
+        lights[i].x = l.x
         lights[i].power = l.power
     }
-
-    dbg({ nparts:particles.length, nmeshes:meshes.length, ntris:tris.length, ngroups:groups.length, r:diameter/2 })
-
+    
     const threads = gpu.threads
     let bounds = Bounds.alloc()
+    let hitList = HitList.alloc()
     
     const bufs = Object.fromEntries([
         gpu.buf({ label:'pbuf', data:particles, usage:'STORAGE|COPY_SRC|COPY_DST|VERTEX' }),
@@ -325,33 +350,39 @@ export async function Sim(width, height, ctx) {
         gpu.buf({ label:'sorted', type:GPU.array({ type:u32, length:particles.length }), usage:'STORAGE' }),
         gpu.buf({ label:'lbuf', data:lights, usage:'UNIFORM|FRAGMENT|COPY_DST' }),
         gpu.buf({ label:'dbuf', type:GPU.array({ type: f32, length: 16384 }), usage:'STORAGE|COPY_SRC|COPY_DST' }),
-        gpu.buf({ label:'bounds', data:bounds, usage:'STORAGE|INDIRECT|COPY_SRC' })
+        gpu.buf({ label:'bounds', data:bounds, usage:'STORAGE|INDIRECT|COPY_SRC' }),
+        gpu.buf({ label:'hitlist', data:hitList, usage:'STORAGE|COPY_SRC|COPY_DST' })
     ].map(buf => [buf.label, buf]))
 
     const pd = ceil(particles.length/gpu.threads), pd2 = ceil(pd / gpu.threads)
+
+    console.timeEnd('db load')
     
     const syncUniforms = () => {
         uniforms.r = phys.r * diameter/2
-        uniforms.cam_pos = render.cam_pos
+        uniforms.cam_x = render.cam_x
         uniforms.width = width
         uniforms.height = height
         uniforms.cam_fwd = v3(sin(render.cam_lr) * cos(render.cam_ud),
                               cos(render.cam_lr) * cos(render.cam_ud),
                               sin(render.cam_ud)).normalized()
-        uniforms.proj = M4.perspective(render.fov, width/height, .01, 10000)
-        uniforms.view = M4.look(render.cam_pos, uniforms.cam_fwd, v3(0,0,1))
+        uniforms.proj = M4.perspective(render.fov, width/height, .001, 100)
+        uniforms.view = M4.look(render.cam_x, uniforms.cam_fwd, v3(0,0,1))
         uniforms.mvp = uniforms.view.mul(uniforms.proj)
-
-        phys.keys.filter(k => phys.type[k] == 'num' && k != 'r' && !k.endsWith('min') && !k.endsWith('max'))
-            .forEach(k => { uniforms[k] = phys[k] })
         uniforms.spacemin = v3(phys.xmin, phys.ymin, phys.zmin)
         uniforms.spacemax = v3(phys.xmax, phys.ymax, phys.zmax)
         uniforms.ground = render.ground ? 1 : 0
-        gpu.write(bufs.uni, uniforms)
+        uniforms.damp = phys.damp
+        uniforms.gravity = phys.gravity
+        uniforms.friction = phys.friction
+        uniforms.collision = phys.collision
+        uniforms.volstiff = phys.volstiff
+        uniforms.shearstiff = phys.shearstiff
+        return gpu.write(bufs.uni, uniforms)
     }
     
     async function Computer() {
-
+        
         let fwdstep = false
         let tstart = clock(), tlast = clock()
         let frames = 0, steps = 0
@@ -360,10 +391,10 @@ export async function Sim(width, height, ctx) {
         const wgsl = (await fetchtext('./compute.wgsl')).interp({ threads })
 
         const shader = await gpu.shader({
-            compute:true, wgsl:wgsl, defs:[Particle, Mesh, Uniforms, Bounds],
+            compute:true, wgsl:wgsl, defs:[Particle, Mesh, Uniforms, Bounds, Hit, HitList],
             storage:{
-                pbuf:Particles, mbuf:Meshes, sorted:u32arr, dbuf:f32arr, 
-                cnts:i32arr, cnts_atomic:iatomicarr, work:i32arr, group:u32arr,
+                pbuf:Particles, mbuf:Meshes, sorted:u32arr, dbuf:f32arr, hitlist:HitList,
+                cnts:i32arr, cnts_atomic:iatomicarr, work:i32arr, group:u32arr, off:V3I,
                 pavg:v3arr, vavg:v3arr, lavg:v3arr, iavg:m3arr, bounds:Bounds, bounds_wr:Bounds
             },
             uniform:{ uni:Uniforms }
@@ -377,13 +408,10 @@ export async function Sim(width, height, ctx) {
         const stamp = (tag) => { cmds.push(gpu.timestamp(tag)) }
         
         stamp('')
-        pass({ pipe:pipe({ shader, entryPoint:'predict', binds:['pbuf','mbuf','uni']}),
-               dispatch:pd, binds:{ pbuf,mbuf,uni }})
-        stamp('predict')
 
-        pass({ pipe:pipe({ shader, entryPoint:'collide_bounds', binds:['mbuf','pbuf','uni']}),
-               dispatch:pd, binds:{ pbuf,mbuf,uni } })
-        stamp('bounds collide')
+        pass({ pipe:pipe({ shader, entryPoint:'predict', binds:['pbuf','mbuf','uni','hitlist']}),
+               dispatch:pd, binds:{ pbuf, mbuf, uni, hitlist:bufs.hitlist }})
+        stamp('predict')
 
 
         const find_bounds = pipe({ shader, entryPoint:'find_bounds', binds:['pbuf','bounds_wr','uni']})
@@ -392,7 +420,7 @@ export async function Sim(width, height, ctx) {
             pass({ pipe:find_bounds, dispatch:pd2, binds:{ pbuf, bounds_wr:bounds, uni }})
             if (pd2 > 1) pass({ pipe:find_bounds, dispatch:1, binds:{ pbuf, bounds_wr:bounds, uni }})
         }
-        
+      
         
         let prefsum_down = pipe({ shader, entryPoint:'prefsum_down', binds:['cnts','work']})
         let prefsum_up = pipe({ shader, entryPoint:'prefsum_up', binds:['cnts','work']})
@@ -406,17 +434,23 @@ export async function Sim(width, height, ctx) {
         pass({ pipe:prefsum_up, dispatch:threads**2 - 1, binds:{ cnts, work:work1 }})
         pass({ pipe:pipe({ shader, entryPoint:'cntsort_sort', binds:['pbuf','cnts_atomic','sorted']}),
                dispatch:pd, binds:{ pbuf, cnts_atomic:cnts, sorted }})
+        stamp('counting sort')
         
-        let collides = []
-        for (let zoff of range(3))
-            for (let yoff of range(3))
-                for (let xoff of range(3))
-                    collides.push(pipe({ shader, entryPoint:'collide', constants: { xoff, yoff, zoff },
-                                         binds:['pbuf','cnts','sorted','uni','bounds']}))
         let indirect = [bounds.buffer, Bounds.dispatch.off]
-        for (let pipe of collides) 
-            pass({ pipe, indirect, binds:{ pbuf, cnts, sorted, uni, bounds }})
-        stamp('collisions')        
+        let collide = pipe({ shader, entryPoint:'collide', binds:['pbuf','cnts','sorted','uni','bounds','off'] })
+        for (let z of range(3))
+            for (let y of range(3))
+                for (let x of range(3)) 
+                    pass({ pipe:collide, indirect,
+                           binds:{ pbuf, cnts, sorted, uni, bounds,
+                                   off:gpu.buf({ label:'off'+[x,y,z], data:v3i(x,y,z), usage:'STORAGE' })}})
+        stamp('collisions')
+
+
+        pass({ pipe:pipe({ shader, entryPoint:'collide_bounds', binds:['mbuf','pbuf','uni']}),
+               dispatch:pd, binds:{ pbuf, mbuf, uni } })
+        stamp('bounds collide')
+
         
         let surfpipe = pipe({ shader, entryPoint:'surfmatch', binds:['pbuf','mbuf','uni','group']})
         for (let i of range(groups.length)) {
@@ -426,8 +460,10 @@ export async function Sim(width, height, ctx) {
         }
         stamp('surface match')
 
-        pass({ pipe:pipe({ shader, entryPoint:'update_vel', binds:['pbuf','mbuf','uni'] }),
-               dispatch:pd, binds:{ pbuf, mbuf, uni }})
+
+        
+        pass({ pipe:pipe({ shader, entryPoint:'update_vel', binds:['pbuf','mbuf','uni','dbuf'] }),
+               dispatch:pd, binds:{ pbuf, mbuf, uni, dbuf }})
         stamp('update vel')
 
         let mbufs = []
@@ -439,7 +475,7 @@ export async function Sim(width, height, ctx) {
                 vavg: gpu.buf({ label:'vavg', type:v3arr, size:v3arr.stride*n, usage:'STORAGE' }),
                 lavg: gpu.buf({ label:'lavg', type:v3arr, size:m3arr.stride*n, usage:'STORAGE' }),
                 iavg: gpu.buf({ label:'iavg', type:m3arr, size:m3arr.stride*n, usage:'STORAGE' }),
-                mbuf: gpu.offset(bufs.mbuf, Meshes.stride * i)
+                mbuf: gpu.offset(bufs.mbuf, Meshes.stride * i)            
             })
         }
         let avgs_prep = pipe({ shader, entryPoint:'avgs_prep', binds:['mbuf','pbuf','pavg','vavg','lavg','iavg']})
@@ -465,7 +501,7 @@ export async function Sim(width, height, ctx) {
 
         return {
             stats: async () => {
-                let ret = { kind:'phys', fps:frames / (tlast - tstart) }
+                let ret = { kind:'phys', fps:frames / (tlast - tstart) * phys.speed }
                 if (batch) {
                     let data = new BigInt64Array(await gpu.read(batch.stampBuf))
                     let labels = batch.stampLabels
@@ -484,12 +520,40 @@ export async function Sim(width, height, ctx) {
                     uniforms.seed = rand.next()
                     syncUniforms()
                     batch.execute()
+                    if (uniforms.grabStart == 1) {
+                        uniforms.grabStart = 0
+                        uniforms.selection = -1
+                        hitList = new HitList(await gpu.read(bufs.hitlist))
+                        if (hitList.len == 0) return
+                        let closest = { dist:Infinity }
+                        for (let i of range(hitList.len)) {
+                            let dist = hitList.list[i].x.sub(render.cam_x).mag()
+                            if (dist < closest.dist) closest = {i, dist}
+                        }
+                        let hit = hitList.list[closest.i]
+                        uniforms.selection = uniforms.grabbing = hit.pid
+                        uniforms.grabTarget = hit.x.clamp(uniforms.spacemin.addc(uniforms.r), uniforms.spacemax)
+                        let fwd = v3(sin(render.cam_lr), cos(render.cam_lr), 0).normalized()
+                        grabDepth = hit.x.sub(render.cam_x).dot(fwd)
+                        hitList.len = 0
+                        gpu.write(bufs.hitlist, hitList)
+                        dbg({ pid:uniforms.selection, x:hit.x, dist:closest.dist })
+                    }
+
                     frames++
                     steps++
+
+                    //gpu.read(bounds).then(d => {
+                    //    let b = new Bounds(d)
+                    //    dbg({min:b.min, max:b.max, bins:b.bins, stride:b.stride, nbins:b.nbins, chunks:b.chunks,
+                    //         chunkstride:b.chunk_stride, nchunks:b.nchunks, dispatch: b.dispatch})
+                    //})
                     
-                    //gpu.read(pbuf).then(d => { window.ps = new pbuf.type(d) })
-                    //gpu.read(mbuf).then(d => { window.ms = new mbuf.type(d) })
-                    //gpu.read(dbuf).then(d => { window.dbuf = new dbuf.type(d) })
+                    //gpu.read(dbuf).then(d => {
+                    //    d = new dbuf.type(d)
+                    //    dbg({0:d[0]})
+                    //})
+                    
                     
 
                 }
@@ -513,7 +577,7 @@ export async function Sim(width, height, ctx) {
 
         const setup = async () => {
             gpu.configure(ctx, width, height, render)
-            render.watch(render.keys.filter(key => !['fov','cam_pos','cam_ud','cam_lr'].includes(key)), () => {
+            render.watch(render.keys.filter(key => !['fov','cam_x','cam_ud','cam_lr'].includes(key)), () => {
                 if (render.color_op == 'max' || render.color_op == 'min')
                     render.color_src = render.color_dst = 'one'
                 if (render.alpha_op == 'max' || render.alpha_op == 'min')
@@ -522,7 +586,6 @@ export async function Sim(width, height, ctx) {
             })
 
             const td = ceil(tris.length/gpu.threads)
-
 
             let wgsl = (await fetchtext('./prerender.wgsl')).interp({threads: gpu.threads})
             const preShader = await gpu.shader({
@@ -567,7 +630,7 @@ export async function Sim(width, height, ctx) {
             if (tris.length > 0) {
                 let pipe = gpu.renderPipe({ shader, entry:'surface', binds:['mbuf', 'uni', 'lbuf', 'tex', 'samp'],
                     vertBufs: [{ buf:tribuf, arrayStride:TriVert.size,
-                                 attributes: [{ shaderLocation:0, offset:TriVert.pos.off, format:'float32x3' },
+                                 attributes: [{ shaderLocation:0, offset:TriVert.x.off, format:'float32x3' },
                                               { shaderLocation:1, offset:TriVert.norm.off, format:'float32x3' },
                                               { shaderLocation:2, offset:TriVert.mesh.off, format:'uint32' },
                                               { shaderLocation:3, offset:TriVert.uv.off, format:'float32x2' }]}]})
@@ -577,7 +640,7 @@ export async function Sim(width, height, ctx) {
             if (render.particles && particles.length > 0) {
                 let pipe = gpu.renderPipe({ shader, entry:'particle', binds:['mbuf','uni','lbuf'], topology:'triangle-list',
                     vertBufs: [{ buf:pbuf, arrayStride:Particles.stride, stepMode: 'instance',
-                                 attributes: [{ shaderLocation:0, offset:Particle.pos.off, format:'float32x3' },
+                                 attributes: [{ shaderLocation:0, offset:Particle.x.off, format:'float32x3' },
                                               { shaderLocation:1, offset:Particle.mesh.off, format:'uint32' }]}] })
                 draws.push(gpu.draw({ pipe, dispatch:[3, particles.length], binds:{ mbuf, uni, lbuf }}))
             }
@@ -585,7 +648,7 @@ export async function Sim(width, height, ctx) {
             if (render.normals) {
                 let pipe = gpu.renderPipe({ shader, entry:'vnormals', binds: ['uni'], topology: 'line-list',
                     vertBufs: [{ buf:tribuf, arrayStride:TriVert.size, stepMode: 'instance',
-                    attributes: [{ shaderLocation:0, offset:TriVert.pos.off, format:'float32x3' },
+                    attributes: [{ shaderLocation:0, offset:TriVert.x.off, format:'float32x3' },
                                  { shaderLocation:1, offset:TriVert.norm.off, format:'float32x3' }]}]})
                 draws.push(gpu.draw({ pipe, dispatch:[2, tris.length*3], binds:{ uni }}))
             }
@@ -603,7 +666,7 @@ export async function Sim(width, height, ctx) {
 
         return {
             stats: async () => {
-                const ret = { kind:'render', fps: frames/(tlast - tstart) }
+                const ret = { kind:'render', fps: frames / (tlast - tstart) * phys.speed }
                 if (batch) {
                     let data = new BigInt64Array(await gpu.read(batch.stampBuf))
                     let labels = batch.stampLabels
@@ -629,10 +692,7 @@ export async function Sim(width, height, ctx) {
             }
         }
     }
-
-    const computer = await Computer()
-    const renderer = await Renderer()
-
+    
     const pull = async (bufName) => {
         return new bufs[bufName].type(await gpu.read(bufs[bufName]))
     }
@@ -647,7 +707,6 @@ export async function Sim(width, height, ctx) {
     function resize(w, h) {
         width = w
         height = h
-        dbg({width,height})
         gpu.configure(ctx,w,h,render)
 
     }
@@ -671,50 +730,37 @@ export async function Sim(width, height, ctx) {
 
     function strafeCam(dx, dy) {
         const delta = v3(-dx * cos(render.cam_lr), dx * sin(render.cam_lr), -dy)
-        render.cam_pos = render.cam_pos.add(delta)
+        render.cam_x = render.cam_x.add(delta)
     }
 
     function advanceCam(delta) {
         const camDir = v3(sin(render.cam_lr) * cos(render.cam_ud),
                           cos(render.cam_lr) * cos(render.cam_ud),
                           sin(render.cam_ud)).normalized()
-        render.cam_pos = render.cam_pos.add(v3(delta * camDir.x, delta * camDir.y, delta * camDir.z))
+        render.cam_x = render.cam_x.add(v3(delta * camDir.x, delta * camDir.y, delta * camDir.z))
     }
 
     let grabDepth
 
     async function grabParticle(x, y) {
-        let ray = clipToRay(x,y)
-        let rsq = (uniforms.r)**2
-        let particles = new Particles(await gpu.read(bufs.pbuf))
-
-        let hitdists = []
-        for (const [i, p] of enumerate(particles)) {
-            let co = render.cam_pos.sub(p.pos)
-            let b = ray.dot(co)
-            let discrim = b*b - co.dot(co) + rsq
-            if (discrim < 0) continue
-            let dist = -b - sqrt(discrim)
-            if (dist > 0) hitdists.push([i,dist])
-        }
-        uniforms.selection = uniforms.grabbing = -1
-        if (hitdists.length == 0) return
-        hitdists.sort((a,b) => a[1]-b[1])
-        uniforms.selection = hitdists[0][0]
-        let p = particles[uniforms.selection]
-        dbg({pid:uniforms.selection, pos:p.pos, norm:p.norm})
-        let fwd = v3(sin(render.cam_lr), cos(render.cam_lr), 0).normalized()
-        grabDepth = particles[uniforms.selection].pos.sub(render.cam_pos).dot(fwd)
+        uniforms.grabRay = clipToRay(x,y)
+        uniforms.grabStart = 1
+        uniforms.grabbing = -1
     }
 
-    function moveParticle(x, y, drop) {
-        if (uniforms.selection == -1) return
+    function moveParticle(x, y) {
+        if (uniforms.grabbing == -1) return
         let r = clipToRay(x,y)
         let fwd = v3(sin(render.cam_lr), cos(render.cam_lr), 0).normalized()
         let c = grabDepth/r.dot(fwd)
         let R = r.mulc(c)
-        uniforms.grabTarget = render.cam_pos.add(R)
-        uniforms.grabbing = drop ? -1 : uniforms.selection
+        uniforms.grabTarget = render.cam_x.add(R)
+        uniforms.grabTarget = uniforms.grabTarget.max(uniforms.spacemin.addc(uniforms.r))
+        uniforms.grabTarget = uniforms.grabTarget.min(uniforms.spacemax.subc(uniforms.r))
+    }
+
+    function dropParticle() {
+        uniforms.grabbing = -1
     }
 
     async function fixParticle() {
@@ -727,6 +773,14 @@ export async function Sim(width, height, ctx) {
         gpu.write(buf, p)
     }
 
+    console.time('compute init')
+    const computer = await Computer()
+    console.timeEnd('compute init')
+    console.time('renderer init')
+    const renderer = await Renderer()
+    console.timeEnd('renderer init')
+
+    dbg({ nparts:particles.length, nmeshes:meshes.length, ntris:tris.length, ngroups:groups.length, r:diameter/2 })
     return scope(stmt => eval(stmt))
 
 }
@@ -744,8 +798,8 @@ export const loadWavefront = async (name, data, transaction) => {
         let [key, ...toks] = line.split(/\s/)
         if (key == 'v') {
             let vdata = toks.map(parseFloat)
-            let pos = vdata.slice(0, 3)
-            vertIds[localVerts++] = await transaction.wait(verts.add({ pos, meshId }))
+            let x = vdata.slice(0, 3)
+            vertIds[localVerts++] = await transaction.wait(verts.add({ x, meshId }))
         } else if (key == 'vt') {
             let vtdata = toks.map(parseFloat)
             uvIds[localUVs++] = vtdata.slice(0, 2)

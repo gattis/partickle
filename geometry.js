@@ -50,8 +50,8 @@ class GeoDB extends IDBDatabase {
 }
     
 export class GeoVert {
-    constructor(id, pos) {
-        Object.assign(this, {id, pos, emap:new Map(), edges:[]})
+    constructor(id, x) {
+        Object.assign(this, {id, x, emap:new Map(), edges:[]})
     }
 
     update_edges() {
@@ -88,8 +88,8 @@ export class GeoTri {
     }
 
     area() {
-        let ab = this.verts[1].pos.sub(this.verts[0].pos)
-        let ac = this.verts[2].pos.sub(this.verts[0].pos)
+        let ab = this.verts[1].x.sub(this.verts[0].x)
+        let ac = this.verts[2].x.sub(this.verts[0].x)
         return ab.cross(ac).mag() / 2
     }
 }
@@ -115,7 +115,7 @@ export class GeoMesh {
     }
 
     volume() {
-        return this.tris.map(tri => tri.verts[0].pos.cross(tri.verts[1].pos).dot(tri.verts[2].pos)).sum()
+        return this.tris.map(tri => tri.verts[0].x.cross(tri.verts[1].x).dot(tri.verts[2].x)).sum()
     }
 
     surfarea() {
@@ -173,7 +173,7 @@ class GeoTransact extends IDBTransaction {
         let verts = []
         for (let [vidx,[vid,vert]] of enumerate(vertData)) {
             vmap[vid] = vidx
-            verts.push(v3(...vert.pos).mul(scale).add(offset))
+            verts.push(v3(...vert.x).mul(scale).add(offset))
         }
         let faces = [], uvs = []
         for (let [fid,face] of faceData) {

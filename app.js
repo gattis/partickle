@@ -86,12 +86,12 @@ cv.on('pointerdown', down => {
     window.on('pointermove', move => {
         const dx = .005*move.movementX, dy = -.005*move.movementY
         if (down.button == 0) sim.rotateCam(dx, dy)
-        else if (down.button == 1) sim.strafeCam(dx, dy)
+        else if (down.button == 1) sim.strafeCam(dx*.1, dy*.1)
         else if (down.button == 2) sim.moveParticle(move.x, move.y)
     })
     window.on('pointerup', up => {
         cv.style.cursor = 'grab'
-        sim.moveParticle(up.x, up.y, true)
+        sim.dropParticle()
         window.off(['pointerup','pointermove'])
     })
     down.preventDefault()
@@ -99,7 +99,7 @@ cv.on('pointerdown', down => {
 
 cv.on('wheel', wheel => {
     if (!window.sim) return
-    sim.advanceCam(-0.001 * wheel.deltaY)
+    sim.advanceCam(-0.0001 * wheel.deltaY)
 }, { passive: true })
 
 cv.on('contextmenu', menu => menu.preventDefault())
@@ -135,6 +135,8 @@ paused.parentNode.insertBefore(step,paused.nextSibling.nextSibling)
 
 async function updateInfo() {
     const lines = []
+    lines.push(sim.gpu.info.description)
+    lines.push(sim.gpu.info.driver)
     let physStat = await sim.computer.stats(), renderStat = await sim.renderer.stats()
     let ttotal = 0n
     for (const { kind, fps, profile } of [physStat, renderStat]) {
@@ -143,13 +145,13 @@ async function updateInfo() {
         for (const [label, nsecs] of profile) lines.push(`${label}: ${nsecs / 1000n} &mu;s`)
         let steptot = profile.sum(([label, nsecs]) => nsecs, 0n) / 1000n
         if (steptot > 0n) lines.push(`${kind} tot: ${steptot} &mu;s`)
-        lines.push('&nbsp;')
+        //lines.push('&nbsp;')
         ttotal += steptot * (kind == 'render' ? 1n : BigInt(phys.frameratio))
     }
     lines.push(`frameratio(avg): ${(physStat.fps / renderStat.fps).toFixed(3)}`)
     if (ttotal > 0n) lines.push(`total: ${ttotal} &mu;s`)
     lines.push('&nbsp;')
-    lines.push(`cam pos: ${sim.uniforms.cam_pos}`)
+    lines.push(`cam pos: ${sim.uniforms.cam_x}`)
     $`#info`.innerHTML = lines.join('<br/>')
     setTimeout(updateInfo, 500)
 }

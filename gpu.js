@@ -27,8 +27,9 @@ const NODE = globalThis.process && process.release.name == 'node'
 export const GPU = class GPU {
 
     async init(width, height, ctx) {
-        let promise = navigator.gpu.requestAdapter({ powerPreference: 'high-performance' })
-        const adapter = await promise
+        const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' })
+        if (adapter == null) throw new Error("no adapter")
+        const info = await adapter.requestAdapterInfo()
         const limits = {}, features = []
         for (const feature of adapter.features.keys())
             if (!['multi-planar-formats','clear-texture','chromium-experimental-dp4a'].includes(feature))
@@ -49,8 +50,8 @@ export const GPU = class GPU {
         if (features.includes('timestamp-query')) this.ts = true
 
         const threads = floor(sqrt(limits.maxComputeWorkgroupsPerDimension))
-
-        Object.assign(this, { dev, adapter, threads } )
+        
+        Object.assign(this, { dev, adapter, threads, info } )
 
 
     }
@@ -119,6 +120,7 @@ export const GPU = class GPU {
 
     write(buf, data) {
         this.dev.queue.writeBuffer(buf.buffer, buf.resource.offset, data.buffer, data.byteOffset, buf.size)
+        return this.dev.queue.onSubmittedWorkDone()
     }
 
     async shader(args) {
@@ -245,7 +247,7 @@ export const GPU = class GPU {
             const useStencil = Boolean(this.pref.depth_fmt.match(/stencil/))
             const canvasTex = this.ctx.getCurrentTexture()
 	    const canvasView = canvasTex.createView()
-            const [view, resolveTarget] = multisamp ? [this.colorTex.createView(), canvasView] : [canvasView]
+            const [view, resolveTarget] = multisamp ? [this.colorTex.createView(), canvasView] : [canvasView]          
             const pass = encoder.beginRenderPass({
                 colorAttachments: [{
                     view, resolveTarget,
@@ -494,6 +496,8 @@ export const V3I = GPU.struct({
     align: 16
 })
 
+export const v3i = (...args) => V3I.of(...args)
+
 export const V3U = GPU.struct({
     name: 'vec3<u32>',
     fields: [['x', u32], ['y', u32], ['z', u32]],
@@ -565,6 +569,7 @@ export const V3 = class extends Float32Array {
     minc() { return min(this[0],this[1],this[2]) }
     max(b) { return v3(max(this[0],b[0]), max(this[1],b[1]), max(this[2],b[2])) }
     min(b) { return v3(min(this[0],b[0]), min(this[1],b[1]), min(this[2],b[2])) }
+    clamp(lo,hi) { return this.max(lo).min(hi) }
     isFinite() { return isFinite(this[0]) && isFinite(this[1]) && isFinite(this[2]) }
     toString() { return 'v3('+[0,1,2].map(i => this[i].toFixed(5).replace(/\.?0+$/g, '').replace(/^-0$/,'0')).join(',')+')' }
 
