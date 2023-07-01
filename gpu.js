@@ -49,7 +49,7 @@ export const GPU = class GPU {
         this.copyBufs = []
         if (features.includes('timestamp-query')) this.ts = true
 
-        const threads = floor(sqrt(limits.maxComputeWorkgroupsPerDimension))
+        const threads = limits.maxComputeWorkgroupSizeX / 16
         
         Object.assign(this, { dev, adapter, threads, info } )
 

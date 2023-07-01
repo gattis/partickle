@@ -139,13 +139,15 @@ async function updateInfo() {
     lines.push(sim.gpu.info.driver)
     let physStat = await sim.computer.stats(), renderStat = await sim.renderer.stats()
     let ttotal = 0n
-    for (const { kind, fps, profile } of [physStat, renderStat]) {
-        lines.push(`${kind} fps:${fps.toFixed(2)}`)
+    lines.push(`render fps:${renderStat.fps.toFixed(2)}`)
+    lines.push(`phys fps:${physStat.fps.toFixed(2)}`)
+    lines.push('&nbsp;')
+    for (const { kind, profile } of [physStat, renderStat]) {
         if (!profile) continue
         for (const [label, nsecs] of profile) lines.push(`${label}: ${nsecs / 1000n} &mu;s`)
         let steptot = profile.sum(([label, nsecs]) => nsecs, 0n) / 1000n
         if (steptot > 0n) lines.push(`${kind} tot: ${steptot} &mu;s`)
-        //lines.push('&nbsp;')
+        lines.push('&nbsp;')
         ttotal += steptot * (kind == 'render' ? 1n : BigInt(phys.frameratio))
     }
     lines.push(`frameratio(avg): ${(physStat.fps / renderStat.fps).toFixed(3)}`)

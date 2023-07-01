@@ -110,6 +110,7 @@ export const Particle = GPU.struct({
         ['grab', i32],
         ['bintop', i32],
         ['qinv', M3],
+        ['dbg',i32],
         ['edges', GPU.array({ type:u32, length:MAXEDGES })],
         ['rings', GPU.array({ type:u32, length:MAXRING })]
     ]
@@ -330,6 +331,7 @@ export async function Sim(width, height, ctx) {
     }
     
     const threads = gpu.threads
+    const bindim = 256
     let bounds = Bounds.alloc()
     let hitList = HitList.alloc()
     
@@ -338,13 +340,12 @@ export async function Sim(width, height, ctx) {
         gpu.buf({ label:'mbuf', data:meshes, usage:'STORAGE|COPY_DST|COPY_SRC' }),
         gpu.buf({ label:'uni', data:uniforms, usage:'UNIFORM|COPY_DST' }),
         gpu.buf({ label:'tribuf', data:tris, usage:'STORAGE|VERTEX|COPY_DST' }),
-        gpu.buf({ label:'cnts', type:GPU.array({ type:i32, length:threads**3 }), usage:'STORAGE|COPY_DST' }),
-        gpu.buf({ label:'work1', type:GPU.array({ type:i32, length:threads**2 }), usage:'STORAGE' }),
-        gpu.buf({ label:'work2', type:GPU.array({ type:i32, length:threads }), usage:'STORAGE' }),
+        gpu.buf({ label:'cnts', type:GPU.array({ type:i32, length:bindim**3 }), usage:'STORAGE|COPY_DST' }),
+        gpu.buf({ label:'work1', type:GPU.array({ type:i32, length:bindim**2 }), usage:'STORAGE' }),
+        gpu.buf({ label:'work2', type:GPU.array({ type:i32, length:bindim }), usage:'STORAGE' }),
 	gpu.buf({ label:'work3', type:GPU.array({ type:i32, length:2 }), usage:'STORAGE' }),
         gpu.buf({ label:'sorted', type:GPU.array({ type:u32, length:particles.length }), usage:'STORAGE' }),
         gpu.buf({ label:'lbuf', data:lights, usage:'UNIFORM|FRAGMENT|COPY_DST' }),
-        gpu.buf({ label:'dbuf', type:GPU.array({ type: f32, length: 16384 }), usage:'STORAGE|COPY_SRC|COPY_DST' }),
         gpu.buf({ label:'bounds', data:bounds, usage:'STORAGE|INDIRECT|COPY_SRC' }),
         gpu.buf({ label:'hitlist', data:hitList, usage:'STORAGE|COPY_SRC|COPY_DST' })
     ].map(buf => [buf.label, buf]))
@@ -383,19 +384,19 @@ export async function Sim(width, height, ctx) {
         let frames = 0, steps = 0
 
         const threads = gpu.threads
-        const wgsl = (await fetchtext('./compute.wgsl')).interp({ threads })
+        const wgsl = (await fetchtext('./compute.wgsl')).interp({ threads, bindim })
 
         const shader = await gpu.shader({
             compute:true, wgsl:wgsl, defs:[Particle, Mesh, Uniforms, Bounds, Hit, HitList],
             storage:{
-                pbuf:Particles, mbuf:Meshes, sorted:u32arr, dbuf:f32arr, hitlist:HitList,
+                pbuf:Particles, mbuf:Meshes, sorted:u32arr, hitlist:HitList,
                 cnts:i32arr, cnts_atomic:iatomicarr, work:i32arr, group:u32arr, off:V3I,
                 pavg:v3arr, vavg:v3arr, lavg:v3arr, iavg:m3arr, bounds:Bounds, bounds_wr:Bounds
             },
             uniform:{ uni:Uniforms }
         })
 
-        const { uni, mbuf, pbuf, cnts, work1, work2, work3, sorted, dbuf, bounds } = bufs
+        const { uni, mbuf, pbuf, cnts, work1, work2, work3, sorted, bounds } = bufs
 
         const cmds = []
         const pass = (...args) => { cmds.push(gpu.computePass(...args)) }
@@ -422,21 +423,25 @@ export async function Sim(width, height, ctx) {
         cmds.push(gpu.clearBuffer(cnts, 0, cnts.size))
         pass({ pipe:pipe({ shader, entryPoint:'cntsort_cnt', binds:['pbuf','cnts_atomic','uni','bounds']}),
                dispatch:pd, binds:{ pbuf, cnts_atomic:cnts, uni, bounds }})
-        pass({ pipe:prefsum_down, dispatch:threads**2, binds:{ cnts, work:work1 }})
-        pass({ pipe:prefsum_down, dispatch:threads, binds:{ cnts:work1, work:work2 }})
+        pass({ pipe:prefsum_down, dispatch:bindim**2, binds:{ cnts, work:work1 }})
+        pass({ pipe:prefsum_down, dispatch:bindim, binds:{ cnts:work1, work:work2 }})
         pass({ pipe:prefsum_down, dispatch:1, binds:{ cnts:work2, work:work3 }})
-        pass({ pipe:prefsum_up, dispatch:threads - 1, binds:{ cnts:work1, work:work2 }})
-        pass({ pipe:prefsum_up, dispatch:threads**2 - 1, binds:{ cnts, work:work1 }})
+        pass({ pipe:prefsum_up, dispatch:bindim - 1, binds:{ cnts:work1, work:work2 }})
+        pass({ pipe:prefsum_up, dispatch:bindim**2 - 1, binds:{ cnts, work:work1 }})
         pass({ pipe:pipe({ shader, entryPoint:'cntsort_sort', binds:['pbuf','cnts_atomic','sorted']}),
                dispatch:pd, binds:{ pbuf, cnts_atomic:cnts, sorted }})
         stamp('counting sort')
-        
-        let collide = pipe({ shader, entryPoint:'collide', binds:['pbuf','cnts','sorted','uni','bounds','off'] })
+
+
+        pass({ pipe:pipe({ shader, entryPoint:'collinter', binds:['pbuf','cnts','sorted','uni','bounds'] }),
+               dispatch:pd, binds:{ pbuf, cnts, sorted, uni, bounds }})
+        stamp('interbin collisions')        
+        let collintra = pipe({ shader, entryPoint:'collintra', binds:['pbuf','cnts','sorted','uni','bounds','off'] })
         for (let [x,y,z] of range3d(3,3,3)) {
             let off = gpu.buf({ label:'off'+x+y+z, data:v3i(x,y,z), usage:'STORAGE' })
-            pass({ pipe:collide, dispatch:pd, binds:{ pbuf, cnts, sorted, uni, bounds, off }})
+            pass({ pipe:collintra, dispatch:pd, binds:{ pbuf, cnts, sorted, uni, bounds, off }})
         }
-        stamp('collisions')
+        stamp('intrabin collisions')
 
 
         pass({ pipe:pipe({ shader, entryPoint:'collide_bounds', binds:['mbuf','pbuf','uni']}),
@@ -447,15 +452,15 @@ export async function Sim(width, height, ctx) {
         let surfpipe = pipe({ shader, entryPoint:'surfmatch', binds:['pbuf','mbuf','uni','group']})
         for (let i of range(groups.length)) {
             let group = gpu.buf({ label: 'group'+i, data:groups[i], usage:'STORAGE' })
-            let dispatch = ceil(groups[i].length / gpu.threads)
+            let dispatch = ceil(groups[i].length / threads)
             pass({ pipe:surfpipe, dispatch, binds:{ pbuf, mbuf, uni, group }})
         }
         stamp('surface match')
 
 
         
-        pass({ pipe:pipe({ shader, entryPoint:'update_vel', binds:['pbuf','mbuf','uni','dbuf'] }),
-               dispatch:pd, binds:{ pbuf, mbuf, uni, dbuf }})
+        pass({ pipe:pipe({ shader, entryPoint:'update_vel', binds:['pbuf','mbuf','uni'] }),
+               dispatch:pd, binds:{ pbuf, mbuf, uni }})
         stamp('update vel')
 
         let mbufs = []
@@ -534,19 +539,6 @@ export async function Sim(width, height, ctx) {
 
                     frames++
                     steps++
-
-                    //gpu.read(bounds).then(d => {
-                    //    let b = new Bounds(d)
-                    //    dbg({min:b.min, max:b.max, bins:b.bins, stride:b.stride, nbins:b.nbins, chunks:b.chunks,
-                    //         chunkstride:b.chunk_stride, nchunks:b.nchunks, dispatch: b.dispatch})
-                    //})
-                    
-                    //gpu.read(dbuf).then(d => {
-                    //    d = new dbuf.type(d)
-                    //    dbg({0:d[0]})
-                    //})
-                    
-                    
 
                 }
                 tlast = clock()
