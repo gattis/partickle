@@ -18,6 +18,12 @@ export const range = function* (a,b,step) {
     else
         for (let val = start; val > stop; val += step) yield val
 }
+export const range3d = function* (x,y,z) {
+    for (const zi of range(z))
+        for (const yi of range(y))
+            for (const xi of range(x))
+                yield [xi,yi,zi]
+}
 
 export const scope = (cb) => {
     return new Proxy({}, {

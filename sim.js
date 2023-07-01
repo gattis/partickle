@@ -16,7 +16,7 @@ const LIGHTS = [
 ]
 
 const MESH_DEFAULTS = {
-    name:'default', bitmapId:-1, color:[1,1,1,1], offset:[0,0,0], rotation:[0,0,0], gravity:1, invmass:10,
+    name:'default', bitmapId:-1, color:[1,1,1,1], offset:[0,0,0], rotation:[0,0,0],
     scale:[1,1,1], volstiff:1, shearstiff:1, friction:1, collision:1, fluid:0, fixed: 0
 }
 
@@ -80,7 +80,6 @@ export const Mesh = GPU.struct({
         ['tex', i32],
         ['color', V4],
         ['pcolor', V4],
-        ['gravity', f32],
         ['volstiff', f32],
         ['shearstiff', f32],
         ['fluid', i32],
@@ -109,6 +108,7 @@ export const Particle = GPU.struct({
         ['collision', f32],
         ['dv',V3],
         ['grab', i32],
+        ['bintop', i32],
         ['qinv', M3],
         ['edges', GPU.array({ type:u32, length:MAXEDGES })],
         ['rings', GPU.array({ type:u32, length:MAXRING })]
@@ -150,7 +150,7 @@ export const Uniforms = GPU.struct({
         ['spacemin',V3],
         ['spacemax',V3],
         ['damp',f32],
-        ['gravity',f32],
+        ['a',V3],
         ['friction',f32],
         ['collision',f32],
         ['volstiff',f32],
@@ -186,10 +186,6 @@ export const Bounds = GPU.struct({
         ['bins', V3I],
         ['stride', V3I],
         ['nbins', i32],
-        ['chunks', V3I],
-        ['chunk_stride', V3I],
-        ['nchunks', i32],
-        ['dispatch', V3U]
     ]
 })
 
@@ -241,7 +237,6 @@ export async function Sim(width, height, ctx) {
         let mesh = Mesh.alloc()
         mesh.color = v4(...mdata.color)
         mesh.pcolor = particleColors[midx % particleColors.length]
-        mesh.gravity = mdata.gravity
         mesh.volstiff = mdata.volstiff
         mesh.shearstiff = mdata.shearstiff
         mesh.tex = bitmapIds[mdata.bitmapId]
@@ -373,7 +368,7 @@ export async function Sim(width, height, ctx) {
         uniforms.spacemax = v3(phys.xmax, phys.ymax, phys.zmax)
         uniforms.ground = render.ground ? 1 : 0
         uniforms.damp = phys.damp
-        uniforms.gravity = phys.gravity
+        uniforms.a = v3(0,0,-phys.gravity);
         uniforms.friction = phys.friction
         uniforms.collision = phys.collision
         uniforms.volstiff = phys.volstiff
@@ -436,14 +431,11 @@ export async function Sim(width, height, ctx) {
                dispatch:pd, binds:{ pbuf, cnts_atomic:cnts, sorted }})
         stamp('counting sort')
         
-        let indirect = [bounds.buffer, Bounds.dispatch.off]
         let collide = pipe({ shader, entryPoint:'collide', binds:['pbuf','cnts','sorted','uni','bounds','off'] })
-        for (let z of range(3))
-            for (let y of range(3))
-                for (let x of range(3)) 
-                    pass({ pipe:collide, indirect,
-                           binds:{ pbuf, cnts, sorted, uni, bounds,
-                                   off:gpu.buf({ label:'off'+[x,y,z], data:v3i(x,y,z), usage:'STORAGE' })}})
+        for (let [x,y,z] of range3d(3,3,3)) {
+            let off = gpu.buf({ label:'off'+x+y+z, data:v3i(x,y,z), usage:'STORAGE' })
+            pass({ pipe:collide, dispatch:pd, binds:{ pbuf, cnts, sorted, uni, bounds, off }})
+        }
         stamp('collisions')
 
 

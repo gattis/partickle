@@ -91,18 +91,17 @@ struct FragDepth {
 }
 
 const sq3 = 1.73205077648;
-
+const rexp = 1.15;
 fn impostor(vertidx:u32, x:v3, r:f32) -> v3 {
     let fwd = normalize(x - uni.cam_x);
     let right = normalize(v3(-fwd.y, fwd.x, 0));
     let up = normalize(cross(fwd,right));
-    let z = -fwd;
     if (vertidx == 0) {
-        return r*(2*up + z);
+        return r*rexp*(2*up);
     } else if (vertidx == 1) {
-        return r*(sq3*right - up + z);
+        return r*rexp*(sq3*right - up);
     }
-    return r*(-sq3*right - up + z);
+    return r*rexp*(-sq3*right - up);
 }
 
 struct PartIO {
