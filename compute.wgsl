@@ -157,13 +157,45 @@ fn cntsort_sort(@builtin(global_invocation_id) gid:vec3<u32>) {
     sorted[x] = pid;
 }
 
+alias v3p = ptr<function,v3>;
+
+fn collide(ix:v3p, idv:v3p, iv:v3, ixprev:v3, iw:f32, iec:f32, ief:f32, inedges:u32, imesh:u32, jpid:u32) {
+    let jp = &pbuf[jpid];
+    if (inedges > 0 && (*jp).nedges > 0 && imesh == (*jp).mesh) { return; }
+    var jx = (*jp).x;
+    let r = (*ix) - jx;
+    let dist = length(r);
+    let c = 2*uni.r - dist;
+    if (c <= 0) { return; }
+    let n = select(r / dist, v3(0,0,1), dist == 0);                
+    let jw = select(1.0, 0.0, (*jp).grab == 1 || (*jp).fixed == 1);
+    let w = iw + jw;
+    if (w == 0) { return; }
+    let wiw = iw/w;
+    let wjw = jw/w;
+    let dx = c * n;
+    (*ix) += wiw * dx;
+    jx -= wjw * dx;               
+    let v = iv - (*jp).v;
+    let vnmag = dot(v,n);
+    let vt = v - n*vnmag;
+    let ec = iec * (*jp).collision;
+    let ef = pow(ief * (*jp).friction, 3);
+    let vnext = ((*ix) - jx - (ixprev - (*jp).xprev)) / uni.dt;
+    var dv = n*(-dot(vnext,n) - ec*vnmag) - ef*vt;
+    (*idv) += wiw * dv;
+    (*jp).dv -= wjw * dv;
+    (*jp).x = jx;
+}
+
+
 @compute @workgroup_size(${threads})
 fn collinter(@builtin(global_invocation_id) gid:vec3<u32>) {
     var pid = gid.x;
     if (pid >= arrayLength(&pbuf)) { return; }
     if (pbuf[pid].bintop != 1) { return; }
     let hash = pbuf[pid].hash;
-    let bin = (hash / bounds.stride) % bounds.bins;    
+    let bin = (hash / bounds.stride) % bounds.bins;
     let istart = cnts[hash];
     let stop = cnts[hash + 1];
     for (var i = istart; i < stop; i++) {
@@ -178,32 +210,7 @@ fn collinter(@builtin(global_invocation_id) gid:vec3<u32>) {
         let iw = select(1.0, 0.0, (*ip).grab == 1 || (*ip).fixed == 1);
         var idv = (*ip).dv;
         for (var j = i+1; j < stop; j++) {
-            let jp = &pbuf[sorted[j]];
-            if (inedges > 0 && (*jp).nedges > 0 && imesh == (*jp).mesh) { continue; }
-            var jx = (*jp).x;
-            let r = ix - jx;
-            let dist = length(r);
-            let c = 2*uni.r - dist;
-            if (c <= 0) { continue; }
-            let n = select(r / dist, v3(0,0,1), dist == 0);                
-            let jw = select(1.0, 0.0, (*jp).grab == 1 || (*jp).fixed == 1);
-            let w = iw + jw;
-            if (w == 0) { continue; }
-            let wiw = iw/w;
-            let wjw = jw/w;
-            let dx = c * n;                
-            ix += wiw * dx;
-            jx -= wjw * dx;               
-            let v = iv - (*jp).v;
-            let vnmag = dot(v,n);
-            let vt = v - n*vnmag;
-            let ec = iec * (*jp).collision;
-            let ef = pow(ief * (*jp).friction, 3);
-            let vnext = (ix - jx - (ixprev - (*jp).xprev)) / uni.dt;
-            var dv = n*(-dot(vnext,n) - ec*vnmag) - ef*vt;
-            idv += wiw * dv;
-            (*jp).dv -= wjw * dv;
-            (*jp).x = jx;
+            collide(&ix, &idv, iv, ixprev, iw, iec, ief, inedges, imesh, sorted[j]);
         }        
         (*ip).x = ix;
         (*ip).dv = idv;
@@ -215,59 +222,41 @@ fn collinter(@builtin(global_invocation_id) gid:vec3<u32>) {
 fn collintra(@builtin(global_invocation_id) gid:vec3<u32>) {
     var pid = gid.x;
     if (pid >= arrayLength(&pbuf)) { return; }
+    if (pbuf[pid].bintop != 1) { return; }
     let hash = pbuf[pid].hash;
     let bin = (hash / bounds.stride) % bounds.bins;
     if (any(bin % 3 != off)) { return; }
     let incs = array(v3i(-1,0,1), v3i(-1,1,1), v3i(0,-1,1), v3i(0,0,1), v3i(0,1,0), v3i(0,1,1),
                      v3i(1,-1,0), v3i(1,-1,1), v3i(1,0,0), v3i(1,0,1), v3i(1,1,-1), v3i(1,1,0), v3i(1,1,1));
-    let ip = &pbuf[pid];
-    let iec = uni.collision * (*ip).collision;
-    let ief = uni.friction * (*ip).friction;
-    let inedges = (*ip).nedges;
-    let imesh = (*ip).mesh;
-    var ix = (*ip).x;
-    let ixprev = (*ip).xprev;
-    let iv = (*ip).v; 
-    let iw = select(1.0, 0.0, (*ip).grab == 1 || (*ip).fixed == 1);
-    var idv = (*ip).dv;
-    for (var b = 0; b < 13; b++) {
-        let bin2 = bin + incs[b];
-        if (any(bin2 < v3i(0)) || any(bin2 >= bounds.bins)) { continue; }
-        let hash2 = dot(bin2,bounds.stride);
-        if (hash2 < 0 || hash2 >= bounds.nbins) { continue; }
-        let jstart = cnts[hash2];
-        let jstop = cnts[hash2 + 1];            
-        for (var j = jstart; j < jstop; j++) {
-            let jp = &pbuf[sorted[j]];
-            if (inedges > 0 && (*jp).nedges > 0 && imesh == (*jp).mesh) { continue; }
-            var jx = (*jp).x;
-            let r = ix - jx;
-            let dist = length(r);
-            let c = 2*uni.r - dist;
-            if (c <= 0) { continue; }
-            let n = select(r / dist, v3(0,0,1), dist == 0);                
-            let jw = select(1.0, 0.0, (*jp).grab == 1 || (*jp).fixed == 1);
-            let w = iw + jw;
-            if (w == 0) { continue; }
-            let wiw = iw/w;
-            let wjw = jw/w;
-            let dx = c * n;                
-            ix += wiw * dx;
-            jx -= wjw * dx;               
-            let v = iv - (*jp).v;
-            let vnmag = dot(v,n);
-            let vt = v - n*vnmag;
-            let ec = iec * (*jp).collision;
-            let ef = pow(ief * (*jp).friction, 3);
-            let vnext = (ix - jx - (ixprev - (*jp).xprev)) / uni.dt;
-            var dv = n*(-dot(vnext,n) - ec*vnmag) - ef*vt;
-            idv += wiw * dv;
-            (*jp).dv -= wjw * dv;
-            (*jp).x = jx;
+
+    let istart = cnts[hash];
+    let stop = cnts[hash + 1];
+    for (var i = istart; i < stop; i++) {
+        let ip = &pbuf[sorted[i]];
+        let iec = uni.collision * (*ip).collision;
+        let ief = uni.friction * (*ip).friction;
+        let inedges = (*ip).nedges;
+        let imesh = (*ip).mesh;
+        var ix = (*ip).x;
+        let ixprev = (*ip).xprev;
+        let iv = (*ip).v; 
+        let iw = select(1.0, 0.0, (*ip).grab == 1 || (*ip).fixed == 1);
+        var idv = (*ip).dv;
+        for (var b = 0; b < 13; b++) {
+            let bin2 = bin + incs[b];
+            if (any(bin2 < v3i(0)) || any(bin2 >= bounds.bins)) { continue; }
+            let hash2 = dot(bin2,bounds.stride);
+            if (hash2 < 0 || hash2 >= bounds.nbins) { continue; }
+            let jstart = cnts[hash2];
+            let jstop = cnts[hash2 + 1];            
+            for (var j = jstart; j < jstop; j++) {
+                collide(&ix, &idv, iv, ixprev, iw, iec, ief, inedges, imesh, sorted[j]);
+            }
         }
+        (*ip).x = ix;
+        (*ip).dv = idv;
     }
-    (*ip).x = ix;
-    (*ip).dv = idv;
+
 }
 
                                                             

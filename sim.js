@@ -110,7 +110,6 @@ export const Particle = GPU.struct({
         ['grab', i32],
         ['bintop', i32],
         ['qinv', M3],
-        ['dbg',i32],
         ['edges', GPU.array({ type:u32, length:MAXEDGES })],
         ['rings', GPU.array({ type:u32, length:MAXRING })]
     ]
@@ -331,7 +330,7 @@ export async function Sim(width, height, ctx) {
     }
     
     const threads = gpu.threads
-    const bindim = 256
+    const bindim = 255
     let bounds = Bounds.alloc()
     let hitList = HitList.alloc()
     
@@ -432,17 +431,16 @@ export async function Sim(width, height, ctx) {
                dispatch:pd, binds:{ pbuf, cnts_atomic:cnts, sorted }})
         stamp('counting sort')
 
-
         pass({ pipe:pipe({ shader, entryPoint:'collinter', binds:['pbuf','cnts','sorted','uni','bounds'] }),
                dispatch:pd, binds:{ pbuf, cnts, sorted, uni, bounds }})
         stamp('interbin collisions')        
+
         let collintra = pipe({ shader, entryPoint:'collintra', binds:['pbuf','cnts','sorted','uni','bounds','off'] })
         for (let [x,y,z] of range3d(3,3,3)) {
             let off = gpu.buf({ label:'off'+x+y+z, data:v3i(x,y,z), usage:'STORAGE' })
             pass({ pipe:collintra, dispatch:pd, binds:{ pbuf, cnts, sorted, uni, bounds, off }})
         }
         stamp('intrabin collisions')
-
 
         pass({ pipe:pipe({ shader, entryPoint:'collide_bounds', binds:['mbuf','pbuf','uni']}),
                dispatch:pd, binds:{ pbuf, mbuf, uni } })
