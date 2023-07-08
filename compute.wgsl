@@ -17,20 +17,27 @@ fn softmin(a:f32, b:f32, k:f32) -> f32 {
 fn predict(@builtin(global_invocation_id) gid:vec3<u32>) {
     let pid:u32 = gid.x;
     if (pid >= arrayLength(&pbuf)) { return; }
-    var p = pbuf[pid]; 
+    let p = &pbuf[pid]; 
 
-    let m = mbuf[p.mesh];
-    /*if ((*p).nedges != 0) {
+    
+    /*
+      if ((*p).nedges != 0) {
+      let m = mbuf[(*p).mesh];
       let ri = (*p).x - m.ci;
       (*p).v += min(1.0, uni.dt * 20.0 * uni.damp) * (m.vi + cross(m.wi, ri) - (*p).v);
       }*/
 
-    p.v += uni.a * uni.dt;
-    p.xprev = p.x;
-    p.x += p.v * uni.dt;
+    (*p).v += uni.a * uni.dt;
+    /*let vmag = length((*p).v);
+    if (vmag > 0) {
+        (*p).v = (*p).v / vmag * min(vmag,4.0);
+        }*/
+        
+    (*p).xprev = (*p).x;
+    (*p).x += (*p).v * uni.dt;
 
     if (uni.grabStart == 1) {
-        let co = uni.cam_x - p.x;
+        let co = uni.cam_x - (*p).x;
         let b = dot(uni.grabRay, co);
         let discrim = b*b - dot(co,co) + uni.r*uni.r;
         if (discrim >= 0) {
@@ -39,35 +46,32 @@ fn predict(@builtin(global_invocation_id) gid:vec3<u32>) {
                 let spot = atomicAdd(&hitlist.len, 1);
                 if (spot < 1024) {
                     hitlist.list[spot].pid = pid;
-                    hitlist.list[spot].x = p.x;
+                    hitlist.list[spot].x = (*p).x;
                 }
             }
         }
     }
    
     if (uni.grabbing == i32(pid)) {
-        p.grab = 1;
-        p.x = uni.grabTarget;        
-    } else if (p.grab == 1) {
-        p.grab = 0;
-        p.x += .1*(uni.grabTarget - p.xprev);
-    }
-
-    if (p.fixed == 1) {
-        p.v = v3(0);
-        p.x = p.xprev;
+        (*p).grab = 1;
+        (*p).x = uni.grabTarget;        
+    } else if ((*p).grab == 1) {
+        (*p).grab = 0;
+        (*p).x += .1*(uni.grabTarget - (*p).xprev);
+    } else if ((*p).fixed == 1) {
+        (*p).v = v3(0);
+        (*p).x = (*p).xprev;
     }
     
-    p.pmin = p.x;
-    p.pmax = p.x;
-    p.bintop = 0;
-    p.dv = v3(0);
-    pbuf[pid] = p;
+    (*p).pmin = (*p).x;
+    (*p).pmax = (*p).x;
+    (*p).celloff = 0;
+    (*p).cellpos = -1;
 
 }
 
 
-const rbin = 1f;
+const rcell = 1f;
 
 @compute @workgroup_size(${threads})
 fn find_bounds(@builtin(local_invocation_id) lid:vec3<u32>,
@@ -106,9 +110,10 @@ fn find_bounds(@builtin(local_invocation_id) lid:vec3<u32>,
     b.min = pbuf[0].pmin;
     b.max = pbuf[0].pmax;
     let span = b.max - b.min;
-    b.bins = v3i(floor(span / (2 * uni.r * rbin)) + 1);
-    b.stride = v3i(1, b.bins.x, b.bins.x * b.bins.y);
-    b.nbins = b.bins.x * b.bins.y * b.bins.z;
+    b.grid = v3i(floor(span / (2 * uni.r * rcell)) + 1);
+    b.stride = v3i(1, b.grid.x, b.grid.x * b.grid.y);
+    b.grid.z = min(b.grid.z, ${celldim**3} / b.stride.z);    
+    b.ncells = b.stride.z * b.grid.z;
     bounds_wr = b;
 }
 
@@ -119,102 +124,112 @@ fn cntsort_cnt(@builtin(global_invocation_id) gid:vec3<u32>) {
     let pid:u32 = gid.x;
     if (pid >= arrayLength(&pbuf)) { return; }
     let p = &pbuf[pid];
-    var sd = v3i(((*p).x - bounds.min) / (2 * uni.r * rbin));
-    sd = min(max(sd, v3i(0)), bounds.bins - 1);
+    var sd = v3i(((*p).x - bounds.min) / (2 * uni.r * rcell));
+    sd = min(max(sd, v3i(0)), bounds.grid - 1);
     let hash = dot(sd,bounds.stride);
     (*p).hash = hash;
     let cnt = atomicAdd(&cnts_atomic[hash], 1);
-    (*p).bintop = select(0,1,cnt == 0);
+    (*p).cellpos = cnt;
 }
 
-@compute @workgroup_size(${bindim})
+@compute @workgroup_size(${celldim})
 fn prefsum_down(@builtin(local_invocation_id) lid:vec3<u32>,
                 @builtin(workgroup_id) wid:vec3<u32>,
                 @builtin(num_workgroups) wgs:vec3<u32>) {
-    let k = lid.x + wid.x * ${bindim};
-    for (var stride = 1u; stride < ${bindim}u; stride = stride << 1u) {
+    let k = lid.x + wid.x * ${celldim};
+    for (var stride = 1u; stride < ${celldim}u; stride = stride << 1u) {
         let opt = lid.x >= stride;
         let sum = select(0, cnts[k] + cnts[k - stride], opt);
         storageBarrier();
         if (opt) { cnts[k] = sum; }
         storageBarrier();
     }
-    if (lid.x != ${bindim - 1} || wgs.x == 1) { return; }
+    if (lid.x != ${celldim - 1} || wgs.x == 1) { return; }
     work[wid.x] = cnts[k];
 }
 
-@compute @workgroup_size(${bindim})
+@compute @workgroup_size(${celldim})
 fn prefsum_up(@builtin(local_invocation_id) lid:vec3<u32>, @builtin(workgroup_id) wid:vec3<u32>) {
-    cnts[lid.x + (wid.x + 1) * ${bindim}] += work[wid.x];
+    cnts[lid.x + (wid.x + 1) * ${celldim}] += work[wid.x];
 }
 
 @compute @workgroup_size(${threads})
 fn cntsort_sort(@builtin(global_invocation_id) gid:vec3<u32>) {
     let pid:u32 = gid.x;
     if (pid >= arrayLength(&pbuf)) { return; }
-    let p = pbuf[pid];
-    let x = atomicSub(&cnts_atomic[p.hash], 1) - 1;
+    let p = &pbuf[pid];
+    let x = atomicSub(&cnts_atomic[(*p).hash], 1) - 1;
     sorted[x] = pid;
 }
 
-alias v3p = ptr<function,v3>;
 
-fn collide(ix:v3p, idv:v3p, iv:v3, ixprev:v3, iw:f32, iec:f32, ief:f32, inedges:u32, imesh:u32, jpid:u32) {
-    let jp = &pbuf[jpid];
-    if (inedges > 0 && (*jp).nedges > 0 && imesh == (*jp).mesh) { return; }
-    var jx = (*jp).x;
-    let r = (*ix) - jx;
-    let dist = length(r);
-    let c = 2*uni.r - dist;
-    if (c <= 0) { return; }
-    let n = select(r / dist, v3(0,0,1), dist == 0);                
-    let jw = select(1.0, 0.0, (*jp).grab == 1 || (*jp).fixed == 1);
-    let w = iw + jw;
-    if (w == 0) { return; }
-    let wiw = iw/w;
-    let wjw = jw/w;
-    let dx = c * n;
-    (*ix) += wiw * dx;
-    jx -= wjw * dx;               
-    let v = iv - (*jp).v;
-    let vnmag = dot(v,n);
-    let vt = v - n*vnmag;
-    let ec = iec * (*jp).collision;
-    let ef = pow(ief * (*jp).friction, 3);
-    let vnext = ((*ix) - jx - (ixprev - (*jp).xprev)) / uni.dt;
-    var dv = n*(-dot(vnext,n) - ec*vnmag) - ef*vt;
-    (*idv) += wiw * dv;
-    (*jp).dv -= wjw * dv;
-    (*jp).x = jx;
+alias v3p = ptr<function,v3>;
+const incs = array(v3i(-1,0,1), v3i(-1,1,1), v3i(0,-1,1), v3i(0,0,1), v3i(0,1,0), v3i(0,1,1),
+                   v3i(1,-1,0), v3i(1,-1,1), v3i(1,0,0), v3i(1,0,1), v3i(1,1,-1), v3i(1,1,0), v3i(1,1,1));
+
+
+fn collide(hash:i32, cell:v3i, intra:bool, nb:i32) {
+    let istart = cnts[hash];
+    let istop = cnts[hash + 1];
+    for (var i = istart; i < istop; i++) {
+
+        let ipid = sorted[i];
+        let ip = &pbuf[ipid];
+        let iec = uni.collision * (*ip).collision;
+        let ief = uni.friction * (*ip).friction;
+        let inedges = (*ip).nedges;
+        let imesh = (*ip).mesh;
+        let iw = select(1.0, 0.0, (*ip).grab == 1 || (*ip).fixed == 1);
+        
+        for (var b = 0; b < nb; b++) {
+            var jstart:i32;
+            var jstop:i32;
+            if (intra) {
+                let adjcell = cell + incs[b];
+                if (any(adjcell < v3i(0)) || any(adjcell >= bounds.grid)) { continue; }
+                let adjhash = dot(adjcell,bounds.stride);
+                if (adjhash < 0 || adjhash >= bounds.ncells) { continue; }
+                jstart = cnts[adjhash];
+                jstop = cnts[adjhash + 1];            
+            } else {
+                jstart = i+1;
+                jstop = istop;
+            }
+            for (var j = jstart; j < jstop; j++) {
+                let jpid = sorted[j];    
+                let jp = &pbuf[jpid];
+                if (inedges > 0 && (*jp).nedges > 0 && imesh == (*jp).mesh) { continue; }
+                let r = (*ip).x - (*jp).x;
+                let dist = length(r);
+                let c = 2*uni.r - dist;
+                if (c <= 0) { continue; }
+                let n = select(r / dist, v3(0,0,1), dist == 0);                
+                let jw = select(1.0, 0.0, (*jp).grab == 1 || (*jp).fixed == 1);
+                let w = iw + jw;
+                if (w == 0) { continue; }
+                let wiw = iw/w;
+                let wjw = -jw/w;
+                let ec = iec * (*jp).collision;
+                let ef = pow(ief * (*jp).friction, 3);
+                let v = (*ip).v - (*jp).v;
+                let vt = v - n*dot(v,n);
+                let dx = 2*ec*c*n - ef*vt*uni.dt;
+                (*ip).x += wiw * dx;
+                (*jp).x += wjw * dx;
+            }
+        }
+    }
 }
 
 
 @compute @workgroup_size(${threads})
 fn collinter(@builtin(global_invocation_id) gid:vec3<u32>) {
     var pid = gid.x;
-    if (pid >= arrayLength(&pbuf)) { return; }
-    if (pbuf[pid].bintop != 1) { return; }
+    if (pid >= arrayLength(&pbuf)) { return; }    
+    if (pbuf[pid].cellpos != 0) { return; }
     let hash = pbuf[pid].hash;
-    let bin = (hash / bounds.stride) % bounds.bins;
-    let istart = cnts[hash];
-    let stop = cnts[hash + 1];
-    for (var i = istart; i < stop; i++) {
-        let ip = &pbuf[sorted[i]];       
-        let iec = uni.collision * (*ip).collision;
-        let ief = uni.friction * (*ip).friction;
-        let inedges = (*ip).nedges;
-        let imesh = (*ip).mesh;
-        var ix = (*ip).x;
-        let ixprev = (*ip).xprev;
-        let iv = (*ip).v; 
-        let iw = select(1.0, 0.0, (*ip).grab == 1 || (*ip).fixed == 1);
-        var idv = (*ip).dv;
-        for (var j = i+1; j < stop; j++) {
-            collide(&ix, &idv, iv, ixprev, iw, iec, ief, inedges, imesh, sorted[j]);
-        }        
-        (*ip).x = ix;
-        (*ip).dv = idv;
-    }
+    let cell = (hash / bounds.stride) % bounds.grid;
+    collide(hash, cell, false, 1);
 }
 
 
@@ -222,41 +237,13 @@ fn collinter(@builtin(global_invocation_id) gid:vec3<u32>) {
 fn collintra(@builtin(global_invocation_id) gid:vec3<u32>) {
     var pid = gid.x;
     if (pid >= arrayLength(&pbuf)) { return; }
-    if (pbuf[pid].bintop != 1) { return; }
+    if (pbuf[pid].cellpos != 1) { return; }
     let hash = pbuf[pid].hash;
-    let bin = (hash / bounds.stride) % bounds.bins;
-    if (any(bin % 3 != off)) { return; }
-    let incs = array(v3i(-1,0,1), v3i(-1,1,1), v3i(0,-1,1), v3i(0,0,1), v3i(0,1,0), v3i(0,1,1),
-                     v3i(1,-1,0), v3i(1,-1,1), v3i(1,0,0), v3i(1,0,1), v3i(1,1,-1), v3i(1,1,0), v3i(1,1,1));
-
-    let istart = cnts[hash];
-    let stop = cnts[hash + 1];
-    for (var i = istart; i < stop; i++) {
-        let ip = &pbuf[sorted[i]];
-        let iec = uni.collision * (*ip).collision;
-        let ief = uni.friction * (*ip).friction;
-        let inedges = (*ip).nedges;
-        let imesh = (*ip).mesh;
-        var ix = (*ip).x;
-        let ixprev = (*ip).xprev;
-        let iv = (*ip).v; 
-        let iw = select(1.0, 0.0, (*ip).grab == 1 || (*ip).fixed == 1);
-        var idv = (*ip).dv;
-        for (var b = 0; b < 13; b++) {
-            let bin2 = bin + incs[b];
-            if (any(bin2 < v3i(0)) || any(bin2 >= bounds.bins)) { continue; }
-            let hash2 = dot(bin2,bounds.stride);
-            if (hash2 < 0 || hash2 >= bounds.nbins) { continue; }
-            let jstart = cnts[hash2];
-            let jstop = cnts[hash2 + 1];            
-            for (var j = jstart; j < jstop; j++) {
-                collide(&ix, &idv, iv, ixprev, iw, iec, ief, inedges, imesh, sorted[j]);
-            }
-        }
-        (*ip).x = ix;
-        (*ip).dv = idv;
-    }
-
+    let cell = (hash / bounds.stride) % bounds.grid;
+    let off = (pbuf[pid].celloff / v3i(1,3,9)) % v3i(3,3,3);
+    pbuf[pid].celloff++;
+    if (any(cell % 3 != off)) { return; }
+    collide(hash, cell, true, 13);
 }
 
                                                             
@@ -266,26 +253,20 @@ const plane_normals = array(v3(1,0,0),v3(0,1,0),v3(0,0,1),v3(-1,0,0),v3(0,-1,0),
 fn collide_bounds(@builtin(global_invocation_id) gid:vec3<u32>) {
     let pid = gid.x;
     if (pid >= arrayLength(&pbuf)) { return; }
-    var p = pbuf[pid];
-    if (p.fixed == 1 || p.grab == 1) { return; }
+    let p = &pbuf[pid];
+    if ((*p).fixed == 1 || (*p).grab == 1) { return; }
 
-    let ec = uni.collision * p.collision;
-    let ef = pow(uni.friction * p.friction, 3.0);
+    let ec = uni.collision * (*p).collision;
+    let ef = pow(uni.friction * (*p).friction, 3.0);
     for (var i = 0; i < 6; i++) {
         let n = plane_normals[i];
         let point = select(uni.spacemin, uni.spacemax, i >= 3);
-        let dist = uni.r - dot(p.x - point, n);
+        let dist = uni.r - dot((*p).x - point, n);
         if (dist < 0) { continue; }
-        let v = p.v;
-        let dx = dist*n;
-        let vnmag = dot(v,n);
-        let vn = n * vnmag;
-        let vt = v - vn;
-        p.x += dx;
-        p.dv -= vn + dx / uni.dt;
-        p.dv -= ec * vn + ef * vt;
+        let v = (*p).v;
+        let vt = v - n*dot(v,n);       
+        (*p).x += 2*ec*dist*n - ef*vt*uni.dt;
     }    
-    pbuf[pid] = p;
 }
 
 fn invert(m:m3) -> m3 {
@@ -310,21 +291,21 @@ fn surfmatch(@builtin(global_invocation_id) gid:vec3<u32>) {
     let ngroup = arrayLength(&group);
     if (gid.x >= ngroup) { return; }
     var pidstart = group[gid.x];
-    let pstart = pbuf[pidstart];
-    let m = mbuf[pstart.mesh];
+    let pstart = &pbuf[pidstart];
+    let m = mbuf[(*pstart).mesh];
     var volstiff = uni.volstiff * m.volstiff;
     var shearstiff = uni.shearstiff * m.shearstiff;
     if (volstiff == 0 || shearstiff == 0) { return; }
     shearstiff = 1.0/shearstiff - 1.0;
     volstiff = 0.01 * (1.0/volstiff - 1.0);
            
-    var n = pstart.nring;
+    var n = (*pstart).nring;
     if (n < 4) { return; }
-    var pids = pstart.rings;
-    let s = pstart.s;
-    let Qinv = pstart.qinv;
+    var pids = (*pstart).rings;
+    let s = (*pstart).s;
+    let Qinv = (*pstart).qinv;
 
-    let c0 = pstart.c0;
+    let c0 = (*pstart).c0;
     var c = v3();
     var x:array<v3,64>;
     var R0:array<v3,64>;
@@ -409,13 +390,12 @@ fn surfmatch(@builtin(global_invocation_id) gid:vec3<u32>) {
 fn update_vel(@builtin(global_invocation_id) gid:vec3<u32>) {
     let pid = gid.x;
     if (pid >= arrayLength(&pbuf)) { return; }
-    var p = pbuf[pid];
-    if (p.fixed == 1 || p.grab == 1) {
-        pbuf[pid].v = v3(0);
+    let p = &pbuf[pid];
+    if ((*p).fixed == 1 || (*p).grab == 1) {
+        (*p).v = v3(0);
         return;
     }
-    p.v = (p.x - p.xprev) / uni.dt + p.dv;    
-    pbuf[pid] = p;  
+    (*p).v = ((*p).x - (*p).xprev) / uni.dt;
 }
 
 @compute @workgroup_size(${threads})

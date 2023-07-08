@@ -49,7 +49,7 @@ export const GPU = class GPU {
         this.copyBufs = []
         if (features.includes('timestamp-query')) this.ts = true
 
-        const threads = limits.maxComputeWorkgroupSizeX / 16
+        const threads = limits.maxComputeWorkgroupSizeX / 8
         
         Object.assign(this, { dev, adapter, threads, info } )
 
@@ -221,22 +221,20 @@ export const GPU = class GPU {
         return { resource: this.dev.createSampler({ magFilter: 'linear', minFilter: 'linear' }) }
     }
 
-    bindGroup(pipe, binds, offsets) {
+    bindGroup(pipe, binds) {
         const entries = pipe.shader.binds.filter(b => b.label in binds).map(b => ({ binding: b.idx, resource: binds[b.label].resource }))
         return this.dev.createBindGroup({ entries, layout: pipe.layout})
     }
 
     computePass(args) {
-        let { pipe, dispatch, indirect, binds, offsets } = args
-        
-        if (!indirect && dispatch.length == undefined) dispatch = [dispatch]
-        const bg = this.bindGroup(pipe, binds, offsets)
+        let { pipe, dispatch, binds } = args        
+        if (dispatch.length == undefined) dispatch = [dispatch]
+        const bg = this.bindGroup(pipe, binds)
         return (encoder) => {
             const pass = encoder.beginComputePass()
             pass.setPipeline(pipe.pipeline)
-            pass.setBindGroup(0, bg)
-            if (indirect) pass.dispatchWorkgroupsIndirect(...indirect)
-            else pass.dispatchWorkgroups(...dispatch)
+            pass.setBindGroup(0, bg)            
+            pass.dispatchWorkgroups(...dispatch)
             pass.end()
         }
     }

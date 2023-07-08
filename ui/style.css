@@ -60,6 +60,26 @@ output {
     bottom: 10px;
 }
 
+#instruct {
+    position:fixed;
+    pointer-events:none;
+    bottom: 0px;
+    width:35%;
+    text-align:center;
+    left:40%;
+}
+
+#instruct td {
+    text-align: left;
+    font-size:6pt;
+    color:white;
+    border: 0;
+}
+
+#instruct img {
+    vertical-align: middle;
+}
+
 input[type=file] {
     width:0
 }

@@ -7,9 +7,6 @@ alias m4 = mat4x4<f32>;
 
 const shininess = 16.0;
 const ambient = 0.2f;
-const cube = array<v3,14>(v3(-1,1,1), v3(1,1,1), v3(-1,-1,1), v3(1,-1,1), v3(1,-1,-1),
-                          v3(1,1,1), v3(1,1,-1), v3(-1,1,1), v3(-1,1,-1), v3(-1,-1,1),
-                          v3(-1,-1,-1), v3(1,-1,-1), v3(-1,1,-1), v3(1,1,-1));
 
 fn frag(worldx:v3, norm:v3, color:v4) -> v4 {
     var mix = color.rgb * ambient;
@@ -201,29 +198,51 @@ fn trace_sphere(vertx:v3, center:v3, r:f32) -> RayTrace {
 
 struct GndIO {
     @builtin(position) position:v4,
-    @location(0) vertx:v3,
+    @location(0) worldx:v3,
 };
 
-const rgnd = 200.0f;
-const gnd_color = v4(1, 1, 1, 1);
 
-@vertex fn ground_vert(@builtin(vertex_index) vertidx:u32) -> GndIO {
+@vertex fn walls_vert(@builtin(vertex_index) vertidx:u32) -> GndIO {
     var out:GndIO;
-    let vx = cube[vertidx];
-    out.vertx = vx*rgnd;
-    out.position = uni.mvp * v4(rgnd * (vx - v3(0,0,1)), 1);
+    let p = uni.spacemax;
+    let n = uni.spacemin;    
+    out.worldx = array(v3(n.x,p.y,p.z), v3(p.x,p.y,p.z), v3(n.x,n.y,p.z), v3(p.x,n.y,p.z), v3(p.x,n.y,n.z), v3(p.x,p.y,p.z), v3(p.x,p.y,n.z),
+                   v3(n.x,p.y,p.z), v3(n.x,p.y,n.z), v3(n.x,n.y,p.z), v3(n.x,n.y,n.z), v3(p.x,n.y,n.z), v3(n.x,p.y,n.z), v3(p.x,p.y,n.z))[vertidx];
+    out.position = uni.mvp * v4(out.worldx, 1);
     return out;
 }
 
-fn checkers(xy:v2) -> f32 {
-    return f32(abs(i32(floor(xy.x)) + i32(floor(xy.y))) % 2);
+fn checkers(xy:v2) -> i32 {
+    return abs(i32(floor(xy.x)) + i32(floor(xy.y))) % 2;
 }
 
-@fragment fn ground_frag(input:GndIO) -> FragDepth {
-    let trace = trace_sphere(input.vertx, v3(0,0,-rgnd), rgnd);
-    if (trace.t < 0) { discard; }
-    let pattern = .2*checkers(trace.hit.xy/.1) + .3*checkers(trace.hit.xy) + 0.1;
-    let fade = 10/(10 + length(trace.hit.xy));
-    var color = v4(v3(clamp(pattern,.2,.8)*fade),1);
-    return FragDepth(frag(trace.hit, trace.normal, color), trace.clip_depth);
+@fragment fn walls_frag(input:GndIO) -> @location(0) v4 {
+
+
+    let w = input.worldx;
+    let p = uni.spacemax;
+    let n = uni.spacemin;
+
+    let dists = array(abs(w.x-n.x), abs(w.x-p.x), abs(w.y-n.y), abs(w.y-p.y), abs(w.z-n.z), abs(w.z-p.z));
+    let planes = array(w.yz, w.yz, w.xz, w.xz, w.xy, w.xy);
+    var dmin = 1e20;
+    var imin = 0;
+    for (var i = 0; i < 6; i++) {
+        if (dists[i] < dmin) {
+            dmin = dists[i];
+            imin = i;
+        }
+    }
+    let plane = planes[imin];
+    
+    
+    let minor = checkers(plane/.1);
+    let major = checkers(plane);
+    let pattern = array(.2,.25,.40,.45)[minor + 2*major];
+    let color = v4(pattern*v3(.8,.8,.9), 1);
+    return frag(input.worldx, v3(0,0,1), color);
+
+
+
+
 }

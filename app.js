@@ -75,18 +75,22 @@ for (const key of render.keys)
     if (!render.hidden[key])
         createCtrl[render.type[key]](render,key,'#rpref')
 
-cv.on('pointerdown', down => {
+cv.addEventListener('mousedown', down => {
+    if (editor.open)
+        return editor.close()
     if (!window.sim) return
     if (down.button == 2) {
        sim.grabParticle(down.x, down.y)
        cv.style.cursor = 'grabbing'
     } else if (down.button == 1 || down.button == 0) {
+        if (sim.uniforms.grabbing >= 0)
+            return sim.fixParticle()
         cv.style.cursor = 'all-scroll'
     }
     window.on('pointermove', move => {
         const dx = .005*move.movementX, dy = -.005*move.movementY
         if (down.button == 0) sim.rotateCam(dx, dy)
-        else if (down.button == 1) sim.strafeCam(dx*.1, dy*.1)
+        else if (down.button == 1) sim.strafeCam(dx*.2, dy*.2)
         else if (down.button == 2) sim.moveParticle(move.x, move.y)
     })
     window.on('pointerup', up => {
@@ -99,7 +103,7 @@ cv.on('pointerdown', down => {
 
 cv.on('wheel', wheel => {
     if (!window.sim) return
-    sim.advanceCam(-0.0001 * wheel.deltaY)
+    sim.advanceCam(-0.0002 * wheel.deltaY)
 }, { passive: true })
 
 cv.on('contextmenu', menu => menu.preventDefault())
@@ -157,12 +161,6 @@ async function updateInfo() {
     $`#info`.innerHTML = lines.join('<br/>')
     setTimeout(updateInfo, 500)
 }
-
-
-
-$`#fix`.on('click', () => sim.fixParticle())
-
-
 
 class EditorTable extends HTMLDivElement {
     constructor(name) {
