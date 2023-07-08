@@ -237,7 +237,7 @@ fn collinter(@builtin(global_invocation_id) gid:vec3<u32>) {
 fn collintra(@builtin(global_invocation_id) gid:vec3<u32>) {
     var pid = gid.x;
     if (pid >= arrayLength(&pbuf)) { return; }
-    if (pbuf[pid].cellpos != 1) { return; }
+    if (pbuf[pid].cellpos != 0) { return; }
     let hash = pbuf[pid].hash;
     let cell = (hash / bounds.stride) % bounds.grid;
     let off = (pbuf[pid].celloff / v3i(1,3,9)) % v3i(3,3,3);
