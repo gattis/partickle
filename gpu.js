@@ -49,7 +49,7 @@ export const GPU = class GPU {
         this.copyBufs = []
         if (features.includes('timestamp-query')) this.ts = true
 
-        const threads = limits.maxComputeWorkgroupSizeX / 8
+        const threads = limits.maxComputeWorkgroupSizeX
         
         Object.assign(this, { dev, adapter, threads, info } )
 
@@ -127,8 +127,8 @@ export const GPU = class GPU {
         const { compute, wgsl, defs, storage, uniform, textures, samplers } = args
         const binds = []
         for (const [label,type] of Object.entries(storage||{}))
-            binds.push({ label, type, as: compute && label != 'bounds' ? '<storage,read_write>':'<storage>',
-                         layout:{ buffer:{ type: compute && label != 'bounds' ? 'storage' : 'read-only-storage' } }, idx:binds.length })
+            binds.push({ label, type, as: compute ? '<storage,read_write>':'<storage>',
+                         layout:{ buffer:{ type: compute ? 'storage' : 'read-only-storage' } }, idx:binds.length })
         for (const [label,type] of Object.entries(uniform||{}))
             binds.push({ label, type, as: '<uniform>', layout:{ buffer:{ type:'uniform' } }, idx:binds.length })
         for (const [label,type] of Object.entries(textures||{}))
@@ -141,7 +141,7 @@ export const GPU = class GPU {
             args.wgsl
         ].join('\n\n')
         if (!compute) code = code.replaceAll('atomic<u32>', 'u32').replaceAll('atomic<i32>','i32')
-        if (FF) code = code.replaceAll('const','let')
+        //if (FF) code = code.replaceAll('const','let')
         args.binds = binds
         args.module = this.dev.createShaderModule({ code })
 
@@ -221,20 +221,21 @@ export const GPU = class GPU {
         return { resource: this.dev.createSampler({ magFilter: 'linear', minFilter: 'linear' }) }
     }
 
-    bindGroup(pipe, binds) {
-        const entries = pipe.shader.binds.filter(b => b.label in binds).map(b => ({ binding: b.idx, resource: binds[b.label].resource }))
-        return this.dev.createBindGroup({ entries, layout: pipe.layout})
+    bindGroup(shader, layout, binds) {
+        const entries = shader.binds.filter(b => b.label in binds).map(b => ({ binding: b.idx, resource: binds[b.label].resource }))
+        return this.dev.createBindGroup({ entries, layout })
     }
 
     computePass(args) {
-        let { pipe, dispatch, binds } = args        
-        if (dispatch.length == undefined) dispatch = [dispatch]
-        const bg = this.bindGroup(pipe, binds)
+        let { pipe, dispatch, indirect, binds } = args        
+        if (!indirect && dispatch.length == undefined) dispatch = [dispatch]
+        const bg = this.bindGroup(pipe.shader, pipe.layout, binds)
         return (encoder) => {
             const pass = encoder.beginComputePass()
             pass.setPipeline(pipe.pipeline)
             pass.setBindGroup(0, bg)            
-            pass.dispatchWorkgroups(...dispatch)
+            if (indirect) pass.dispatchWorkgroupsIndirect(...indirect)
+            else pass.dispatchWorkgroups(...dispatch)
             pass.end()
         }
     }
@@ -271,7 +272,7 @@ export const GPU = class GPU {
     draw(args) {
         let { pipe, dispatch, binds } = args
         if (dispatch.length == undefined) dispatch = [dispatch]
-        const bg = this.bindGroup(pipe, binds)
+        const bg = this.bindGroup(pipe.shader, pipe.layout, binds)
         return (pass) => {
             pass.setPipeline(pipe.pipeline)
             pass.setBindGroup(0, bg)
@@ -284,7 +285,7 @@ export const GPU = class GPU {
     drawIndexed(args) {
         let { pipe, dispatch, binds } = args
         if (dispatch.length == undefined) dispatch = [dispatch]
-        const bg = this.bindGroup(pipe, binds)
+        const bg = this.bindGroup(pipe.shader, pipe.layout, binds)
         return (pass) => {
             pass.setPipeline(pipe.pipeline)
             pass.setBindGroup(0, bg)
@@ -311,7 +312,7 @@ export const GPU = class GPU {
 
     encode(cmds) {
         const dev = this.dev
-        const querySet = this.ts ? dev.createQuerySet({ type: 'timestamp', count: 64 }) : null
+        const querySet = this.ts && dev.createQuerySet ? dev.createQuerySet({ type: 'timestamp', count: 64 }) : null
         let queryBuf
         queryBuf = this.buf({ label:'query', type: u64, length: 64, usage: 'COPY_SRC'+(FF?'':'|QUERY_RESOLVE')})
         return {
@@ -810,6 +811,7 @@ export const M4 = GPU.array({
 export const m4 = (...args) => M4.of(...args)
 export const m3arr = GPU.array({ type:M3 })
 export const v3arr = GPU.array({ type:V3 })
+export const v3uarr = GPU.array({ type:V3U })
 
 
 

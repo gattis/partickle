@@ -6,6 +6,8 @@ Object.assign(globalThis, util, gpu, geo)
 const MAXEDGES = 18
 const RINGITER = 2
 const MAXRING = 48
+const CELLCAP = 8
+const NHASH = 128**3
 
 const particleColors = [v4(.3,.6,.8,1), v4(.99,.44,.57, 1), v4(.9, .48, .48, 1)]
 const LIGHTS = [
@@ -37,9 +39,7 @@ phys.addNum('ymin', -25, -25, 0, 0.1)
 phys.addNum('ymax', 25, .1, 25, 0.1)
 phys.addNum('zmin', 0, -25, 0, 0.1)
 phys.addNum('zmax', 50, 0.1, 50, 0.1)
-phys.addNum('red', .55, 0, 1, 0.01)
-phys.addNum('grn', .65, 0, 1, 0.01)
-phys.addNum('blu', .3, 0, 1, 0.01)
+
 
 
 export const render = new Preferences('render')
@@ -113,7 +113,6 @@ export const Particle = GPU.struct({
         ['grab', i32],
         ['cellpos', i32],
         ['qinv', M3],
-        ['celloff', i32],
         ['edges', GPU.array({ type:u32, length:MAXEDGES })],
         ['rings', GPU.array({ type:u32, length:MAXRING })]
     ]
@@ -158,9 +157,6 @@ export const Uniforms = GPU.struct({
         ['collision',f32],
         ['volstiff',f32],
         ['shearstiff',f32],
-        ['red',f32],
-        ['grn',f32],
-        ['blu',f32]
     ]
 })
 
@@ -189,9 +185,9 @@ export const Bounds = GPU.struct({
     fields:[
         ['min', V3],
         ['max', V3],
+        
         ['grid', V3I],
         ['stride', V3I],
-        ['ncells', i32],
     ]
 })
 
@@ -210,11 +206,22 @@ export const HitList = GPU.struct({
         ['len', iatomic]
     ]
 })
-                                
+
+export const Cell = GPU.struct({
+    name:'Cell',
+    fields:[
+        ['pids', GPU.array({ type:u32, length:8 })],
+        ['npids', i32],
+        ['adj', GPU.array({ type:i32, length:13 })],
+    ]
+})
+            
+
 
 const Meshes = GPU.array({ type:Mesh })
 const Particles = GPU.array({ type:Particle })
 const Triangles = GPU.array({ type:Triangle })
+const Cells = GPU.array({ type:Cell })
 
 export async function Sim(width, height, ctx) {
     console.time('gpu init')
@@ -325,7 +332,7 @@ export async function Sim(width, height, ctx) {
     if (diameter < 0) diameter = 0.02
 
     const uniforms = Uniforms.alloc()
-    uniforms.seed = 666
+    uniforms.seed = 300
     uniforms.selection = uniforms.grabbing = -1
 
     const lights = GPU.array({ type:Light, length:LIGHTS.length }).alloc(LIGHTS.length)
@@ -336,8 +343,6 @@ export async function Sim(width, height, ctx) {
     }
     
     const threads = gpu.threads
-    const celldim = 255
-    let bounds = Bounds.alloc()
     let hitList = HitList.alloc()
     
     const bufs = Object.fromEntries([
@@ -345,19 +350,11 @@ export async function Sim(width, height, ctx) {
         gpu.buf({ label:'mbuf', data:meshes, usage:'STORAGE|COPY_DST|COPY_SRC' }),
         gpu.buf({ label:'uni', data:uniforms, usage:'UNIFORM|COPY_DST' }),
         gpu.buf({ label:'tribuf', data:tris, usage:'STORAGE|VERTEX|COPY_DST' }),
-        gpu.buf({ label:'cnts', type:GPU.array({ type:i32, length:celldim**3 }), usage:'STORAGE|COPY_DST|COPY_SRC' }),
-        gpu.buf({ label:'work1', type:GPU.array({ type:i32, length:celldim**2 }), usage:'STORAGE' }),
-        gpu.buf({ label:'work2', type:GPU.array({ type:i32, length:celldim }), usage:'STORAGE' }),
-	gpu.buf({ label:'work3', type:GPU.array({ type:i32, length:2 }), usage:'STORAGE' }),
-        gpu.buf({ label:'sorted', type:GPU.array({ type:u32, length:particles.length }), usage:'STORAGE' }),
         gpu.buf({ label:'lbuf', data:lights, usage:'UNIFORM|FRAGMENT|COPY_DST' }),
-        gpu.buf({ label:'bounds', data:bounds, usage:'STORAGE|INDIRECT|COPY_SRC' }),
         gpu.buf({ label:'hitlist', data:hitList, usage:'STORAGE|COPY_SRC|COPY_DST' })
     ].map(buf => [buf.label, buf]))
 
-    const pd = ceil(particles.length/gpu.threads), pd2 = ceil(pd / gpu.threads), pd3 = ceil(pd2 / gpu.threads)
-
-    if (pd3 != 1) throw new Error('nparticles > threads^3')
+    const pd = ceil(particles.length/gpu.threads), pd2 = ceil(pd / gpu.threads)
 
     console.timeEnd('db load')
     
@@ -380,9 +377,6 @@ export async function Sim(width, height, ctx) {
         uniforms.collision = phys.collision
         uniforms.volstiff = phys.volstiff
         uniforms.shearstiff = phys.shearstiff
-        uniforms.red = phys.red
-        uniforms.grn = phys.grn
-        uniforms.blu = phys.blu
 
         return gpu.write(bufs.uni, uniforms)
     }
@@ -394,19 +388,26 @@ export async function Sim(width, height, ctx) {
         let frames = 0, steps = 0
 
         const threads = gpu.threads
-        const wgsl = (await fetchtext('./compute.wgsl')).interp({ threads, celldim })
+        const wgsl = (await fetchtext('./compute.wgsl')).interp({ threads, NHASH, CELLCAP })
+
+        let csAlign = gpu.adapter.limits.minStorageBufferOffsetAlignment/4
+        let csCap = ceil(particles.length/csAlign)*csAlign
+        let CellSet = GPU.array({ type:i32, length:csCap })
+        let CellSets = GPU.array({ type: CellSet, length:3**3 })
+        let SetLens = GPU.array({ type:GPU.array({ type:uatomic, length:csAlign }), length:3**3 })
+
 
         const shader = await gpu.shader({
-            compute:true, wgsl:wgsl, defs:[Particle, Mesh, Uniforms, Bounds, Hit, HitList],
+            compute:true, wgsl:wgsl, defs:[Particle, Mesh, Uniforms, Bounds, Hit, HitList, Cell],
             storage:{
-                pbuf:Particles, mbuf:Meshes, sorted:u32arr, hitlist:HitList,
-                cnts:i32arr, cnts_atomic:iatomicarr, work:i32arr, group:u32arr,
-                pavg:v3arr, vavg:v3arr, lavg:v3arr, iavg:m3arr, bounds:Bounds, bounds_wr:Bounds
+                pbuf:Particles, mbuf:Meshes, hitlist:HitList, setdps:v3uarr, cells:Cells, idp:V3U,
+                cnts:iatomicarr, group:u32arr, cellsets:CellSets, cellset:CellSet, ncells:uatomic,
+                pavg:v3arr, vavg:v3arr, lavg:v3arr, iavg:m3arr, bounds:Bounds, setlens:SetLens, setlen:u32arr
             },
             uniform:{ uni:Uniforms }
         })
 
-        const { uni, mbuf, pbuf, cnts, work1, work2, work3, sorted, bounds } = bufs
+        const { uni, mbuf, pbuf } = bufs
 
         const cmds = []
         const pass = (...args) => { cmds.push(gpu.computePass(...args)) }
@@ -419,46 +420,43 @@ export async function Sim(width, height, ctx) {
                dispatch:pd, binds:{ pbuf, mbuf, uni, hitlist:bufs.hitlist }})
         stamp('predict')
 
+        let bounds = gpu.buf({ label:'bounds', data:Bounds.alloc(), usage:'STORAGE|COPY_SRC' })
+        let cells = gpu.buf({ label:'cells', type:GPU.array({type:Cell, length:particles.length}), usage:'STORAGE|COPY_DST|COPY_SRC' })
+        let ncells = gpu.buf({ label:'ncells', type:uatomic, usage:'STORAGE|COPY_SRC' })
+        let cellsets = gpu.buf({ label:'cellsets', type:CellSets, usage:'STORAGE|COPY_SRC'})
+        let setlens = gpu.buf({ label:'setlens', type:SetLens, usage:'STORAGE|COPY_SRC'})
+        let cnts = gpu.buf({ label:'cnts', type:GPU.array({ type:i32, length:NHASH }), usage:'STORAGE|COPY_DST' })
+        let idp = gpu.buf({ label:'idp', type:V3U, usage:'STORAGE|INDIRECT|COPY_SRC' })
+        let setdps = gpu.buf({ label:'setdps', type:GPU.array({ type:V3U, length:3**3 }), usage:'STORAGE|INDIRECT|COPY_SRC'})
 
-        const find_bounds = pipe({ shader, entryPoint:'find_bounds', binds:['pbuf','bounds_wr','uni']})
-        pass({ pipe:find_bounds, dispatch:pd, binds:{ pbuf, bounds_wr:bounds, uni }})
+        
+        let find_bounds = pipe({ shader, entryPoint:'find_bounds', binds:['pbuf','bounds','setlens','ncells','uni']})
+        pass({ pipe:find_bounds, dispatch:pd, binds:{ pbuf, bounds, setlens, uni, ncells }})
         if (pd > 1) {
-            pass({ pipe:find_bounds, dispatch:pd2, binds:{ pbuf, bounds_wr:bounds, uni }})
-            if (pd2 > 1) pass({ pipe:find_bounds, dispatch:1, binds:{ pbuf, bounds_wr:bounds, uni }})
+            pass({ pipe:find_bounds, dispatch:pd2, binds:{ pbuf, bounds, setlens, uni, ncells }})
+            if (pd2 > 1) pass({ pipe:find_bounds, dispatch:1, binds:{ pbuf, bounds, setlens, uni, ncells }})
         }
       
-        
-        let prefsum_down = pipe({ shader, entryPoint:'prefsum_down', binds:['cnts','work']})
-        let prefsum_up = pipe({ shader, entryPoint:'prefsum_up', binds:['cnts','work']})
         cmds.push(gpu.clearBuffer(cnts, 0, cnts.size))
-        pass({ pipe:pipe({ shader, entryPoint:'cntsort_cnt', binds:['pbuf','cnts_atomic','uni','bounds']}),
-               dispatch:pd, binds:{ pbuf, cnts_atomic:cnts, uni, bounds }})
-        pass({ pipe:prefsum_down, dispatch:celldim**2, binds:{ cnts, work:work1 }})
-        pass({ pipe:prefsum_down, dispatch:celldim, binds:{ cnts:work1, work:work2 }})
-        pass({ pipe:prefsum_down, dispatch:1, binds:{ cnts:work2, work:work3 }})
-        pass({ pipe:prefsum_up, dispatch:celldim - 1, binds:{ cnts:work1, work:work2 }})
-        pass({ pipe:prefsum_up, dispatch:celldim**2 - 1, binds:{ cnts, work:work1 }})
-        pass({ pipe:pipe({ shader, entryPoint:'cntsort_sort', binds:['pbuf','cnts_atomic','sorted']}),
-               dispatch:pd, binds:{ pbuf, cnts_atomic:cnts, sorted }})
-        stamp('counting sort')
+        pass({ pipe:pipe({ shader, entryPoint:'cellcount', binds:['pbuf','cnts','uni','bounds','cells']}),
+               dispatch:pd, binds:{ pbuf, cnts, uni, bounds, cells }})
+        pass({ pipe:pipe({ shader, entryPoint:'initcells', binds:['pbuf','cnts','uni','bounds','cells','setlens','cellsets','ncells']}),
+               dispatch:pd, binds:{ pbuf, cnts, uni, bounds, cells, setlens, cellsets, ncells }})
+        pass({ pipe:pipe({ shader, entryPoint:'fillcells', binds:['pbuf','cnts','uni','bounds','cells','setlens','idp','setdps','ncells']}),
+               dispatch:pd, binds:{ pbuf, cnts, uni, bounds, cells, setlens, setdps, idp, ncells }})
+        stamp('cell grid build')
 
-        pass({ pipe:pipe({ shader, entryPoint:'collinter', binds:['pbuf','cnts','sorted','uni','bounds'] }),
-               dispatch:pd, binds:{ pbuf, cnts, sorted, uni, bounds }})
-        stamp('interbin collisions')        
+        pass({ pipe:pipe({ shader, entryPoint:'intercell', binds:['pbuf','uni','cells','ncells'] }), indirect:[idp.buffer, 0],
+               binds:{ pbuf, uni, cells, ncells } })
+        stamp('intercell collisions')
 
-        let collintra = pipe({ shader, entryPoint:'collintra', binds:['pbuf','cnts','sorted','uni','bounds'] })
-        let bgintra = gpu.bindGroup(collintra, {pbuf, cnts, sorted, uni, bounds})
-        cmds.push((encoder) => {
-            const intrapass = encoder.beginComputePass()
-            intrapass.setPipeline(collintra.pipeline)
-            intrapass.setBindGroup(0, bgintra)
-            for (let i of range(3**3))
-                intrapass.dispatchWorkgroups(pd)
-            intrapass.end()
-        })
-        //for (let i of range(3**3))
-        //    pass({ pipe:collintra, dispatch:pd, binds:{ pbuf, cnts, sorted, uni, bounds, off }})
-        stamp('intrabin collisions')
+        let intracell = pipe({ shader, entryPoint:'intracell', binds:['pbuf','uni','cells','setlen','cellset'] })
+        for (let s of range(3**3)) {
+            let cellset = gpu.offset(cellsets, s*CellSets.stride)
+            let setlen = gpu.offset(setlens, s*SetLens.stride)
+            pass({ pipe:intracell, indirect:[setdps.buffer,v3uarr.stride*s], binds:{pbuf,uni,cells,cellset,setlen}})
+        }             
+        stamp('intracell collisions')
 
         pass({ pipe:pipe({ shader, entryPoint:'collide_bounds', binds:['mbuf','pbuf','uni']}),
                dispatch:pd, binds:{ pbuf, mbuf, uni } })
@@ -472,8 +470,6 @@ export async function Sim(width, height, ctx) {
             pass({ pipe:surfpipe, dispatch, binds:{ pbuf, mbuf, uni, group }})
         }
         stamp('surface match')
-
-
         
         pass({ pipe:pipe({ shader, entryPoint:'update_vel', binds:['pbuf','mbuf','uni'] }),
                dispatch:pd, binds:{ pbuf, mbuf, uni }})
@@ -542,7 +538,7 @@ export async function Sim(width, height, ctx) {
                         for (let i of range(hitList.len)) {
                             let dist = hitList.list[i].x.sub(render.cam_x).mag()
                             if (dist < closest.dist) closest = {i, dist}
-                        }
+                        }                        
                         let hit = hitList.list[closest.i]
                         uniforms.selection = uniforms.grabbing = hit.pid
                         uniforms.grabTarget = hit.x.clamp(uniforms.spacemin.addc(uniforms.r), uniforms.spacemax)
@@ -552,7 +548,7 @@ export async function Sim(width, height, ctx) {
                         gpu.write(bufs.hitlist, hitList)
                         dbg({ pid:uniforms.selection, x:hit.x, dist:closest.dist })
                     }
-
+                                            
                     frames++
                     steps++
 
@@ -658,7 +654,7 @@ export async function Sim(width, height, ctx) {
             draws.push(gpu.draw({ pipe, dispatch:[3, lights.length], binds: { uni, lbuf }}))
             cmds.push(gpu.renderPass(draws))
             cmds.push(gpu.timestamp('draws'))
-
+            
             batch = gpu.encode(cmds)
         }
 
@@ -693,8 +689,12 @@ export async function Sim(width, height, ctx) {
         }
     }
     
-    const pull = async (bufName) => {
-        return new bufs[bufName].type(await gpu.read(bufs[bufName]))
+    const dbgbuf = async (buf) => {
+        let type = (typeof buf.type == 'function') ? buf.type : Int32Array
+        let data = new type(await gpu.read(buf))
+        window['d'+buf.label] = data
+        //dbg(Object.fromEntries([[buf.label, data]]))
+        return data
     }
 
     const clipToRay = (x,y) => {

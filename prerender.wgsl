@@ -26,7 +26,7 @@ fn update_tris(@builtin(global_invocation_id) gid:vec3<u32>) {
 
 fn safenorm(v:v3) -> v3 {
     let l = length(v);
-    if (l == 0) { return v; }
+    if (l == 0.) { return v; }
     return v / l;
 }
 

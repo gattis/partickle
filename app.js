@@ -208,11 +208,6 @@ class EditorTable extends HTMLDivElement {
         this.counting.textContent = ` ${start + 1}-${stop} of ${ntot}`
         const cols = Object.keys(results[0][1])
         const rows = [html('tr', {}, [html('th',{},'id'), ...cols.map(col => html('th',{},col))])]
-        let str = (val) => {
-            if (val == null || val == undefined)  return 'null'
-            if (val instanceof Array) return `[${val.map(x => str(x)).join(',')}]`
-            return val.toString()
-        }
         rows.push(...results.map(([id,result]) => {
             let idcol = html('td',{},id)
             let delcol = html('td', { class:'delrow' }, html('button',{},'\u274C').on('click', async () => {
@@ -230,13 +225,13 @@ class EditorTable extends HTMLDivElement {
                     ctx.drawImage(orig,0,0);
                     return html('td',{},preview)
                 }
-                const edit = html('td', { contenteditable: true }, str(orig)).on('blur', () => {
+                const edit = html('td', { contenteditable: true }, repr(orig)).on('blur', () => {
                     let val = edit.textContent
                     if (typeof orig == 'number') val = parseFloat(val)
                     else if (orig instanceof Array) val = eval(val)
                     transact([this.name], 'readwrite', async x => {
                         await x.update(this.name, id, col, val)
-                        edit.textContent = str(val)
+                        edit.textContent = repr(val)
                     })
                 })
                 return edit

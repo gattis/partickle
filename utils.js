@@ -18,6 +18,11 @@ export const range = function* (a,b,step) {
     else
         for (let val = start; val > stop; val += step) yield val
 }
+
+range.prototype.map = function (fn) {
+    return [...this].map(fn)
+}
+
 export const range3d = function* (x,y,z) {
     for (const zi of range(z))
         for (const yi of range(y))
@@ -243,7 +248,7 @@ export const repr = (v) => {
     }
     if (v instanceof Array | v instanceof Set) {
         if ((v.length || v.size || Infinity) <= 3)
-            return `< ${[...v].map(x => repr(x)).join(' ')} >`
+            return `[${[...v].map(x => repr(x)).join(',')}]`
         else return `[sz=${v.length || v.size || 0}]`
     }
     return v.toString()

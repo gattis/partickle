@@ -147,11 +147,11 @@ struct LightIO {
 }
 
 struct RayTrace {
-    t:f32,
-    rd:v3,
-    hit:v3,
-    normal:v3,
-    clip_depth: f32
+ t:f32,
+ rd:v3,
+ hit:v3,
+ normal:v3,
+ clip_depth: f32
 };
 
 fn trace_sphere(vertx:v3, center:v3, r:f32) -> RayTrace {
@@ -224,7 +224,7 @@ fn checkers(xy:v2) -> i32 {
     let n = uni.spacemin;
 
     let dists = array(abs(w.x-n.x), abs(w.x-p.x), abs(w.y-n.y), abs(w.y-p.y), abs(w.z-n.z), abs(w.z-p.z));
-    let planes = array(w.yz, w.yz, w.xz, w.xz, w.xy, w.xy);
+    let planes = array<v2,6>(w.yz, w.yz, w.xz, w.xz, w.xy, w.xy);
     var dmin = 1e20;
     var imin = 0;
     for (var i = 0; i < 6; i++) {
