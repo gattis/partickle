@@ -32,7 +32,7 @@ phys.addNum('volstiff', .5, 0, 1, 0.001)
 phys.addNum('shearstiff', .5, 0, 1, 0.001)
 phys.addNum('damp', 0.5, -100, 100, .1)
 phys.addNum('friction', 1, 0, 1, .01)
-phys.addNum('collision', 1, 0, 1, .01)
+phys.addNum('collision', 1, 0, 2, .01)
 phys.addNum('xmin', -25, -25, 0, 0.1)
 phys.addNum('xmax', 25, 0.1, 25, 0.1)
 phys.addNum('ymin', -25, -25, 0, 0.1)
@@ -110,6 +110,8 @@ export const Particle = GPU.struct({
         ['friction',f32],
         ['pmax',V3],
         ['collision', f32],
+        ['dx', V3],
+        ['ndx', f32],
         ['grab', i32],
         ['cellpos', i32],
         ['qinv', M3],
@@ -184,8 +186,7 @@ export const Bounds = GPU.struct({
     name:'Bounds',
     fields:[
         ['min', V3],
-        ['max', V3],
-        
+        ['max', V3],        
         ['grid', V3I],
         ['stride', V3I],
     ]
@@ -211,7 +212,7 @@ export const Cell = GPU.struct({
     name:'Cell',
     fields:[
         ['pids', GPU.array({ type:u32, length:8 })],
-        ['npids', i32],
+        ['npids', u32],
         ['adj', GPU.array({ type:i32, length:13 })],
     ]
 })
@@ -256,7 +257,7 @@ export async function Sim(width, height, ctx) {
         mesh.pi = particles.length
         mesh.fluid = mdata['fluid']
         let { scale, offset } = mdata
-        let g = await db.transact(db.storeNames, 'readwrite', async tx => await tx.meshGeometry(mid,scale||1,offset||0))
+        let g = await db.transact(db.storeNames,'readwrite',async tx => await tx.meshGeometry(mid,scale||1,offset||0))
         if (g.verts.length == 0)
             g.verts = [new GeoVert(0, v3(0,0,1))]
 
@@ -332,7 +333,7 @@ export async function Sim(width, height, ctx) {
     if (diameter < 0) diameter = 0.02
 
     const uniforms = Uniforms.alloc()
-    uniforms.seed = 300
+    uniforms.seed = 666
     uniforms.selection = uniforms.grabbing = -1
 
     const lights = GPU.array({ type:Light, length:LIGHTS.length }).alloc(LIGHTS.length)
@@ -413,13 +414,8 @@ export async function Sim(width, height, ctx) {
         const pass = (...args) => { cmds.push(gpu.computePass(...args)) }
         const pipe = (...args) => gpu.computePipe(...args)
         const stamp = (tag) => { cmds.push(gpu.timestamp(tag)) }
+        let keys = obj => [...Object.keys(obj)]
         
-        stamp('')
-
-        pass({ pipe:pipe({ shader, entryPoint:'predict', binds:['pbuf','mbuf','uni','hitlist']}),
-               dispatch:pd, binds:{ pbuf, mbuf, uni, hitlist:bufs.hitlist }})
-        stamp('predict')
-
         let bounds = gpu.buf({ label:'bounds', data:Bounds.alloc(), usage:'STORAGE|COPY_SRC' })
         let cells = gpu.buf({ label:'cells', type:GPU.array({type:Cell, length:particles.length}), usage:'STORAGE|COPY_DST|COPY_SRC' })
         let ncells = gpu.buf({ label:'ncells', type:uatomic, usage:'STORAGE|COPY_SRC' })
@@ -429,50 +425,54 @@ export async function Sim(width, height, ctx) {
         let idp = gpu.buf({ label:'idp', type:V3U, usage:'STORAGE|INDIRECT|COPY_SRC' })
         let setdps = gpu.buf({ label:'setdps', type:GPU.array({ type:V3U, length:3**3 }), usage:'STORAGE|INDIRECT|COPY_SRC'})
 
-        
-        let find_bounds = pipe({ shader, entryPoint:'find_bounds', binds:['pbuf','bounds','setlens','ncells','uni']})
-        pass({ pipe:find_bounds, dispatch:pd, binds:{ pbuf, bounds, setlens, uni, ncells }})
+        stamp('')
+
+        let binds = { pbuf, mbuf, uni, hitlist:bufs.hitlist }
+        pass({ pipe:pipe({ shader, entryPoint:'predict', binds:keys(binds) }), dispatch:pd, binds })
+        stamp('predict')
+
+        binds = { pbuf, bounds, setlens, uni, ncells }
+        let find_bounds = pipe({ shader, entryPoint:'find_bounds', binds:keys(binds)})
+        pass({ pipe:find_bounds, dispatch:pd, binds })
         if (pd > 1) {
-            pass({ pipe:find_bounds, dispatch:pd2, binds:{ pbuf, bounds, setlens, uni, ncells }})
-            if (pd2 > 1) pass({ pipe:find_bounds, dispatch:1, binds:{ pbuf, bounds, setlens, uni, ncells }})
+            pass({ pipe:find_bounds, dispatch:pd2, binds })
+            if (pd2 > 1) pass({ pipe:find_bounds, dispatch:1, binds })
         }
-      
+               
         cmds.push(gpu.clearBuffer(cnts, 0, cnts.size))
-        pass({ pipe:pipe({ shader, entryPoint:'cellcount', binds:['pbuf','cnts','uni','bounds','cells']}),
-               dispatch:pd, binds:{ pbuf, cnts, uni, bounds, cells }})
-        pass({ pipe:pipe({ shader, entryPoint:'initcells', binds:['pbuf','cnts','uni','bounds','cells','setlens','cellsets','ncells']}),
-               dispatch:pd, binds:{ pbuf, cnts, uni, bounds, cells, setlens, cellsets, ncells }})
-        pass({ pipe:pipe({ shader, entryPoint:'fillcells', binds:['pbuf','cnts','uni','bounds','cells','setlens','idp','setdps','ncells']}),
-               dispatch:pd, binds:{ pbuf, cnts, uni, bounds, cells, setlens, setdps, idp, ncells }})
+
+        binds = { pbuf, cnts, uni, bounds, cells }
+        pass({ pipe:pipe({ shader, entryPoint:'cellcount', binds:keys(binds) }), dispatch:pd, binds })
+        binds = { pbuf, cnts, uni, bounds, cells, setlens, cellsets, ncells }
+        pass({ pipe:pipe({ shader, entryPoint:'initcells', binds:keys(binds)}), dispatch:pd, binds }) 
+        binds = { pbuf, cnts, uni, bounds, cells, setlens, setdps, idp, ncells }
+        pass({ pipe:pipe({ shader, entryPoint:'fillcells', binds:keys(binds) }), dispatch:pd, binds })
         stamp('cell grid build')
 
-        pass({ pipe:pipe({ shader, entryPoint:'intercell', binds:['pbuf','uni','cells','ncells'] }), indirect:[idp.buffer, 0],
-               binds:{ pbuf, uni, cells, ncells } })
+        binds = { pbuf, uni, cells, ncells }
+        pass({ pipe:pipe({ shader, entryPoint:'intercell', binds:keys(binds) }), indirect:[idp.buffer, 0], binds })
         stamp('intercell collisions')
 
-        let intracell = pipe({ shader, entryPoint:'intracell', binds:['pbuf','uni','cells','setlen','cellset'] })
-        for (let s of range(3**3)) {
-            let cellset = gpu.offset(cellsets, s*CellSets.stride)
-            let setlen = gpu.offset(setlens, s*SetLens.stride)
-            pass({ pipe:intracell, indirect:[setdps.buffer,v3uarr.stride*s], binds:{pbuf,uni,cells,cellset,setlen}})
-        }             
+        binds = { pbuf, uni, cells }
+        let intracell = pipe({ shader, entryPoint:'intracell', binds:[...keys(binds), 'setlen','cellset'] })
+        for (let i of range(3**3))
+            pass({ pipe:intracell, indirect:[setdps.buffer, i*v3uarr.stride], binds:{ ...binds,
+                   cellset:gpu.offset(cellsets, i*CellSets.stride), setlen:gpu.offset(setlens, i*SetLens.stride) }})
         stamp('intracell collisions')
 
-        pass({ pipe:pipe({ shader, entryPoint:'collide_bounds', binds:['mbuf','pbuf','uni']}),
-               dispatch:pd, binds:{ pbuf, mbuf, uni } })
-        stamp('bounds collide')
-
+        binds = { pbuf, mbuf, uni }
+        pass({ pipe:pipe({ shader, entryPoint:'collide_bounds', binds:keys(binds) }), dispatch:pd, binds })
+        stamp('bounds collide')       
         
-        let surfpipe = pipe({ shader, entryPoint:'surfmatch', binds:['pbuf','mbuf','uni','group']})
-        for (let i of range(groups.length)) {
-            let group = gpu.buf({ label: 'group'+i, data:groups[i], usage:'STORAGE' })
-            let dispatch = ceil(groups[i].length / threads)
-            pass({ pipe:surfpipe, dispatch, binds:{ pbuf, mbuf, uni, group }})
-        }
+        binds = { pbuf, mbuf, uni }
+        let surfmatch = pipe({ shader, entryPoint:'surfmatch', binds:[...keys(binds), 'group']})
+        for (let i of range(groups.length))
+            pass({ pipe:surfmatch, dispatch:ceil(groups[i].length / threads),
+                   binds:{ ...binds, group:gpu.buf({ label: 'group'+i, data:groups[i], usage:'STORAGE' })}})
         stamp('surface match')
-        
-        pass({ pipe:pipe({ shader, entryPoint:'update_vel', binds:['pbuf','mbuf','uni'] }),
-               dispatch:pd, binds:{ pbuf, mbuf, uni }})
+
+        binds = { pbuf, mbuf, uni }
+        pass({ pipe:pipe({ shader, entryPoint:'update_vel', binds:keys(binds) }), dispatch:pd, binds })
         stamp('update vel')
 
         let mbufs = []
@@ -526,7 +526,7 @@ export async function Sim(width, height, ctx) {
                 if (!phys.paused || fwdstep) {
                     uniforms.dt = tstep
                     uniforms.t += tstep
-                    uniforms.seed = rand.next()
+                    uniforms.seed = uniforms.seed * 16807 % 2147483647
                     syncUniforms()
                     batch.execute()
                     if (uniforms.grabStart == 1) {

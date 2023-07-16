@@ -135,7 +135,7 @@ fn initcells(@builtin(global_invocation_id) gid:vec3<u32>) {
     if ((*p).cellpos != 0) { return; }
     let hash = (*p).hash;
     let cid = atomicAdd(&ncells, 1u);
-    cells[cid].npids = min(${CELLCAP-1}, atomicLoad(&cnts[hash]));
+    cells[cid].npids = u32(min(${CELLCAP-1}, atomicLoad(&cnts[hash])));
     atomicStore(&cnts[hash], i32(cid) + 1);
     let cellv = (hash / bounds.stride) % bounds.grid;
     let cset = dot(cellv % 3, v3i(1,3,9));
@@ -206,10 +206,11 @@ fn intercell(@builtin(global_invocation_id) gid:vec3<u32>) {
     let cid = gid.x;
     if (cid >= atomicLoad(&ncells)) { return; }
     var cell = cells[cid];
-    for (var i = 0; i < cell.npids; i++) {
-        let pid = cell.pids[i];
+    for (var i = 0u; i < cell.npids; i++) {
+        let randi = (i + uni.seed) % cell.npids;
+        let pid = cell.pids[randi];
         let m = collide_param(pid);
-        for (var j = i+1; j < cell.npids; j++) {
+        for (var j = randi+1; j < cell.npids; j++) {
             collide_pair(pid, cell.pids[j], m);
         }
 
@@ -223,15 +224,17 @@ fn intracell(@builtin(global_invocation_id) gid:vec3<u32>) {
 
     let cid = u32(cellset[gid.x]);
     var icell = cells[cid];
-    for (var i = 0; i < icell.npids; i++) {
-        let ipid = icell.pids[i];
+    for (var i = 0u; i < icell.npids; i++) {
+        let randi = (i + uni.seed) % icell.npids;
+        let ipid = icell.pids[randi];
         let m = collide_param(ipid);
         for (var a = 0; a < 13; a++) {
             let jcid = icell.adj[a];
             if (jcid == -1) { continue; }
             let jcell = cells[jcid];
-            for (var j = 0; j < jcell.npids; j++) {
-                let jpid = jcell.pids[j];               
+            for (var j = 0u; j < jcell.npids; j++) {
+                let randj = (j + uni.seed) % jcell.npids;
+                let jpid = jcell.pids[randj];
                 collide_pair(ipid, jpid, m);
             }
         }
