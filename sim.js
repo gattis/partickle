@@ -8,6 +8,7 @@ const RINGITER = 2
 const MAXRING = 48
 const CELLCAP = 8
 const NHASH = 128**3
+const NGROUP = 4
 
 const particleColors = [v4(.3,.6,.8,1), v4(.99,.44,.57, 1), v4(.9, .48, .48, 1)]
 const LIGHTS = [
@@ -28,7 +29,7 @@ phys.addNum('r', 1.0, 0.1, 10, 0.1)
 phys.addNum('frameratio', 3, 1, 20, 1)
 phys.addNum('speed', 1, 0.05, 5, .01)
 phys.addNum('gravity', 9.8, -5, 20, 0.1)
-phys.addNum('volstiff', .5, 0, 1, 0.001)
+phys.addNum('volstiff', .5, 0, 2, 0.001)
 phys.addNum('shearstiff', .5, 0, 1, 0.001)
 phys.addNum('damp', 0.5, -100, 100, .1)
 phys.addNum('friction', 1, 0, 1, .01)
@@ -264,7 +265,7 @@ export async function Sim(width, height, ctx) {
         //let vol = g.volume()
         //let area = g.surfarea()
         //let thickness = vol / area
-        
+        //let rndverts = [...g.verts].sort((a,b) => Math.random()-0.5)
         for (let vert of g.verts) {
             let p = Particle.alloc()
             p.x = p.xprev = p.x0 = vert.x
@@ -275,16 +276,16 @@ export async function Sim(width, height, ctx) {
             p.friction = mdata.friction
             p.collision = mdata.collision
             particles.push(p)           
-
+            
             let adj = vert.ringn(RINGITER)
             let c = [0,0,0]
-            for (let vadj of adj.verts)
+            for (let vadj of adj)
                 c = [c[0] + vadj.x.x, c[1] + vadj.x.y, c[2] + vadj.x.z]
-            c = c.map(val => val / adj.verts.length)
+            c = c.map(val => val / adj.length)
             p.c0 = v3(...c)
             
             let Q = M3js.of([0,0,0],[0,0,0],[0,0,0])
-            for (let vadj of adj.verts) {
+            for (let vadj of adj) {
                 let rx = vadj.x.x - c[0], ry = vadj.x.y - c[1], rz = vadj.x.z - c[2]
                 Q = Q.add([[rx*rx, rx*ry, rx*rz], [ry*rx, ry*ry, ry*rz], [rz*rx, rz*ry, rz*rz]])
                 p.rings[p.nring++] = vadj.id + mesh.pi
@@ -298,10 +299,9 @@ export async function Sim(width, height, ctx) {
                 p.s = s
             }
             
-            adj = vert.ringn(RINGITER+1)
             let group = -1
             for (let i = 0; i < groups.length && group == -1; i++)
-                if (!adj.verts.some(vadj => groups_exclude[i].has(vadj.id + mesh.pi)))
+                if (!adj.some(vadj => groups_exclude[i].has(vadj.id + mesh.pi)))
                     group = i
             if (group == -1) {
                 group = groups.length
@@ -309,10 +309,11 @@ export async function Sim(width, height, ctx) {
                 groups_exclude.push(new Set())                            
             } 
             groups[group].push(vert.id + mesh.pi)
-            for (let vadj of adj.verts)
+            for (let vadj of adj)
                 groups_exclude[group].add(vadj.id + mesh.pi)           
 
         }
+
         mesh.pf = particles.length
         for (let tri of g.tris) {
             let tvs = tri.verts.map((v,i) => TriVert.of(v3(0), v.id + mesh.pi, v3(0), midx, v2(...tri.uvs[i])))
@@ -465,9 +466,9 @@ export async function Sim(width, height, ctx) {
         stamp('bounds collide')       
         
         binds = { pbuf, mbuf, uni }
-        let surfmatch = pipe({ shader, entryPoint:'surfmatch', binds:[...keys(binds), 'group']})
+        let surfmatch = pipe({ shader, entryPoint:'surfmatch', binds:[...keys(binds),'group']})
         for (let i of range(groups.length))
-            pass({ pipe:surfmatch, dispatch:ceil(groups[i].length / threads),
+            pass({ pipe:surfmatch, dispatch:groups[i].length,
                    binds:{ ...binds, group:gpu.buf({ label: 'group'+i, data:groups[i], usage:'STORAGE' })}})
         stamp('surface match')
 

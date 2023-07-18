@@ -207,10 +207,9 @@ fn intercell(@builtin(global_invocation_id) gid:vec3<u32>) {
     if (cid >= atomicLoad(&ncells)) { return; }
     var cell = cells[cid];
     for (var i = 0u; i < cell.npids; i++) {
-        let randi = (i + uni.seed) % cell.npids;
-        let pid = cell.pids[randi];
+        let pid = cell.pids[i];
         let m = collide_param(pid);
-        for (var j = randi+1; j < cell.npids; j++) {
+        for (var j = i+1; j < cell.npids; j++) {
             collide_pair(pid, cell.pids[j], m);
         }
 
@@ -225,16 +224,14 @@ fn intracell(@builtin(global_invocation_id) gid:vec3<u32>) {
     let cid = u32(cellset[gid.x]);
     var icell = cells[cid];
     for (var i = 0u; i < icell.npids; i++) {
-        let randi = (i + uni.seed) % icell.npids;
-        let ipid = icell.pids[randi];
+        let ipid = icell.pids[i];
         let m = collide_param(ipid);
         for (var a = 0; a < 13; a++) {
             let jcid = icell.adj[a];
             if (jcid == -1) { continue; }
             let jcell = cells[jcid];
             for (var j = 0u; j < jcell.npids; j++) {
-                let randj = (j + uni.seed) % jcell.npids;
-                let jpid = jcell.pids[randj];
+                let jpid = jcell.pids[j];
                 collide_pair(ipid, jpid, m);
             }
         }
@@ -281,43 +278,38 @@ fn invert(m:m3) -> m3 {
 }
 
 // Derived from "Physically Based Shape Matching" (Muller et al.)
-@compute @workgroup_size(${threads})
+@compute @workgroup_size(1)
 fn surfmatch(@builtin(global_invocation_id) gid:vec3<u32>) {
     let ngroup = arrayLength(&group);
     if (gid.x >= ngroup) { return; }
-    var pidstart = group[gid.x];
-    let pstart = &pbuf[pidstart];
-    let m = mbuf[(*pstart).mesh];
+    var pid0 = group[gid.x];
+    let p = &pbuf[pid0];
+    let m = mbuf[(*p).mesh];
     var volstiff = uni.volstiff * m.volstiff;
     var shearstiff = uni.shearstiff * m.shearstiff;
     if (volstiff == 0 || shearstiff == 0) { return; }
     shearstiff = 1.0/shearstiff - 1.0;
     volstiff = 0.01 * (1.0/volstiff - 1.0);
            
-    var n = (*pstart).nring;
+    var n = (*p).nring;
     if (n < 4) { return; }
-    var pids = (*pstart).rings;
-    let s = (*pstart).s;
-    let Qinv = (*pstart).qinv;
+    var pids = (*p).rings;
+    let s = (*p).s;
+    let Qinv = (*p).qinv;
 
-    let c0 = (*pstart).c0;
+    let c0 = (*p).c0;
     var c = v3();
-    var x:array<v3,64>;
-    var R0:array<v3,64>;
     for (var i = 0u; i < n; i++) {
-        let randi = (i + uni.seed) % n;
-        x[i] = pbuf[pids[randi]].x;
-        R0[i] = pbuf[pids[randi]].x0 - c0;
-        c += x[i];
+        let pid = pids[i];
+        c += pbuf[pid].x;
     }
-
-
     c /= f32(n);
     
     var P = m3();
     for (var i = 0u; i < n; i++) {
-        let rs = s*(x[i] - c);
-        let r0 = R0[i];
+        let pid = pids[i];
+        let rs = s*(pbuf[pid].x - c);
+        let r0 = pbuf[pid].x0 - c0;
         P += m3(rs*r0.x, rs*r0.y, rs*r0.z);
     }
 
@@ -328,22 +320,25 @@ fn surfmatch(@builtin(global_invocation_id) gid:vec3<u32>) {
     var G = s/C * (F * transpose(Qinv));
     var walpha = shearstiff / uni.dt / uni.dt;
     for (var i = 0u; i < n; i++) {
-        let grad = G * R0[i];
+        let pid = pids[i];
+        let grad = G * (pbuf[pid].x0 - c0);
         walpha += dot(grad,grad);
     }
 
     c = v3();
     var lambda = select(-C / walpha, 0.0, walpha == 0.0);
     for (var i = 0u; i < n; i++) {
-        x[i] += lambda * (G * R0[i]);
-        c += x[i];
+        let pid = pids[i];
+        pbuf[pid].x += lambda * (G * (pbuf[pid].x0 - c0));
+        c += pbuf[pid].x;
     }
     c /= f32(n);
 
     P = m3();
     for (var i = 0u; i < n; i++) {
-        let rs = s*(x[i] - c);
-        let r0 = R0[i];
+        let pid = pids[i];
+        let rs = s*(pbuf[pid].x - c);
+        let r0 = pbuf[pid].x0 - c0;
         P += m3(rs*r0.x, rs*r0.y, rs*r0.z);
     }
     F = P * Qinv;
@@ -352,31 +347,33 @@ fn surfmatch(@builtin(global_invocation_id) gid:vec3<u32>) {
     G = s * m3(cross(F[1],F[2]),cross(F[2],F[0]),cross(F[0],F[1])) * transpose(Qinv);
     walpha = volstiff / uni.dt / uni.dt;
     for (var i = 0u; i < n; i++) {
-        let grad = G * R0[i];
+        let pid = pids[i];
+        let grad = G * (pbuf[pid].x0 - c0);
         walpha += dot(grad,grad);
     }
 
     c = v3();
     lambda = select(-C / walpha, 0.0, walpha == 0.0);
     for (var i = 0u; i < n; i++) {
-        x[i] += lambda * (G * R0[i]);
-        c += x[i];
+        let pid = pids[i];
+        pbuf[pid].x += lambda * (G * (pbuf[pid].x0 - c0));
+        c += pbuf[pid].x;
     }
     c /= f32(n);
 
     P = m3();
     for (var i = 0u; i < n; i++) {
-        let rs = s*(x[i] - c);
-        let r0 = R0[i];
+        let pid = pids[i];
+        let rs = s*(pbuf[pid].x - c);
+        let r0 = pbuf[pid].x0 - c0;
         P += m3(rs*r0.x, rs*r0.y, rs*r0.z);
     }
 
     F = P * Qinv;
     for (var i = 0u; i < n; i++) {
-        let randi = (i + uni.seed) % n;
-        let pid = pids[randi];
+        let pid = pids[i];
         if (pbuf[pid].fixed != 1 && pbuf[pid].grab != 1) {
-            pbuf[pid].x = c + F * R0[i];
+            pbuf[pid].x = c + F * (pbuf[pid].x0 - c0);
         }
     }
 }

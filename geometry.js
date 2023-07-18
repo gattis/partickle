@@ -62,21 +62,19 @@ export class GeoVert {
     
     ringn(n) {
         let verts = [this]
-        let tris = []
         let q = 1
         for (let ring = 0; ring < n; ring++) {
             let qstart = verts.length - q, qstop = verts.length
             q = 0
             for (let qpos = qstart; qpos < qstop; qpos += 1) {
                 for (let edge of verts[qpos].edges) {
-                    if (!tris.includes(edge.tri)) tris.push(edge.tri)
                     if (verts.includes(edge.vert)) continue;
                     verts.push(edge.vert)
                     q += 1
                 }
             }
         }
-        return { verts,tris }
+        return verts
     }
 }
     
