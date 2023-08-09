@@ -112,12 +112,12 @@ Array.prototype.sum = function(fn, init) {
     return this.reduce((a,b) => a + fn(b), init)
 }
 
-Array.prototype.max = function() {
-    return this.reduce((a,b) => max(a,b), -Infinity)
+Array.prototype.max = function(key = x => x) {
+    return this.reduce((a,b) => key(a) >= key(b) ? a : b, this[0])
 }
 
-Array.prototype.min = function() {
-    return this.reduce((a,b) => min(a,b), Infinity)
+Array.prototype.min = function(key = x => x) {
+    return this.reduce((a,b) => key(a) <= key(b) ? a : b, this[0])
 }
 
 Array.prototype.uniq = function () {
@@ -247,7 +247,7 @@ export const repr = (v) => {
         return f + p
     }
     if (v instanceof Array | v instanceof Set) {
-        if ((v.length || v.size || Infinity) <= 3)
+        if ((v.length || v.size || Infinity) <= 4)
             return `[${[...v].map(x => repr(x)).join(',')}]`
         else return `[sz=${v.length || v.size || 0}]`
     }

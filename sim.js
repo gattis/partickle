@@ -4,11 +4,10 @@ import * as geo from './geometry.js'
 Object.assign(globalThis, util, gpu, geo)
 
 const MAXEDGES = 18
-const RINGITER = 2
 const MAXRING = 48
 const CELLCAP = 8
 const NHASH = 128**3
-const NGROUP = 4
+const CLUSTPER = 4
 
 const particleColors = [v4(.3,.6,.8,1), v4(.99,.44,.57, 1), v4(.9, .48, .48, 1)]
 const LIGHTS = [
@@ -33,7 +32,7 @@ phys.addNum('volstiff', .5, 0, 2, 0.001)
 phys.addNum('shearstiff', .5, 0, 1, 0.001)
 phys.addNum('damp', 0.5, -100, 100, .1)
 phys.addNum('friction', 1, 0, 1, .01)
-phys.addNum('collision', 1, 0, 2, .01)
+phys.addNum('collision', 1, 0, 1, .01)
 phys.addNum('xmin', -25, -25, 0, 0.1)
 phys.addNum('xmax', 25, 0.1, 25, 0.1)
 phys.addNum('ymin', -25, -25, 0, 0.1)
@@ -104,20 +103,14 @@ export const Particle = GPU.struct({
         ['v', V3],
         ['nedges', u32],
         ['norm', V3],
-        ['nring', u32],        
-        ['c0', V3],
-        ['s', f32],
+        ['grab', i32],
         ['pmin',V3],
         ['friction',f32],
         ['pmax',V3],
         ['collision', f32],
-        ['dx', V3],
-        ['ndx', f32],
-        ['grab', i32],
+        ['vprev',V3],
         ['cellpos', i32],
-        ['qinv', M3],
         ['edges', GPU.array({ type:u32, length:MAXEDGES })],
-        ['rings', GPU.array({ type:u32, length:MAXRING })]
     ]
 })
 
@@ -212,18 +205,29 @@ export const HitList = GPU.struct({
 export const Cell = GPU.struct({
     name:'Cell',
     fields:[
-        ['pids', GPU.array({ type:u32, length:8 })],
+        ['pids', GPU.array({ type:u32, length:CELLCAP })],
         ['npids', u32],
         ['adj', GPU.array({ type:i32, length:13 })],
     ]
 })
-            
 
+export const Cluster = GPU.struct({
+    name:'Cluster',
+    fields:[
+        ['c0', V3],
+        ['n', u32],
+        ['s', f32],
+        ['mesh', u32],
+        ['pids', GPU.array({ type:u32, length:1024 })],
+        ['qinv', M3],
+    ]
+})
 
 const Meshes = GPU.array({ type:Mesh })
 const Particles = GPU.array({ type:Particle })
 const Triangles = GPU.array({ type:Triangle })
 const Cells = GPU.array({ type:Cell })
+const Clusters = GPU.array({ type:Cluster })
 
 export async function Sim(width, height, ctx) {
     console.time('gpu init')
@@ -247,7 +251,7 @@ export async function Sim(width, height, ctx) {
     if (meshData.length == 0)
 	meshData = [[-1,{...MESH_DEFAULTS}]]
         
-    let meshes = [], particles = [], tris = [], groups = [], groups_exclude = []
+    let meshes = [], particles = [], tris = [], clusters = []
     for (let [midx,[mid,mdata]] of enumerate(meshData)) {
         let mesh = Mesh.alloc()
         mesh.color = v4(...mdata.color)
@@ -265,7 +269,7 @@ export async function Sim(width, height, ctx) {
         //let vol = g.volume()
         //let area = g.surfarea()
         //let thickness = vol / area
-        //let rndverts = [...g.verts].sort((a,b) => Math.random()-0.5)
+
         for (let vert of g.verts) {
             let p = Particle.alloc()
             p.x = p.xprev = p.x0 = vert.x
@@ -275,43 +279,34 @@ export async function Sim(width, height, ctx) {
             p.fixed = mdata.fixed
             p.friction = mdata.friction
             p.collision = mdata.collision
-            particles.push(p)           
-            
-            let adj = vert.ringn(RINGITER)
-            let c = [0,0,0]
-            for (let vadj of adj)
-                c = [c[0] + vadj.x.x, c[1] + vadj.x.y, c[2] + vadj.x.z]
-            c = c.map(val => val / adj.length)
-            p.c0 = v3(...c)
-            
-            let Q = M3js.of([0,0,0],[0,0,0],[0,0,0])
-            for (let vadj of adj) {
-                let rx = vadj.x.x - c[0], ry = vadj.x.y - c[1], rz = vadj.x.z - c[2]
-                Q = Q.add([[rx*rx, rx*ry, rx*rz], [ry*rx, ry*ry, ry*rz], [rz*rx, rz*ry, rz*rz]])
-                p.rings[p.nring++] = vadj.id + mesh.pi
-            }
+            particles.push(p)
+        }
 
+        let mclusts = g.cluster()
+        dbg({ mclusts })
+        for (let verts of mclusts) {
+            let cluster = Cluster.alloc()
+            cluster.mesh = midx
+            let c = [0,0,0]
+            for (let vert of verts) {
+                cluster.pids[cluster.n++] = vert.id + mesh.pi
+                c = [c[0] + vert.x.x, c[1] + vert.x.y, c[2] + vert.x.z]
+            }                            
+            c = c.map(val => val / verts.length)
+            cluster.c0 = v3(...c)
+            let Q = M3js.of([0,0,0],[0,0,0],[0,0,0])
+            for (let vert of verts) {
+                let rx = vert.x.x - c[0], ry = vert.x.y - c[1], rz = vert.x.z - c[2]
+                Q = Q.add([[rx*rx, rx*ry, rx*rz], [ry*rx, ry*ry, ry*rz], [rz*rx, rz*ry, rz*rz]])                
+            }
             let qsum = Q[0].sum() + Q[1].sum() + Q[2].sum()
             if (qsum > 0) {
                 let s = 1/qsum
                 let Qs = Q.mulc(s)
-                p.qinv = M3.of(Qs.invert())
-                p.s = s
-            }
-            
-            let group = -1
-            for (let i = 0; i < groups.length && group == -1; i++)
-                if (!adj.some(vadj => groups_exclude[i].has(vadj.id + mesh.pi)))
-                    group = i
-            if (group == -1) {
-                group = groups.length
-                groups.push([])
-                groups_exclude.push(new Set())                            
-            } 
-            groups[group].push(vert.id + mesh.pi)
-            for (let vadj of adj)
-                groups_exclude[group].add(vadj.id + mesh.pi)           
-
+                cluster.qinv = M3.of(Qs.invert())
+                cluster.s = s
+            }           
+            clusters.push(cluster)
         }
 
         mesh.pf = particles.length
@@ -325,13 +320,14 @@ export async function Sim(width, height, ctx) {
     meshes = Meshes.of(meshes)
     particles = Particles.of(particles)
     tris = Triangles.of(tris)
-    groups = groups.map(group => u32arr.of([...group]))
-
+    clusters = Clusters.of(clusters)
+    
     let diameter = -1
     for (let p of particles)
         for (let i of range(p.nedges))
             diameter = max(diameter, p.x.dist(particles[p.edges[i]].x))
-    if (diameter < 0) diameter = 0.02
+    //if (diameter < 0)
+        diameter = 0.02
 
     const uniforms = Uniforms.alloc()
     uniforms.seed = 666
@@ -350,6 +346,7 @@ export async function Sim(width, height, ctx) {
     const bufs = Object.fromEntries([
         gpu.buf({ label:'pbuf', data:particles, usage:'STORAGE|COPY_SRC|COPY_DST|VERTEX' }),
         gpu.buf({ label:'mbuf', data:meshes, usage:'STORAGE|COPY_DST|COPY_SRC' }),
+        gpu.buf({ label:'cbuf', data:clusters, usage:'STORAGE|COPY_DST|COPY_SRC' }),
         gpu.buf({ label:'uni', data:uniforms, usage:'UNIFORM|COPY_DST' }),
         gpu.buf({ label:'tribuf', data:tris, usage:'STORAGE|VERTEX|COPY_DST' }),
         gpu.buf({ label:'lbuf', data:lights, usage:'UNIFORM|FRAGMENT|COPY_DST' }),
@@ -400,16 +397,16 @@ export async function Sim(width, height, ctx) {
 
 
         const shader = await gpu.shader({
-            compute:true, wgsl:wgsl, defs:[Particle, Mesh, Uniforms, Bounds, Hit, HitList, Cell],
+            compute:true, wgsl:wgsl, defs:[Particle, Mesh, Uniforms, Bounds, Hit, HitList, Cell, Cluster],
             storage:{
                 pbuf:Particles, mbuf:Meshes, hitlist:HitList, setdps:v3uarr, cells:Cells, idp:V3U,
-                cnts:iatomicarr, group:u32arr, cellsets:CellSets, cellset:CellSet, ncells:uatomic,
+                cnts:iatomicarr, cellsets:CellSets, cellset:CellSet, ncells:uatomic, cbuf:Clusters,
                 pavg:v3arr, vavg:v3arr, lavg:v3arr, iavg:m3arr, bounds:Bounds, setlens:SetLens, setlen:u32arr
             },
             uniform:{ uni:Uniforms }
         })
 
-        const { uni, mbuf, pbuf } = bufs
+        const { uni, mbuf, pbuf, cbuf } = bufs
 
         const cmds = []
         const pass = (...args) => { cmds.push(gpu.computePass(...args)) }
@@ -465,11 +462,9 @@ export async function Sim(width, height, ctx) {
         pass({ pipe:pipe({ shader, entryPoint:'collide_bounds', binds:keys(binds) }), dispatch:pd, binds })
         stamp('bounds collide')       
         
-        binds = { pbuf, mbuf, uni }
-        let surfmatch = pipe({ shader, entryPoint:'surfmatch', binds:[...keys(binds),'group']})
-        for (let i of range(groups.length))
-            pass({ pipe:surfmatch, dispatch:groups[i].length,
-                   binds:{ ...binds, group:gpu.buf({ label: 'group'+i, data:groups[i], usage:'STORAGE' })}})
+        binds = { pbuf, mbuf, uni, cbuf }
+        let surfmatch = pipe({ shader, entryPoint:'surfmatch', binds:keys(binds) })
+        pass({ pipe:surfmatch, dispatch:1, binds })
         stamp('surface match')
 
         binds = { pbuf, mbuf, uni }
@@ -541,15 +536,16 @@ export async function Sim(width, height, ctx) {
                             if (dist < closest.dist) closest = {i, dist}
                         }                        
                         let hit = hitList.list[closest.i]
-                        uniforms.selection = uniforms.grabbing = hit.pid
+                        uniforms.selection = uniforms.grabbing = hit.pid                        
                         uniforms.grabTarget = hit.x.clamp(uniforms.spacemin.addc(uniforms.r), uniforms.spacemax)
                         let fwd = v3(sin(render.cam_lr), cos(render.cam_lr), 0).normalized()
                         grabDepth = hit.x.sub(render.cam_x).dot(fwd)
+                        grabOffset = uniforms.grabTarget.sub(render.cam_x.add(uniforms.grabRay.mulc(grabDepth/uniforms.grabRay.dot(fwd))))
                         hitList.len = 0
                         gpu.write(bufs.hitlist, hitList)
                         dbg({ pid:uniforms.selection, x:hit.x, dist:closest.dist })
-                    }
-                                            
+                    }                                           
+
                     frames++
                     steps++
 
@@ -724,6 +720,12 @@ export async function Sim(width, height, ctx) {
         dbg({done:true})
     }
 
+    function setCam(x, lr, ud) {
+        render.cam_x = x
+        render.cam_lr = lr
+        render.cam_ud = ud
+    }
+    
     function rotateCam(dx, dy) {
         render.cam_lr += dx
         render.cam_ud = clamp(render.cam_ud + dy, -PI / 2, PI / 2)
@@ -741,7 +743,7 @@ export async function Sim(width, height, ctx) {
         render.cam_x = render.cam_x.add(v3(delta * camDir.x, delta * camDir.y, delta * camDir.z))
     }
 
-    let grabDepth
+    let grabDepth, grabOffset
 
     async function grabParticle(x, y) {
         uniforms.grabRay = clipToRay(x,y)
@@ -753,9 +755,7 @@ export async function Sim(width, height, ctx) {
         if (uniforms.grabbing == -1) return
         let r = clipToRay(x,y)
         let fwd = v3(sin(render.cam_lr), cos(render.cam_lr), 0).normalized()
-        let c = grabDepth/r.dot(fwd)
-        let R = r.mulc(c)
-        uniforms.grabTarget = render.cam_x.add(R)
+        uniforms.grabTarget = render.cam_x.add(r.mulc(grabDepth/r.dot(fwd))).add(grabOffset)
         uniforms.grabTarget = uniforms.grabTarget.max(uniforms.spacemin.addc(uniforms.r))
         uniforms.grabTarget = uniforms.grabTarget.min(uniforms.spacemax.subc(uniforms.r))
     }
@@ -782,7 +782,7 @@ export async function Sim(width, height, ctx) {
     const renderer = await Renderer()
     console.timeEnd('renderer init')
 
-    dbg({ nparts:particles.length, nmeshes:meshes.length, ntris:tris.length, ngroups:groups.length, r:diameter/2 })
+    dbg({ nparts:particles.length, nmeshes:meshes.length, ntris:tris.length, nclusters:clusters.length, r:diameter/2 })
     return scope(stmt => eval(stmt))
 
 }

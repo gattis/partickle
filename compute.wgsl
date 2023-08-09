@@ -26,11 +26,11 @@ fn predict(@builtin(global_invocation_id) gid:vec3<u32>) {
       let ri = (*p).x - m.ci;
       (*p).v += min(1.0, uni.dt * 20.0 * uni.damp) * (m.vi + cross(m.wi, ri) - (*p).v);
       }*/
-
-    (*p).v += uni.a * uni.dt;
         
     (*p).xprev = (*p).x;
-    (*p).x += (*p).v * uni.dt;
+    (*p).vprev = (*p).v;
+    (*p).v += uni.a * uni.dt;
+    (*p).x += ((*p).vprev + (*p).v)/2 * uni.dt;
 
     if (uni.grabStart == 1) {
         let co = uni.cam_x - (*p).x;
@@ -53,7 +53,7 @@ fn predict(@builtin(global_invocation_id) gid:vec3<u32>) {
         (*p).x = uni.grabTarget;        
     } else if ((*p).grab == 1) {
         (*p).grab = 0;
-        (*p).x += .1*(uni.grabTarget - (*p).xprev);
+        (*p).v += (uni.grabTarget - (*p).xprev)/uni.dt;
     } else if ((*p).fixed == 1) {
         (*p).v = v3(0);
         (*p).x = (*p).xprev;
@@ -253,11 +253,32 @@ fn collide_bounds(@builtin(global_invocation_id) gid:vec3<u32>) {
     for (var i = 0; i < 6; i++) {
         let n = plane_normals[i];
         let point = select(uni.spacemin, uni.spacemax, i >= 3);
-        let dist = uni.r - dot((*p).x - point, n);
+        let x = (*p).x;
+        let dist = uni.r - dot(x - point, n);
         if (dist < 0) { continue; }
-        let v = (*p).v;
-        let vt = v - n*dot(v,n);       
-        (*p).x += 2*ec*dist*n - ef*vt*uni.dt;
+        let xp = (*p).xprev;
+        let vp = (*p).vprev;
+        var dxn = min(0,uni.r - dot(xp - point, n));        
+        let vpn = dot(vp, n);
+        let a = ((*p).v - vp)/uni.dt;
+        let an = dot(a, n);
+        var tc:f32;
+        if (an != 0) {
+            let discrim = vpn*vpn + 2*an*dxn;
+            if (discrim < 0) { continue; }
+            tc = (-vpn - sqrt(discrim))/an;
+        } else {
+            if (vpn == 0) { continue; }
+            tc = dxn / vpn;            
+        }        
+        let tr = uni.dt - tc;
+        let vc1 = vp + a * tc;
+        let vcn1 = dot(vc1, n);
+        let vct = vc1 - n*vcn1;
+        let vc2 = vc1 + n*(max(-vcn1*ec, -.5*an*tr) - vcn1) - ef*vct;
+        let xc = xp + (vp + vc1) * tc/2;
+        (*p).v = vc2 + a*tr;
+        (*p).x = xc + vc2*tr + .5*a*tr*tr;
     }    
 }
 
@@ -280,100 +301,101 @@ fn invert(m:m3) -> m3 {
 // Derived from "Physically Based Shape Matching" (Muller et al.)
 @compute @workgroup_size(1)
 fn surfmatch(@builtin(global_invocation_id) gid:vec3<u32>) {
-    let ngroup = arrayLength(&group);
-    if (gid.x >= ngroup) { return; }
-    var pid0 = group[gid.x];
-    let p = &pbuf[pid0];
-    let m = mbuf[(*p).mesh];
-    var volstiff = uni.volstiff * m.volstiff;
-    var shearstiff = uni.shearstiff * m.shearstiff;
-    if (volstiff == 0 || shearstiff == 0) { return; }
-    shearstiff = 1.0/shearstiff - 1.0;
-    volstiff = 0.01 * (1.0/volstiff - 1.0);
+    
+    let nclusters = arrayLength(&cbuf);
+    for (var cid = 0u; cid < nclusters; cid++) {
+        
+        let cluster = cbuf[cid];
+        let m = mbuf[cluster.mesh];
+        var volstiff = uni.volstiff * m.volstiff;
+        var shearstiff = uni.shearstiff * m.shearstiff;
+        if (volstiff == 0 || shearstiff == 0) { continue; }
+        shearstiff = 1.0/shearstiff - 1.0;
+        volstiff = 0.01 * (1.0/volstiff - 1.0);
            
-    var n = (*p).nring;
-    if (n < 4) { return; }
-    var pids = (*p).rings;
-    let s = (*p).s;
-    let Qinv = (*p).qinv;
-
-    let c0 = (*p).c0;
-    var c = v3();
-    for (var i = 0u; i < n; i++) {
-        let pid = pids[i];
-        c += pbuf[pid].x;
-    }
-    c /= f32(n);
-    
-    var P = m3();
-    for (var i = 0u; i < n; i++) {
-        let pid = pids[i];
-        let rs = s*(pbuf[pid].x - c);
-        let r0 = pbuf[pid].x0 - c0;
-        P += m3(rs*r0.x, rs*r0.y, rs*r0.z);
-    }
-
-    var F = P * Qinv;
-    var C = sqrt(dot(F[0],F[0]) + dot(F[1],F[1]) + dot(F[2],F[2]));
-    if (C == 0) { return; }
-    
-    var G = s/C * (F * transpose(Qinv));
-    var walpha = shearstiff / uni.dt / uni.dt;
-    for (var i = 0u; i < n; i++) {
-        let pid = pids[i];
-        let grad = G * (pbuf[pid].x0 - c0);
-        walpha += dot(grad,grad);
-    }
-
-    c = v3();
-    var lambda = select(-C / walpha, 0.0, walpha == 0.0);
-    for (var i = 0u; i < n; i++) {
-        let pid = pids[i];
-        pbuf[pid].x += lambda * (G * (pbuf[pid].x0 - c0));
-        c += pbuf[pid].x;
-    }
-    c /= f32(n);
-
-    P = m3();
-    for (var i = 0u; i < n; i++) {
-        let pid = pids[i];
-        let rs = s*(pbuf[pid].x - c);
-        let r0 = pbuf[pid].x0 - c0;
-        P += m3(rs*r0.x, rs*r0.y, rs*r0.z);
-    }
-    F = P * Qinv;
-    C = determinant(F) - 1.0;
-
-    G = s * m3(cross(F[1],F[2]),cross(F[2],F[0]),cross(F[0],F[1])) * transpose(Qinv);
-    walpha = volstiff / uni.dt / uni.dt;
-    for (var i = 0u; i < n; i++) {
-        let pid = pids[i];
-        let grad = G * (pbuf[pid].x0 - c0);
-        walpha += dot(grad,grad);
-    }
-
-    c = v3();
-    lambda = select(-C / walpha, 0.0, walpha == 0.0);
-    for (var i = 0u; i < n; i++) {
-        let pid = pids[i];
-        pbuf[pid].x += lambda * (G * (pbuf[pid].x0 - c0));
-        c += pbuf[pid].x;
-    }
-    c /= f32(n);
-
-    P = m3();
-    for (var i = 0u; i < n; i++) {
-        let pid = pids[i];
-        let rs = s*(pbuf[pid].x - c);
-        let r0 = pbuf[pid].x0 - c0;
-        P += m3(rs*r0.x, rs*r0.y, rs*r0.z);
-    }
-
-    F = P * Qinv;
-    for (var i = 0u; i < n; i++) {
-        let pid = pids[i];
-        if (pbuf[pid].fixed != 1 && pbuf[pid].grab != 1) {
-            pbuf[pid].x = c + F * (pbuf[pid].x0 - c0);
+        var n = cluster.n;
+        if (n < 4) { continue; }
+        var pids = cluster.pids;
+        let s = cluster.s;
+        let Qinv = cluster.qinv;
+        
+        let c0 = cluster.c0;
+        var c = v3();
+        for (var i = 0u; i < n; i++) {
+            c += pbuf[pids[i]].x;
+        }
+        c /= f32(n);
+        
+        var P = m3();
+        for (var i = 0u; i < n; i++) {
+            let p = &pbuf[pids[i]];
+            let rs = s*((*p).x - c);
+            let r0 = (*p).x0 - c0;
+            P += m3(rs*r0.x, rs*r0.y, rs*r0.z);
+        }
+        
+        var F = P * Qinv;
+        var C = sqrt(dot(F[0],F[0]) + dot(F[1],F[1]) + dot(F[2],F[2]));
+        if (C == 0) { continue; }
+        
+        var G = s/C * (F * transpose(Qinv));
+        var walpha = shearstiff / uni.dt / uni.dt;
+        for (var i = 0u; i < n; i++) {
+            let grad = G * (pbuf[pids[i]].x0 - c0);
+            walpha += dot(grad,grad);
+        }
+        
+        c = v3();
+        var lambda = select(-C / walpha, 0.0, walpha == 0.0);
+        for (var i = 0u; i < n; i++) {
+            let p = &pbuf[pids[i]];
+            let x = (*p).x + lambda * (G * ((*p).x0 - c0));
+            c += x;
+            if ((*p).fixed != 1 && (*p).grab != 1) { (*p).x = x; }            
+        }
+        c /= f32(n);
+        
+        P = m3();
+        for (var i = 0u; i < n; i++) {
+            let p = &pbuf[pids[i]];
+            let rs = s*((*p).x - c);
+            let r0 = (*p).x0 - c0;
+            P += m3(rs*r0.x, rs*r0.y, rs*r0.z);
+        }
+        F = P * Qinv;
+        C = determinant(F) - 1.0;
+        
+        G = s * m3(cross(F[1],F[2]),cross(F[2],F[0]),cross(F[0],F[1])) * transpose(Qinv);
+        walpha = volstiff / uni.dt / uni.dt;
+        for (var i = 0u; i < n; i++) {
+            let grad = G * (pbuf[pids[i]].x0 - c0);
+            walpha += dot(grad,grad);
+        }
+        
+        c = v3();
+        lambda = select(-C / walpha, 0.0, walpha == 0.0);
+        for (var i = 0u; i < n; i++) {
+            let p = &pbuf[pids[i]];
+            let x = (*p).x + lambda * (G * ((*p).x0 - c0));
+            c += x;
+            if ((*p).fixed != 1 && (*p).grab != 1) { (*p).x = x; } 
+        }
+        c /= f32(n);
+        
+        P = m3();
+        for (var i = 0u; i < n; i++) {
+            let p = &pbuf[pids[i]];
+            let rs = s*((*p).x - c);
+            let r0 = (*p).x0 - c0;
+            P += m3(rs*r0.x, rs*r0.y, rs*r0.z);
+        }
+        
+        F = P * Qinv;
+        for (var i = 0u; i < n; i++) {
+            let p = &pbuf[pids[i]];
+            if ((*p).fixed != 1 && (*p).grab != 1) {
+                (*p).x = c + F * ((*p).x0 - c0);
+            } 
         }
     }
 }
@@ -387,7 +409,7 @@ fn update_vel(@builtin(global_invocation_id) gid:vec3<u32>) {
         (*p).v = v3(0);
         return;
     }
-    (*p).v = ((*p).x - (*p).xprev) / uni.dt;
+    //(*p).v = ((*p).x - (*p).xprev) / uni.dt;
 }
 
 @compute @workgroup_size(${threads})

@@ -76,6 +76,7 @@ export class GeoVert {
         }
         return verts
     }
+
 }
     
 export class GeoTri {
@@ -119,7 +120,43 @@ export class GeoMesh {
     surfarea() {
         return this.tris.map(tri => tri.area()).sum()
     }
-    
+
+    cluster() {
+        let seedVert = this.verts.max(v => v.x.maxc()), past = []
+        let rings = { cur:[seedVert], next:[], visited:new Set() }
+        while (rings.cur.length > 0) {
+            for (let vert of rings.cur)
+                for (let edge of vert.edges) {
+                    if (rings.visited.has(edge.vert.id)) continue;
+                    rings.visited.add(edge.vert.id)
+                    rings.next.push(edge.vert)
+                }
+            rings = { ...rings, cur: rings.next, next: [] }
+            past.push(rings.cur)
+        }
+        //if (past.length > 0)
+        //    past[0].push(seedVert)
+        let n = past.length
+        let clusters = range(n).map(i=>[])
+        if (n > 1) {
+            clusters[0] = [...past[0], ...past[1]]
+            clusters[n - 1] = [...past[n-2], ...past[n-1]]
+        }
+        for (let i of range(1,n-1))
+            clusters[i] = [...past[i-1], ...past[i]] //, ...past[i+1]]
+
+        let cnts = {}
+        for (let [i,cluster] of enumerate(clusters)) {
+            let pids = cluster.map(v=>v.id)
+            let uniq = (new Set(pids)).size
+            if (uniq != cluster.length)       
+                dbg({ cid:i, len:cluster.length, uniq, pids })
+            for (let pid of pids)
+                cnts[pid] = (cnts[pid]||0) + 1
+        }
+        dbg({cnts})
+        return clusters
+    }
 }
 
 class GeoTransact extends IDBTransaction {
