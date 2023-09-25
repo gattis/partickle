@@ -8,20 +8,14 @@ fn update_tris(@builtin(global_invocation_id) gid:vec3<u32>) {
     let tid:u32 = gid.x;
     let ntris = arrayLength(&tribuf);
     if (tid >= ntris) { return; }
-    var tri = tribuf[tid];
-    let p0 = &pbuf[tri.v0.pidx];
-    let p1 = &pbuf[tri.v1.pidx];
-    let p2 = &pbuf[tri.v2.pidx];
-    tri.v0.x = (*p0).x;
-    tri.v1.x = (*p1).x;
-    tri.v2.x = (*p2).x;
-    tri.v0.norm = (*p0).norm;
-    tri.v1.norm = (*p1).norm;
-    tri.v2.norm = (*p2).norm;
-    tri.v0.mesh = (*p0).mesh;
-    tri.v1.mesh = (*p1).mesh;
-    tri.v2.mesh = (*p2).mesh;
-    tribuf[tid] = tri;
+    var t = tribuf[tid];
+    t.v0.x = pbuf[t.v0.pidx].x;
+    t.v1.x = pbuf[t.v1.pidx].x;
+    t.v2.x = pbuf[t.v2.pidx].x;
+    t.v0.norm = vbuf[t.v0.pidx].norm;
+    t.v1.norm = vbuf[t.v1.pidx].norm;
+    t.v2.norm = vbuf[t.v2.pidx].norm;
+    tribuf[tid] = t;
 }
 
 fn safenorm(v:v3) -> v3 {
@@ -36,19 +30,20 @@ fn normals(@builtin(global_invocation_id) gid:vec3<u32>) {
     let nparts = arrayLength(&pbuf);
     if (pid >= nparts) { return; }
     let p = &pbuf[pid];
+    let v = &vbuf[pid];
     var norm = v3(0f,0f,0f);
-    let nedges = (*p).nedges;
+    let nedges = (*v).nedges;
     let x = (*p).x;
     for (var i = 0u; i < nedges; i = i + 1u) {
-        var ab = pbuf[(*p).edges[i % nedges]].x - x;
-        var ac = pbuf[(*p).edges[(i+1u) % nedges]].x - x;
+        var ab = pbuf[(*v).edges[i % nedges]].x - x;
+        var ac = pbuf[(*v).edges[(i+1u) % nedges]].x - x;
         var weight = 1.0;
         //weight *= length(cross(ab,ac))/2; // area
         weight *= acos(dot(safenorm(ab),safenorm(ac))); // angle
         let n = safenorm(cross(ab,ac));
         norm += weight * n;
     }
-    (*p).norm = safenorm(norm);
+    (*v).norm = safenorm(norm);
 }
 
 

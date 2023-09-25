@@ -154,7 +154,7 @@ export class GeoMesh {
             for (let pid of pids)
                 cnts[pid] = (cnts[pid]||0) + 1
         }
-        dbg({cnts})
+        //dbg({cnts})
         return clusters
     }
 }

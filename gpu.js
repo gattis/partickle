@@ -43,7 +43,9 @@ export const GPU = class GPU {
         const desc = { requiredFeatures: features }
         if (!FF) desc.requiredLimits = limits
         const dev = await adapter.requestDevice(desc)
+        this.alive = true
         dev.onuncapturederror = ev => { this.fatal('uncaptured', 'unknown', ev.error) }
+        dev.lost.then(err => { this.fatal('lost','',err) })
         dev.queue.holder = dev
         dev.holder = this
         this.copyBufs = []
@@ -57,9 +59,9 @@ export const GPU = class GPU {
     }
 
     fatal(meth, args, err) {
-        if (!err) return
         this.alive = false
-        dbg({error:`gpu.${meth}`, args, err })
+        dbg({fatal:`gpu.${meth}`, args, err })
+        debugger;
     }
 
     configure(ctx, width, height, pref) {
@@ -72,7 +74,6 @@ export const GPU = class GPU {
         const usage = GPUTextureUsage.RENDER_ATTACHMENT
         this.depthTex = this.dev.createTexture({ size, sampleCount:pref.samples, format:pref.depth_fmt, usage })
         this.colorTex = this.dev.createTexture({ size, sampleCount:pref.samples, format:pref.format, usage })
-        this.alive = true
     }
 
 
@@ -106,7 +107,7 @@ export const GPU = class GPU {
         let copyBuf = this.copyBufs.pop()
         if (!copyBuf || copyBuf.size < buf.size) {
             if (copyBuf) copyBuf.buffer.destroy()
-            copyBuf = this.buf({length:buf.size/4, type:u32, usage:'MAP_READ|COPY_DST' })
+            copyBuf = this.buf({label:'copy',length:buf.size/4, type:u32, usage:'MAP_READ|COPY_DST' })
         }
         const cmds = this.dev.createCommandEncoder()
         cmds.copyBufferToBuffer(buf.buffer, buf.resource.offset, copyBuf.buffer, 0, buf.size)
@@ -439,6 +440,8 @@ export const GPU = class GPU {
                 }
             }
             toString() {
+                if (this.length <= 8)
+                    return '[' + [...this].map(e => e.toString()).join(',') + ']'
                 return `[Array:${this.type.name} length=${this.length}]`
             }
             static getset = (off,type) => ({
@@ -491,8 +494,12 @@ export const v2u = (...args) => V2U.of(...args)
 export const V3I = GPU.struct({
     name: 'vec3<i32>',
     fields: [['x', i32], ['y', i32], ['z', i32]],
-    size: 12,
-    align: 16
+    size: 12, align: 16,
+    members: {
+        addc: function(c) { return v3i(this.x + c, this.y + c, this.z + c) },
+        modc: function(c) { return v3i(this.x % c, this.y % c, this.z % c) },
+        dot: function(v) { return this.x*v[0] + this.y*v[1] + this.z*v[2] },
+    }
 })
 
 export const v3i = (...args) => V3I.of(...args)
@@ -500,8 +507,7 @@ export const v3i = (...args) => V3I.of(...args)
 export const V3U = GPU.struct({
     name: 'vec3<u32>',
     fields: [['x', u32], ['y', u32], ['z', u32]],
-    size: 12,
-    align: 16
+    size: 12, align: 16
 })
 
 export const V3 = class extends Float32Array {
@@ -818,17 +824,19 @@ export const v3uarr = GPU.array({ type:V3U })
 for (const meth of Object.getOwnPropertyNames(GPUDevice.prototype)) {
     if (!(meth == 'destroy' || meth.startsWith('create')) || meth == 'createCommandEncoder') continue;
     hijack(GPUDevice, meth, (real, obj, args) => {
+        if (!obj.holder.alive) return;
         obj.pushErrorScope('validation')
         const retval = real.apply(obj, args)
-        if (meth != 'destroy') obj.popErrorScope().then(err => obj.holder.fatal(meth, args, err))
+        if (meth != 'destroy') obj.popErrorScope().catch(err => obj.holder.fatal(meth, args, err))
         return retval
     })
 }
 
 hijack(GPUQueue, 'submit', (real, obj, args) => {
+    if (!obj.holder.holder.alive) return;
     obj.holder.pushErrorScope('validation')
     real.apply(obj, args)
-    obj.holder.popErrorScope().then(err => obj.holder.holder.fatal('queue.submit', args, err))
+    obj.holder.popErrorScope().catch(err => obj.holder.holder.fatal('queue.submit', args, err))
 })
 
 

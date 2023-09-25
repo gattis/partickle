@@ -20,11 +20,12 @@ fn frag(worldx:v3, norm:v3, color:v4) -> v4 {
         let lambertian = max(dot(lightdir, norm), 0.0);
         var specular = 0.0f;
         if (lambertian > 0.0) {
-            let viewdir = normalize(uni.cam_x - worldx);
+            let viewdir = normalize(u.cam_x - worldx);
             let reflectdir = reflect(-lightdir, norm);
             let specAngle = max(dot(reflectdir, viewdir), 0.0);
             specular = pow(specAngle, shininess);
         }
+
         mix += lightmag * (color.rgb*lambertian + specular);
     }
     return v4(clamp(mix,v3(0),v3(1)), color.a);
@@ -44,7 +45,7 @@ struct SurfOut {
                         @location(3) uv:v2) -> SurfOut {
     var out:SurfOut;
     out.worldx = x;
-    out.position = uni.mvp * v4(out.worldx, 1.0);
+    out.position = u.mvp * v4(out.worldx, 1.0);
     out.norm = norm;
     out.uv = uv;
     out.mesh = mesh;
@@ -80,7 +81,7 @@ struct FragDepth {
     if (vertidx == 1u) {
         worldx += norm * 0.05;
     }
-    return uni.mvp * v4(worldx, 1.0);
+    return u.mvp * v4(worldx, 1.0);
 }
 
 @fragment fn vnormals_frag() -> @location(0) v4 {
@@ -90,7 +91,7 @@ struct FragDepth {
 const sq3 = 1.73205077648;
 const rexp = 1.15;
 fn impostor(vertidx:u32, x:v3, r:f32) -> v3 {
-    let fwd = normalize(x - uni.cam_x);
+    let fwd = normalize(x - u.cam_x);
     let right = normalize(v3(-fwd.y, fwd.x, 0));
     let up = normalize(cross(fwd,right));
     if (vertidx == 0) {
@@ -115,12 +116,12 @@ struct PartIO {
                          @location(0) partx:v3,
                          @location(1) mesh:u32) -> PartIO {
     var out:PartIO;
-    let imp = impostor(vertidx, partx, uni.r);
+    let imp = impostor(vertidx, partx, u.r);
     out.partx = partx;
     out.vertx = imp;
-    out.position = uni.mvp * v4(out.partx + out.vertx,1);
+    out.position = u.mvp * v4(out.partx + out.vertx,1);
     out.mesh = mesh;
-    out.selected = select(0u, 1u, i32(instidx) == uni.selection);
+    out.selected = select(0u, 1u, i32(instidx) == u.selection);
     return out;
 }
 
@@ -141,7 +142,7 @@ struct LightIO {
     out.size = .4*sqrt(l.power);
     let imp = impostor(vertidx, out.lightx, out.size);
     out.vertx = imp;
-    out.position = uni.mvp * v4(out.lightx + out.vertx,1);
+    out.position = u.mvp * v4(out.lightx + out.vertx,1);
     out.color = l.color;
     return out;
 }
@@ -157,8 +158,8 @@ struct RayTrace {
 fn trace_sphere(vertx:v3, center:v3, r:f32) -> RayTrace {
     var trace:RayTrace;
     trace.t = -1;
-    trace.rd = normalize(vertx + center - uni.cam_x);
-    let co = uni.cam_x - center;
+    trace.rd = normalize(vertx + center - u.cam_x);
+    let co = u.cam_x - center;
     let b = dot(co, trace.rd);
     let c = b*b - dot(co, co) + r*r;
     if (c < 0) { return trace; }
@@ -169,9 +170,9 @@ fn trace_sphere(vertx:v3, center:v3, r:f32) -> RayTrace {
     else if (t1 < 0 && t2 >= 0) { trace.t = t2; }
     else { return trace; }
     let ot = trace.rd * trace.t;
-    trace.hit = uni.cam_x + ot;
+    trace.hit = u.cam_x + ot;
     trace.normal = normalize(ot + co);
-    let hitclip = uni.mvp * v4(trace.hit, 1);
+    let hitclip = u.mvp * v4(trace.hit, 1);
     trace.clip_depth = hitclip.z / hitclip.w;
     return trace;
 }
@@ -185,7 +186,7 @@ fn trace_sphere(vertx:v3, center:v3, r:f32) -> RayTrace {
     if (input.selected == 1u) {
         rgb = 1 - rgb;
     }
-    let trace = trace_sphere(input.vertx, input.partx, uni.r);
+    let trace = trace_sphere(input.vertx, input.partx, u.r);
     if (trace.t < 0) { discard; }
     return FragDepth(frag(trace.hit, trace.normal, v4(rgb,1.0f)), trace.clip_depth);
 }
@@ -204,24 +205,31 @@ struct GndIO {
 
 @vertex fn walls_vert(@builtin(vertex_index) vertidx:u32) -> GndIO {
     var out:GndIO;
-    let p = uni.spacemax;
-    let n = uni.spacemin;    
+    let p = u.spacemax;
+    let n = u.spacemin;    
     out.worldx = array(v3(n.x,p.y,p.z), v3(p.x,p.y,p.z), v3(n.x,n.y,p.z), v3(p.x,n.y,p.z), v3(p.x,n.y,n.z), v3(p.x,p.y,p.z), v3(p.x,p.y,n.z),
                    v3(n.x,p.y,p.z), v3(n.x,p.y,n.z), v3(n.x,n.y,p.z), v3(n.x,n.y,n.z), v3(p.x,n.y,n.z), v3(n.x,p.y,n.z), v3(p.x,p.y,n.z))[vertidx];
-    out.position = uni.mvp * v4(out.worldx, 1);
+    out.position = u.mvp * v4(out.worldx, 1);
     return out;
 }
 
-fn checkers(xy:v2) -> i32 {
-    return abs(i32(floor(xy.x)) + i32(floor(xy.y))) % 2;
+
+const pi = 3.141592653589793;
+
+fn grid(v:v2, d:f32, a:f32) -> f32 {
+    let p = 1/(a*d);
+    let sx = tanh(p*sin(pi*v.x*d));
+    let sy = tanh(p*sin(pi*v.y*d));
+    return min(pow(sx*sx,p),pow(sy*sy,p));
 }
+
 
 @fragment fn walls_frag(input:GndIO) -> @location(0) v4 {
 
 
     let w = input.worldx;
-    let p = uni.spacemax;
-    let n = uni.spacemin;
+    let p = u.spacemax;
+    let n = u.spacemin;
 
     let dists = array(abs(w.x-n.x), abs(w.x-p.x), abs(w.y-n.y), abs(w.y-p.y), abs(w.z-n.z), abs(w.z-p.z));
     let planes = array<v2,6>(w.yz, w.yz, w.xz, w.xz, w.xy, w.xy);
@@ -234,15 +242,10 @@ fn checkers(xy:v2) -> i32 {
         }
     }
     let plane = planes[imin];
+    let pattern = min(grid(plane,10,.0018), grid(plane,2, .0028));
+
+    let color = v4(v3(1,.9,1)*pattern, 1);
     
-    
-    let minor = checkers(plane/.1);
-    let major = checkers(plane);
-    let pattern = array(.2,.25,.40,.45)[minor + 2*major];
-    let color = v4(pattern*v3(.8,.8,.9), 1);
     return frag(input.worldx, v3(0,0,1), color);
-
-
-
 
 }

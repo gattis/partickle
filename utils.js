@@ -19,10 +19,6 @@ export const range = function* (a,b,step) {
         for (let val = start; val > stop; val += step) yield val
 }
 
-range.prototype.map = function (fn) {
-    return [...this].map(fn)
-}
-
 export const range3d = function* (x,y,z) {
     for (const zi of range(z))
         for (const yi of range(y))
@@ -123,6 +119,12 @@ Array.prototype.min = function(key = x => x) {
 Array.prototype.uniq = function () {
     return [...new Set(this)];
 }
+
+range.prototype.map = function (fn) { return [...this].map(fn) }
+range.prototype.min = function (fn) { return [...this].min(fn) }
+range.prototype.max = function (fn) { return [...this].max(fn) }
+
+
 
 export const mod = (n, m) => ((n % m) + m) % m
 
@@ -247,10 +249,11 @@ export const repr = (v) => {
         return f + p
     }
     if (v instanceof Array | v instanceof Set) {
-        if ((v.length || v.size || Infinity) <= 4)
+        if ((v.length || v.size || Infinity) <= 8)
             return `[${[...v].map(x => repr(x)).join(',')}]`
         else return `[sz=${v.length || v.size || 0}]`
     }
+    if (v.message) { return v.message }
     return v.toString()
 }
 

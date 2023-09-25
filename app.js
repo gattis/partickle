@@ -75,31 +75,35 @@ for (const key of render.keys)
     if (!render.hidden[key])
         createCtrl[render.type[key]](render,key,'#rpref')
 
-cv.addEventListener('mousedown', down => {
+
+cv.on('mousedown', down => {
+    down.preventDefault()
     if (editor.open)
         return editor.close()
     if (!window.sim) return
-    if (down.button == 2) {
-       sim.grabParticle(down.x, down.y)
-       cv.style.cursor = 'grabbing'
-    } else if (down.button == 1 || down.button == 0) {
-        if (sim.uniforms.grabbing >= 0)
-            return sim.fixParticle()
-        cv.style.cursor = 'all-scroll'
-    }
-    window.on('pointermove', move => {
-        const dx = .005*move.movementX, dy = -.005*move.movementY
-        if (down.button == 0) sim.rotateCam(dx, dy)
-        else if (down.button == 1) sim.strafeCam(dx*.2, dy*.2)
-        else if (down.button == 2) sim.moveParticle(move.x, move.y)
-    })
-    window.on('pointerup', up => {
-        cv.style.cursor = 'grab'
+    let grabbing = cv.style.cursor == 'grabbing'
+    if (down.button == 0 && !grabbing)
+        return window.on('pointermove', move => sim.rotateCam(.005*move.movementX, -.005*move.movementY))
+    if (down.button == 1 && !grabbing)
+        return window.on('pointermove', move => sim.strafeCam(.001*move.movementX, -.001*move.movementY))
+    if (down.button == 0 && grabbing)
+        return sim.fixParticle()
+    if (down.button == 2 && !grabbing)
+        return sim.grabParticle(down.x, down.y).then(() => {
+            cv.style.cursor = 'grabbing'
+            window.on('pointermove', move => sim.moveParticle(move.x, move.y))
+        })
+})
+
+window.on('pointerup', up => {
+    window.off(['pointermove'])
+    up.preventDefault()
+    if (cv.style.cursor == 'grabbing') {
         sim.dropParticle()
-        window.off(['pointerup','pointermove'])
-    })
-    down.preventDefault()
-}, { capture: true, passive: false })
+        cv.style.cursor = 'grab'
+    }
+})
+    
 
 cv.on('wheel', wheel => {
     if (!window.sim) return
@@ -157,7 +161,7 @@ async function updateInfo() {
     lines.push(`frameratio(avg): ${(physStat.fps / renderStat.fps).toFixed(3)}`)
     if (ttotal > 0n) lines.push(`total: ${ttotal} &mu;s`)
     lines.push('&nbsp;')
-    lines.push(`cam pos: ${sim.uniforms.cam_x}`)
+    lines.push(`cam pos: ${sim.uni.cam_x}`)
     $`#info`.innerHTML = lines.join('<br/>')
     setTimeout(updateInfo, 500)
 }
