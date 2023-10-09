@@ -45,14 +45,12 @@ const createCtrl = {
     'num': (prefs, key, elem) => {
         const ctrl = html('output', {}, prefs[key])
         ctrl.on('pointerdown', e => {
-            window.on('pointermove', e => {
-                let step = prefs.step[key]
+            const off = window.onoff('pointermove', e => {
+                const step = prefs.step[key]
                 prefs[key] = roundEps(clamp(prefs[key] + e.movementX*step, prefs.lo[key], prefs.hi[key]))
                 ctrl.textContent = prefs[key]
             })
-            window.on('pointerup', e => {
-                window.off(['pointermove','pointerup'])
-            })
+            window.once('pointerup', e => off())
             e.preventDefault()
         })
         createCtrl.common(prefs, key, elem, ctrl)
@@ -77,38 +75,34 @@ for (const key of render.keys)
 
 
 cv.on('mousedown', down => {
-    down.preventDefault()
-    if (editor.open)
-        return editor.close()
-    if (!window.sim) return
-    let grabbing = cv.style.cursor == 'grabbing'
-    if (down.button == 0 && !grabbing)
-        return window.on('pointermove', move => sim.rotateCam(.005*move.movementX, -.005*move.movementY))
-    if (down.button == 1 && !grabbing)
-        return window.on('pointermove', move => sim.strafeCam(.001*move.movementX, -.001*move.movementY))
-    if (down.button == 0 && grabbing)
-        return sim.fixParticle()
-    if (down.button == 2 && !grabbing)
-        return sim.grabParticle(down.x, down.y).then(() => {
-            cv.style.cursor = 'grabbing'
-            window.on('pointermove', move => sim.moveParticle(move.x, move.y))
+    if (down.button != 0) return
+    if (editor.open) return editor.close()
+    const off = window.onoff('pointermove', move => sim && sim.rotateCam(.005*move.movementX, -.005*move.movementY))
+    window.once('pointerup', up => off())
+})
+
+cv.on('mousedown', down => {
+    if (down.button != 1) return
+    const off = window.onoff('pointermove', move => sim && sim.strafeCam(.001*move.movementX, -.001*move.movementY))
+    window.once('pointerup', up => off())
+})
+
+cv.on('mousedown', down => {
+    if (down.button != 2) return
+    sim.grabParticle(down.x, down.y).then(() => {
+        cv.style.cursor = 'grabbing'
+        const moveoff = window.onoff('pointermove', move => sim.moveParticle(move.x, move.y))
+        const lmboff = cv.onoff('mousedown', down2 => down2.button == 0 && sim.fixParticle())
+        window.once('pointerup', up => {
+            moveoff()
+            lmboff()
+            sim.dropParticle()
+            cv.style.cursor = 'grab'
         })
-})
+    })
+})    
 
-window.on('pointerup', up => {
-    window.off(['pointermove'])
-    up.preventDefault()
-    if (cv.style.cursor == 'grabbing') {
-        sim.dropParticle()
-        cv.style.cursor = 'grab'
-    }
-})
-    
-
-cv.on('wheel', wheel => {
-    if (!window.sim) return
-    sim.advanceCam(-0.0002 * wheel.deltaY)
-}, { passive: true })
+cv.on('wheel', wheel => sim && sim.advanceCam(-0.0002 * wheel.deltaY), { passive: true })
 
 cv.on('contextmenu', menu => menu.preventDefault())
 
@@ -134,10 +128,6 @@ phys.watch(['paused'], () => {
     $`#icon`.href = phys.paused ? stopIcon : playIcon;
 })
 
-
-render.watch(['color_src','color_dst','alpha_src','alpha_dst'], (k,v) => {
-    $('#'+k).value = v
-})
 const paused = $`input[name="paused"]`
 paused.parentNode.insertBefore(step,paused.nextSibling.nextSibling)
 
@@ -146,20 +136,20 @@ async function updateInfo() {
     lines.push(sim.gpu.info.description)
     lines.push(sim.gpu.info.driver)
     let physStat = await sim.computer.stats(), renderStat = await sim.renderer.stats()
-    let ttotal = 0n
+    let ttotal = 0
     lines.push(`render fps:${renderStat.fps.toFixed(2)}`)
     lines.push(`phys fps:${physStat.fps.toFixed(2)}`)
     lines.push('&nbsp;')
     for (const { kind, profile } of [physStat, renderStat]) {
         if (!profile) continue
-        for (const [label, nsecs] of profile) lines.push(`${label}: ${nsecs / 1000n} &mu;s`)
-        let steptot = profile.sum(([label, nsecs]) => nsecs, 0n) / 1000n
-        if (steptot > 0n) lines.push(`${kind} tot: ${steptot} &mu;s`)
+        for (const [label, nsecs] of profile) lines.push(`${label}: ${(nsecs / 1000).toFixed(1)} &mu;s`)
+        let steptot = profile.sum(([label, nsecs]) => nsecs, 0) / 1000
+        if (steptot > 0n) lines.push(`${kind} tot: ${steptot.toFixed(1)} &mu;s`)
         lines.push('&nbsp;')
-        ttotal += steptot * (kind == 'render' ? 1n : BigInt(phys.frameratio))
+        ttotal += steptot * (kind == 'render' ? 1 : phys.frameratio)
     }
-    lines.push(`frameratio(avg): ${(physStat.fps / renderStat.fps).toFixed(3)}`)
-    if (ttotal > 0n) lines.push(`total: ${ttotal} &mu;s`)
+    lines.push(`frameratio(avg): ${(physStat.fps / renderStat.fps).toFixed(2)}`)
+    if (ttotal > 0n) lines.push(`total: ${ttotal.toFixed(1)} &mu;s`)
     lines.push('&nbsp;')
     lines.push(`cam pos: ${sim.uni.cam_x}`)
     $`#info`.innerHTML = lines.join('<br/>')
@@ -322,7 +312,7 @@ window.debug = (n = 18) => {
         dbg({debug:window.d.subarray(0,n).map(x => round(x*1e5)/1e5).join(' ')})
     })
 }
-setTimeout(updateInfo, 500)
+setTimeout(updateInfo, 100)
 
 
 

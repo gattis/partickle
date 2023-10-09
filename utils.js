@@ -80,22 +80,33 @@ export const BitField = class BitField {
 }
 
 EventTarget.prototype.on = function(types, fn, options = {}) {
-    if (!(types instanceof Array)) types = [types]
-    for (let type of types) {
-        if (this.cbs?.[type]) this.removeEventListener(type, this.cbs[type])
-        this.addEventListener(type, (this.cbs||={})[type] = fn, options)
-    }
+    for (const type of types.split(','))
+        this.addEventListener(type, fn, options)
     return this
 }
 
 EventTarget.prototype.off = function(types, fn, options = {}) {
-    if (!(types instanceof Array)) types = [types]
-    for (let type of types) {
-        if (this.cbs?.[type]) this.removeEventListener(type, this.cbs[type])
-    }
+    for (let type of types.split(','))
+        this.removeEventListener(type, fn, options)
     return this
 }
 
+EventTarget.prototype.onoff = function(types, fn, options = {}) {
+    const ctrl = new AbortController()
+    options.signal = ctrl.signal
+    this.on(types, fn, options)
+    return () => { ctrl.abort() }
+}
+
+EventTarget.prototype.once = function(types, fn, options = {}) {
+    options.once = true
+    return this.on(types, fn, options)
+}
+
+EventTarget.prototype.onceoff = function(types, fn, options = {}) {
+    options.once = true
+    return this.onoff(types, fn, options)
+}
 
 String.prototype.interp = function(args) {
     const keys = Object.keys(args), vals = Object.values(args).map(val => JSON.stringify(val));

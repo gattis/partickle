@@ -24,6 +24,125 @@ export const iatomic = {...i32, name: 'atomic<i32>'}
 const FF = Boolean(globalThis.navigator && navigator.userAgent.match(/(Firefox|Deno)/))
 const NODE = globalThis.process && process.release.name == 'node'
 
+
+
+class CmdScheduler {
+    constructor(gpu) {
+        this.gpu = gpu
+        this.cmds = []
+        if (gpu.features.includes('timestamp-query-inside-passes')) {
+            this.qSet = gpu.dev.createQuerySet({ type: 'timestamp', count: 64 })
+            this.qBuf = gpu.buf({ label:'query', type: u64, length: 64, usage: 'COPY_SRC|QUERY_RESOLVE' })
+            this.qLabels = []
+        }        
+    }
+
+    stamp(label) {
+        if (!this.qSet) return
+        const index = this.qLabels.push(label)
+        this.cmds.push(encoder => {
+            encoder.writeTimestamp(this.qSet, index)
+        })
+    }
+
+    computePass() {        
+        const calls = []
+        this.cmds.push(encoder => {
+            const pass = encoder.beginComputePass({})
+            for (const call of calls) call(pass)
+            pass.end()
+        })
+        return {
+            stamp: label => {
+                if (!this.qSet) return
+                const index = this.qLabels.push(label)
+                calls.push(pass => {
+                    pass.writeTimestamp(this.qSet, index)
+                })
+            },
+            call: args => {
+                let { pipe, dispatch, indirect, binds } = args
+                if (!indirect && dispatch.length == undefined) dispatch = [dispatch]
+                const bindGroup = this.gpu.bindGroup(pipe.shader, pipe.layout, binds)
+                calls.push(pass => {
+                    pass.setPipeline(pipe.pipeline)
+                    pass.setBindGroup(0, bindGroup)            
+                    if (indirect) pass.dispatchWorkgroupsIndirect(...indirect)
+                    else pass.dispatchWorkgroups(...dispatch)                    
+                })
+            }            
+        }
+    }
+            
+    drawPass(descFn) {
+        const draws = []        
+        this.cmds.push(encoder => {
+            const pass = encoder.beginRenderPass(descFn())
+            for (const draw of draws) draw(pass)
+            pass.end()
+        })
+        return {
+            draw: args => {
+                let { pipe, dispatch, binds } = args
+                if (dispatch.length == undefined) dispatch = [dispatch]
+                const bindGroup = this.gpu.bindGroup(pipe.shader, pipe.layout, binds)                
+                draws.push(pass => {                   
+                    pass.setPipeline(pipe.pipeline)
+                    pass.setBindGroup(0, bindGroup)
+                    for (const i of range(pipe.vertBufs.length))
+                        pass.setVertexBuffer(i, pipe.vertBufs[i].buf.buffer)
+                    if (pipe.indexBuf) {
+                        pass.setIndexBuffer(pipe.indexBuf.buf.buffer, pipe.indexBuf.indexFormat)
+                        pass.drawIndexed(...dispatch)
+                    } else pass.draw(...dispatch)
+                })
+            }
+        }
+    }
+
+    renderPass() {
+        let multisamp = this.gpu.pref.samples > 1        
+        return this.drawPass(() => {
+            let canvasView = this.gpu.ctx.getCurrentTexture().createView({label:'canvasTex'})
+            return {
+                colorAttachments: [{
+                    view: multisamp ? this.gpu.colorTex.createView({label:'colorAttach'}) : canvasView,                
+                    resolveTarget: multisamp ? canvasView : undefined,
+                    loadOp:'clear', storeOp:'store',
+                    clearValue:{ r:0,g:0,b:0,a:0 }
+                }],
+                depthStencilAttachment: {
+                    view:this.gpu.depthTex.createView({label:'depthAttach'}),
+                    depthClearValue:1,  stencilClearValue: 0.0,
+                    depthLoadOp:'clear', depthStoreOp:'store',
+                    stencilLoadOp:'clear', stencilStoreOp: 'store'
+                }
+            }
+        })
+    }
+
+    execute() {         
+        const encoder = this.gpu.dev.createCommandEncoder()
+        if (this.qSet) encoder.writeTimestamp(this.qSet, 0)
+        for (const cmd of this.cmds)
+            cmd(encoder)
+        this.gpu.dev.queue.submit([encoder.finish()])            
+    }
+
+    async queryStamps() {
+        if (!this.qSet) return
+        const encoder = this.gpu.dev.createCommandEncoder()
+        encoder.resolveQuerySet(this.qSet, 0, this.qLabels.length, this.qBuf.buffer, 0)
+        this.gpu.dev.queue.submit([encoder.finish()])
+        let data = new BigInt64Array(await this.gpu.read(this.qBuf))
+        let stamps = []
+        for (let i = 1; i < data.length && data[i] != 0n; i++)
+            stamps.push([this.qLabels[i-1], Number(data[i] - data[i-1])])
+        return stamps        
+    }
+}
+
+
 export const GPU = class GPU {
 
     async init(width, height, ctx) {
@@ -49,11 +168,10 @@ export const GPU = class GPU {
         dev.queue.holder = dev
         dev.holder = this
         this.copyBufs = []
-        if (features.includes('timestamp-query')) this.ts = true
 
         const threads = limits.maxComputeWorkgroupSizeX
         
-        Object.assign(this, { dev, adapter, threads, info } )
+        Object.assign(this, { dev, adapter, threads, info, features } )
 
 
     }
@@ -61,7 +179,7 @@ export const GPU = class GPU {
     fatal(meth, args, err) {
         this.alive = false
         dbg({fatal:`gpu.${meth}`, args, err })
-        debugger;
+        //debugger;
     }
 
     configure(ctx, width, height, pref) {
@@ -71,9 +189,10 @@ export const GPU = class GPU {
         const size = {width, height}
         if (this.depthTex) this.depthTex.destroy()
         if (this.colorTex) this.colorTex.destroy()
-        const usage = GPUTextureUsage.RENDER_ATTACHMENT
-        this.depthTex = this.dev.createTexture({ size, sampleCount:pref.samples, format:pref.depth_fmt, usage })
-        this.colorTex = this.dev.createTexture({ size, sampleCount:pref.samples, format:pref.format, usage })
+        let usage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
+        this.colorTex = this.dev.createTexture({ label:'colorAttach', size, sampleCount:pref.samples, format:pref.format, usage })
+        this.depthTex = this.dev.createTexture({ label:'depthAttach', size, sampleCount:pref.samples, format:pref.stencil_fmt, usage })
+
     }
 
 
@@ -128,21 +247,21 @@ export const GPU = class GPU {
         const { compute, wgsl, defs, storage, uniform, textures, samplers } = args
         const binds = []
         for (const [label,type] of Object.entries(storage||{}))
-            binds.push({ label, type, as: compute ? '<storage,read_write>':'<storage>',
-                         layout:{ buffer:{ type: compute ? 'storage' : 'read-only-storage' } }, idx:binds.length })
+            binds.push({ label, type, as: compute ? '<storage,read_write>':'<storage>', idx:binds.length,
+                         layout:{ buffer:{ type: compute ? 'storage' : 'read-only-storage' }} }) 
         for (const [label,type] of Object.entries(uniform||{}))
             binds.push({ label, type, as: '<uniform>', layout:{ buffer:{ type:'uniform' } }, idx:binds.length })
         for (const [label,type] of Object.entries(textures||{}))
-            binds.push({ label, type, as: '', layout:{ texture:{ viewDimension:'2d-array' }}, idx:binds.length })
+            binds.push({ label, type, as: '', idx: binds.length,
+                         layout:{ texture:type.name.match(/depth/) ? { sampleType:'depth' } : { viewDimension:'2d-array' }}})
         for (const [label,type] of Object.entries(samplers||{}))
-            binds.push({ label, type, as: '', layout:{ sampler:{}}, idx:binds.length })
+            binds.push({ label, type, as: '', layout:{ sampler:{ type:type.name.match(/comparison/) ? 'comparison':'filtering'}}, idx:binds.length })
         let code = [
             ...defs.map(struct => struct.toWGSL()),
             ...binds.map(b => `@group(0) @binding(${b.idx}) var${b.as} ${b.label}:${b.type.name};`),
             args.wgsl
         ].join('\n\n')
         if (!compute) code = code.replaceAll('atomic<u32>', 'u32').replaceAll('atomic<i32>','i32')
-        //if (FF) code = code.replaceAll('const','let')
         args.binds = binds
         args.module = this.dev.createShaderModule({ code })
 
@@ -169,32 +288,22 @@ export const GPU = class GPU {
     renderPipe(args) {
         const pref = this.pref
         const buffers = args.vertBufs ||= []
-        let { shader, entry, vertBufs, binds, topology, depthWriteEnabled, depthCompare, cullMode, atc,
-              color_op, color_src, color_dst, alpha_op, alpha_src, alpha_dst } = args
-        color_op ||= pref.color_op; color_src ||= pref.color_src; color_dst ||= pref.color_dst
-        alpha_op ||= pref.alpha_op; alpha_src ||= pref.alpha_src; alpha_dst ||= pref.alpha_dst
-
-        if (depthWriteEnabled == undefined) depthWriteEnabled = pref.depth_wr
-        if (depthCompare == undefined) depthCompare = pref.depth_cmp
-        if (atc == undefined) atc = pref.atc
-        topology ||= 'triangle-list'
-        cullMode ||= pref.cull
-        const visibility = GPUShaderStage.FRAGMENT | GPUShaderStage.VERTEX
+        args = { depthWriteEnabled:true, depthCompare:'less', cullMode:'back', topology:'triangle-list', atc:true, ...args }
+        let { shader, entry, vertBufs, binds, topology, cullMode, depthWriteEnabled, depthCompare, atc } = args
         const entries = shader.binds.filter(b => binds.includes(b.label)).map(b => (
             { binding:b.idx, ...b.layout,
               visibility: GPUShaderStage.FRAGMENT | (b.label in shader.uniform ? GPUShaderStage.VERTEX : 0) }))
         args.layout = this.dev.createBindGroupLayout({ entries })
-        const blend = { color: { operation: color_op, srcFactor: color_src, dstFactor: color_dst },
-                        alpha: { operation: alpha_op, srcFactor: alpha_src, dstFactor: alpha_dst } }
+        const blend = { color: { operation:'add', srcFactor:'one', dstFactor:'one-minus-src-alpha' },
+                        alpha: { operation:'add', srcFactor:'one', dstFactor:'one-minus-src-alpha' }}
         const pipeDesc = {
             layout: this.dev.createPipelineLayout({ bindGroupLayouts: [ args.layout ] }),
-            multisample: { count:pref.samples, alphaToCoverageEnabled:atc && pref.samples > 1},
+            multisample: { count:pref.samples, alphaToCoverageEnabled: atc && pref.samples > 1 },
             vertex: { module: shader.module, entryPoint:entry+'_vert', buffers:vertBufs },
             fragment: { module: shader.module , entryPoint:entry+'_frag', targets: [{ format: pref.format, blend }]},
             primitive: { topology, cullMode },
-            depthStencil: { depthWriteEnabled , depthCompare, format:pref.depth_fmt },
+            depthStencil: { depthWriteEnabled, depthCompare, format:pref.stencil_fmt },
         }
-
         args.pipeline = this.dev.createRenderPipeline(pipeDesc)
         return args
     }
@@ -206,8 +315,8 @@ export const GPU = class GPU {
             size[1] = max(size[1], bitmap.height)
         })
         const texture = this.dev.createTexture({
-            size, format:this.pref.format, sampleCount:1,  usage: GPUTextureUsage.TEXTURE_BINDING |
-                GPUTextureUsage.RENDER_ATTACHMENT|GPUTextureUsage.COPY_DST })
+            size, format:this.pref.format, sampleCount:1,
+            usage: GPUTextureUsage.TEXTURE_BINDING|GPUTextureUsage.RENDER_ATTACHMENT|GPUTextureUsage.COPY_DST })
         bitmaps.forEach((bitmap,z) => {
             let source = { source: bitmap, origin: {x:0, y:0, z:0}, flipY: true }
             let dest = { texture, mipLevel: 0, origin: {x:0, y:0, z:z}, aspect:'all', colorSpace:'srgb', premultipliedAlpha:true }
@@ -218,8 +327,13 @@ export const GPU = class GPU {
             mipLevelCount: 1, baseArrayLayer:0, arrayLayerCount: bitmaps.length || 1 }) }
     }
 
-    sampler() {
-        return { resource: this.dev.createSampler({ magFilter: 'linear', minFilter: 'linear' }) }
+    depthTexture(args) {
+        const texture = this.dev.createTexture(args)        
+        return { resource: texture.createView()  }
+    }
+    
+    sampler(args) {
+        return { resource: this.dev.createSampler({ ...(args||{}) }) }
     }
 
     bindGroup(shader, layout, binds) {
@@ -227,109 +341,8 @@ export const GPU = class GPU {
         return this.dev.createBindGroup({ entries, layout })
     }
 
-    computePass(args) {
-        let { pipe, dispatch, indirect, binds } = args        
-        if (!indirect && dispatch.length == undefined) dispatch = [dispatch]
-        const bg = this.bindGroup(pipe.shader, pipe.layout, binds)
-        return (encoder) => {
-            const pass = encoder.beginComputePass()
-            pass.setPipeline(pipe.pipeline)
-            pass.setBindGroup(0, bg)            
-            if (indirect) pass.dispatchWorkgroupsIndirect(...indirect)
-            else pass.dispatchWorkgroups(...dispatch)
-            pass.end()
-        }
-    }
-
-    renderPass(draws) {
-        const multisamp = this.pref.samples > 1
-        return (encoder) => {
-            const useStencil = Boolean(this.pref.depth_fmt.match(/stencil/))
-            const canvasTex = this.ctx.getCurrentTexture()
-	    const canvasView = canvasTex.createView()
-            const [view, resolveTarget] = multisamp ? [this.colorTex.createView(), canvasView] : [canvasView]          
-            const pass = encoder.beginRenderPass({
-                colorAttachments: [{
-                    view, resolveTarget,
-                    loadOp: 'clear',
-                    storeOp: 'store',
-                    clearValue: { r: 0, g: 0, b: 0, a: 0 },
-                }],
-                depthStencilAttachment: {
-                    depthClearValue: 1.0,
-                    depthLoadOp: 'clear',
-                    depthStoreOp: 'store',
-                    stencilLoadOp: useStencil ? 'clear' : undefined,
-                    stencilStoreOp: useStencil ? 'store' : undefined,
-                    view: this.depthTex.createView()
-                }
-            })
-            for (const draw of draws)
-                draw(pass)
-            pass.end()
-        }
-    }
-
-    draw(args) {
-        let { pipe, dispatch, binds } = args
-        if (dispatch.length == undefined) dispatch = [dispatch]
-        const bg = this.bindGroup(pipe.shader, pipe.layout, binds)
-        return (pass) => {
-            pass.setPipeline(pipe.pipeline)
-            pass.setBindGroup(0, bg)
-            for (const i of range(pipe.vertBufs.length))
-                pass.setVertexBuffer(i, pipe.vertBufs[i].buf.buffer)
-            pass.draw(...dispatch)
-        }
-    }
-
-    drawIndexed(args) {
-        let { pipe, dispatch, binds } = args
-        if (dispatch.length == undefined) dispatch = [dispatch]
-        const bg = this.bindGroup(pipe.shader, pipe.layout, binds)
-        return (pass) => {
-            pass.setPipeline(pipe.pipeline)
-            pass.setBindGroup(0, bg)
-            for (const i of range(pipe.vertBufs.length))
-                pass.setVertexBuffer(i, pipe.vertBufs[i].buf.buffer)
-            pass.setIndexBuffer(pipe.indexBuf.buf.buffer, pipe.indexBuf.indexFormat)
-            pass.drawIndexed(...dispatch)
-        }
-    }
-
-    clearBuffer(buf) {
-        return (encoder) => {
-            encoder.clearBuffer(buf.buffer, 0, buf.size)
-        }
-    }
-
-    timestamp(label) {
-        if (!this.ts) return ()=>{}
-        return (encoder, labels, querySet) => {
-            encoder.writeTimestamp(querySet, labels.length)
-            labels.push(label)
-        }
-    }
-
-    encode(cmds) {
-        const dev = this.dev
-        const querySet = this.ts && dev.createQuerySet ? dev.createQuerySet({ type: 'timestamp', count: 64 }) : null
-        let queryBuf
-        queryBuf = this.buf({ label:'query', type: u64, length: 64, usage: 'COPY_SRC'+(FF?'':'|QUERY_RESOLVE')})
-        return {
-            stampLabels: [],
-            stampBuf: queryBuf,
-            execute() {
-                let encoder = dev.createCommandEncoder()
-                const labels = []
-                for (const cmd of cmds)
-                    cmd(encoder, labels, querySet)
-                if (labels.length > 0)
-                    encoder.resolveQuerySet(querySet, 0, labels.length, queryBuf.buffer, 0)
-                dev.queue.submit([encoder.finish()])
-                this.stampLabels = labels
-            }
-        }
+    cmdScheduler() {
+        return new CmdScheduler(this)
     }
 
     static struct(opt) {
@@ -820,7 +833,7 @@ export const v3arr = GPU.array({ type:V3 })
 export const v3uarr = GPU.array({ type:V3U })
 
 
-
+/*
 for (const meth of Object.getOwnPropertyNames(GPUDevice.prototype)) {
     if (!(meth == 'destroy' || meth.startsWith('create')) || meth == 'createCommandEncoder') continue;
     hijack(GPUDevice, meth, (real, obj, args) => {
@@ -838,7 +851,7 @@ hijack(GPUQueue, 'submit', (real, obj, args) => {
     real.apply(obj, args)
     obj.holder.popErrorScope().catch(err => obj.holder.holder.fatal('queue.submit', args, err))
 })
-
+*/
 
 
 

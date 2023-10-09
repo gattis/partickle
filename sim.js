@@ -10,10 +10,10 @@ const CELLDIM = 256
 
 const particleColors = [v4(.3,.6,.8,1), v4(.99,.44,.57, 1), v4(.9, .48, .48, 1)]
 const LIGHTS = [
-    { power:1, color:v3(1,1,1), x:v3(2,2,2.3) },
-    { power:1, color:v3(1,1,1), x:v3(2,-2,2.3) },
-    { power:1, color:v3(1,1,1), x:v3(-2,2,2.3) },
-    { power:1, color:v3(1,1,1), x:v3(-2,-2,2.3) },
+    { power:1, color:v3(1,1,1), x:v3(1,1,1) },
+    { power:1, color:v3(1,1,1), x:v3(1,-1,1) },
+    { power:1, color:v3(1,1,1), x:v3(-1,1,1) },
+    { power:1, color:v3(1,1,1), x:v3(-1,-1,1) },
 ]
 
 const MESH_DEFAULTS = {
@@ -45,22 +45,10 @@ export const render = new Preferences('render')
 render.addBool('particles', true)
 render.addBool('walls', true)
 render.addBool('normals', false)
-render.addBool('depth_wr', true)
-render.addBool('atc', true)
-render.addChoice('depth_cmp', 'less', ['less-equal','less','greater-equal','greater','always','never'])
-render.addChoice('cull', 'back', ['none','back','front'])
+render.addBool('lights', true)
 render.addChoice('alpha_mode', 'premultiplied', ['opaque','premultiplied'])
-render.addChoice('color_op', 'add', ['add','subtract','reverse-subtract','min','max'])
-render.addChoice('alpha_op', 'add', ['add','subtract','reverse-subtract','min','max'])
-const factors = ['zero','one','src','one-minus-src','src-alpha','one-minus-src-alpha',
-                 'dst','one-minus-dst','dst-alpha','one-minus-dst-alpha']
-render.addChoice('color_src', 'one', factors)
-render.addChoice('color_dst', 'one-minus-src-alpha', factors)
-render.addChoice('alpha_src', 'one', factors)
-render.addChoice('alpha_dst', 'one-minus-src-alpha', factors)
 render.addChoice('format', 'rgba16float', ['rgba8unorm','bgra8unorm','rgba16float'])
-render.addChoice('depth_fmt', 'depth32float-stencil8',
-                 ['depth16unorm','depth24plus','depth24plus-stencil8','depth32float','depth32float-stencil8'])
+render.addChoice('stencil_fmt', 'depth24plus-stencil8', ['depth24plus-stencil8','depth32float-stencil8'])
 render.addNum('samples', 4, 1, 4, 3)
 render.addNum('fov', 60, 1, 150, 1)
 render.addVector('cam_x', v3(0, -2, 2))
@@ -417,32 +405,28 @@ export async function Sim(width, height, ctx) {
     
         const { u, mbuf, pbuf, cbuf, cells } = bufs
 
-        const cmds = []
-        const pass = (...args) => { cmds.push(gpu.computePass(...args)) }
         const pipe = (...args) => gpu.computePipe(...args)
-        const stamp = (tag) => { cmds.push(gpu.timestamp(tag)) }
-        let keys = obj => [...Object.keys(obj)]       
+        let keys = obj => [...Object.keys(obj)]
         
+        const sched = gpu.cmdScheduler()
 
-        stamp('')
-
+        let pass = sched.computePass()
         
         let binds = { pbuf, u, cells, grab_hits:bufs.grab_hits, w0:bufs.w0 }
-        pass({ pipe:pipe({ shader, entryPoint:'predict', binds:keys(binds) }), dispatch:pd, binds })
-        stamp('predict')                              
+        pass.call({ pipe:pipe({ shader, entryPoint:'predict', binds:keys(binds) }), dispatch:pd, binds })
+        pass.stamp('predict')                              
                 
         binds = { pbuf, u, cells }
-        pass({ pipe:pipe({ shader, entryPoint:'collide', binds:keys(binds) }), dispatch:pd, binds })
-        stamp('collide')
+        pass.call({ pipe:pipe({ shader, entryPoint:'collide', binds:keys(binds) }), dispatch:pd, binds })
+        pass.stamp('collide')
 
         binds = { pbuf, u }
-        pass({ pipe:pipe({ shader, entryPoint:'xvupd', binds:keys(binds) }), dispatch:pd, binds })
-        stamp('xvupd')
-                       
-                                   
+        pass.call({ pipe:pipe({ shader, entryPoint:'xvupd', binds:keys(binds) }), dispatch:pd, binds })
+        pass.stamp('xvupd')
+                                                          
         binds = { pbuf, mbuf, u, cbuf }
-        pass({ pipe:pipe({ shader, entryPoint:'surfmatch', binds:keys(binds) }), dispatch:1, binds })
-        stamp('surface match')
+        pass.call({ pipe:pipe({ shader, entryPoint:'surfmatch', binds:keys(binds) }), dispatch:1, binds })
+        pass.stamp('surface match')
 
         let mbufs = []
         for (let [i,m] of enumerate(meshes)) {
@@ -463,31 +447,23 @@ export async function Sim(width, height, ctx) {
             let n = meshes[i].pf - meshes[i].pi
             if (n <= 0) return []
             let pdm1 = ceil(n / threads), pdm2 = ceil(pdm1 / threads)
-            pass({ pipe:avgs_prep, dispatch:pdm1, binds:{ pbuf, ...mbufs[i] }})
-            pass({ pipe:avgs_calc, dispatch:pdm1, binds:mbufs[i] })
+            pass.call({ pipe:avgs_prep, dispatch:pdm1, binds:{ pbuf, ...mbufs[i] }})
+            pass.call({ pipe:avgs_calc, dispatch:pdm1, binds:mbufs[i] })
             if (pdm1 > 1) {
-                pass({ pipe:avgs_calc, dispatch:pdm2, binds:mbufs[i] })
-                if (pdm2 > 1) pass({ pipe:avgs_calc, dispatch:1, binds:mbufs[i]})
+                pass.call({ pipe:avgs_calc, dispatch:pdm2, binds:mbufs[i] })
+                if (pdm2 > 1) pass.call({ pipe:avgs_calc, dispatch:1, binds:mbufs[i]})
             }
         }
 
         for (const i of range(meshes.length)) meshavgs(i)
         for (const i of range(meshes.length)) meshavgs(i)
-        stamp('mesh avgs')        
-        
-        const batch = gpu.encode(cmds)
-
-        let hs = [0,0]
+        pass.stamp('mesh avgs')        
         
         return {
             stats: async () => {
                 let ret = { kind:'phys', fps:frames / (tlast - tstart) * phys.speed }
-                if (!gpu.alive) return ret                
-                if (batch) {
-                    let data = new BigInt64Array(await gpu.read(batch.stampBuf))
-                    let labels = batch.stampLabels
-                    ret.profile = [...range(1,labels.length)].map(i => [labels[i], data[i] - data[i-1]])
-                }
+                if (!gpu.alive) return ret
+                ret.profile = await sched.queryStamps()
                 tstart = tlast
                 frames = 0
                 return ret
@@ -500,7 +476,7 @@ export async function Sim(width, height, ctx) {
                     uni.t += tstep
                     uni.seed = uni.seed * 16807 % 2147483647
                     syncUniforms()
-                    batch.execute()
+                    sched.execute()
                     checkGrabHits()
                     frames++
                     steps++
@@ -521,15 +497,11 @@ export async function Sim(width, height, ctx) {
         let reset = false
         let tstart = clock(), tlast = clock()
         let frames = 0
-        let batch
-
+        let sched
+        
         const setup = async () => {
             gpu.configure(ctx, width, height, render)
             render.watch(render.keys.filter(key => !['fov','cam_x','cam_ud','cam_lr'].includes(key)), () => {
-                if (render.color_op == 'max' || render.color_op == 'min')
-                    render.color_src = render.color_dst = 'one'
-                if (render.alpha_op == 'max' || render.alpha_op == 'min')
-                    render.alpha_src = render.alpha_dst = 'one'
                 reset = true
             })
 
@@ -549,82 +521,91 @@ export async function Sim(width, height, ctx) {
                 storage:{ mbuf:Meshes },
                 uniform:{ u:Uniforms, lbuf:lights.constructor },
                 textures:{ tex:{ name:'texture_2d_array<f32>' } },
-                samplers:{ samp:{ name:'sampler' } }
+                samplers:{ texsamp:{ name:'sampler' } }
             })
             
             let tex = gpu.texture(bitmaps)
-            let samp = gpu.sampler()
+            const usage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
+            let texsamp = gpu.sampler({ magFilter: 'linear', minFilter: 'linear'})
 
             const { u, mbuf, pbuf, vbuf, lbuf, tribuf } = bufs
             let keys = obj => [...Object.keys(obj)]
+            let binds,dispatch,pipe,desc
             
-            const cmds = []
-            cmds.push(gpu.timestamp(''))
+            sched = gpu.cmdScheduler()
 
-            
+            const precomp = sched.computePass()
+                       
             if (particles.length > 0 && td > 0) {
-                let binds = { pbuf, vbuf, u }
+                binds = { pbuf, vbuf, u }
                 const normals = gpu.computePipe({ shader:preShader, entryPoint:'normals', binds:keys(binds) })
-                cmds.push(gpu.computePass({ pipe:normals, dispatch:pd, binds }))
-                cmds.push(gpu.timestamp('normals'))
+                precomp.call({ pipe:normals, dispatch:pd, binds })
+                precomp.stamp('normals')
             }
 
             if (td > 0) {
-                let binds = { pbuf, vbuf, tribuf }
+                binds = { pbuf, vbuf, tribuf }
                 const updTris = gpu.computePipe({ shader:preShader, entryPoint:'update_tris', binds:keys(binds) })
-                cmds.push(gpu.computePass({ pipe:updTris, dispatch:td, binds }))
-                cmds.push(gpu.timestamp('updatetris'))
+                precomp.call({ pipe:updTris, dispatch:td, binds })
+                precomp.stamp('updatetris')
             }
                 
 
-            const draws = []
-            if (render.walls) {
-                let binds = { u, lbuf }
-                let pipe = gpu.renderPipe({ shader, entry:'walls', cullMode:'back', binds:keys(binds), topology:'triangle-strip' })
-                draws.push(gpu.draw({ pipe, dispatch:14, binds }))
-            }
-
-            if (tris.length > 0) {
-                let binds = { mbuf, u, lbuf, tex, samp }
-                let pipe = gpu.renderPipe({
-                    shader, entry:'surface', binds:keys(binds),
+            const renderPass = sched.renderPass()
+            sched.stamp('renderpass')
+            
+            if (tris.length > 0) {                
+                dispatch = tris.length * 3
+                desc = {
+                    shader, entry:'surface',
                     vertBufs: [{ buf:tribuf, arrayStride:TriVert.size,
                                  attributes: [{ shaderLocation:0, offset:TriVert.x.off, format:'float32x3' },
                                               { shaderLocation:1, offset:TriVert.norm.off, format:'float32x3' },
                                               { shaderLocation:2, offset:TriVert.mesh.off, format:'uint32' },
                                               { shaderLocation:3, offset:TriVert.uv.off, format:'float32x2' }]}]
-                })
-                draws.push(gpu.draw({ pipe, dispatch:tris.length*3, binds }))
+                }
+                binds = { mbuf, u, lbuf, tex, texsamp }
+                pipe = gpu.renderPipe({ ...desc, binds:keys(binds) })
+                renderPass.draw({ pipe, dispatch, binds })                
             }
 
             if (render.particles && particles.length > 0) {
-                let binds = { mbuf, u, lbuf }
-                let pipe = gpu.renderPipe({
-                    shader, entry:'particle', binds:keys(binds), topology:'triangle-list',
+                dispatch = [3, particles.length]                               
+                desc = {
+                    shader, entry:'particle', topology:'triangle-list',
                     vertBufs: [{ buf:pbuf, arrayStride:Particles.stride, stepMode: 'instance',
                                  attributes: [{ shaderLocation:0, offset:Particle.x.off, format:'float32x3' }]},
                                { buf:vbuf, arrayStride:ParticleVerts.stride, stepMode:'instance',
                                  attributes: [{ shaderLocation:1, offset:ParticleVert.mesh.off, format:'uint32' }]}]
-                })
-                draws.push(gpu.draw({ pipe, dispatch:[3, particles.length], binds }))
+                }
+                binds = { mbuf, u, lbuf }
+                pipe = gpu.renderPipe({ ...desc, binds:keys(binds) })
+                renderPass.draw({ pipe, dispatch, binds })
             }
 
-            if (render.normals) {               
+            if (render.walls) {
+                dispatch = 36
+                desc = { shader, entry:'walls', cullMode:'front', topology:'triangle-list' }               
+                binds = { u, lbuf }
+                pipe = gpu.renderPipe({ ...desc, binds:keys(binds) })
+                renderPass.draw({ pipe, dispatch, binds })
+            }
+
+            if (render.normals) {
                 let pipe = gpu.renderPipe({ shader, entry:'vnormals', binds:['u'], topology: 'line-list',
                     vertBufs: [{ buf:tribuf, arrayStride:TriVert.size, stepMode: 'instance',
                     attributes: [{ shaderLocation:0, offset:TriVert.x.off, format:'float32x3' },
                                  { shaderLocation:1, offset:TriVert.norm.off, format:'float32x3' }]}]})
-                draws.push(gpu.draw({ pipe, dispatch:[2, tris.length*3], binds:{u} }))
+                renderPass.draw({ pipe, dispatch:[2, tris.length*3], binds:{u} })
             }
 
-            let binds = { u, lbuf }
-            let pipe = gpu.renderPipe({ shader, entry:'lights', binds:keys(binds), topology: 'triangle-list',
-                                        atc:false, depthWriteEnabled:false })
-            draws.push(gpu.draw({ pipe, dispatch:[3, lights.length], binds }))
-            cmds.push(gpu.renderPass(draws))
-            cmds.push(gpu.timestamp('draws'))
-            
-            batch = gpu.encode(cmds)
+            if (render.lights) {
+                let binds = { u, lbuf }
+                let pipe = gpu.renderPipe({ shader, entry:'lights', binds:keys(binds), topology: 'triangle-list',
+                                            atc:false, depthWriteEnabled:false })
+                renderPass.draw({ pipe, dispatch:[3, lights.length], binds })                
+            }           
+
         }
 
         await setup()
@@ -633,11 +614,8 @@ export async function Sim(width, height, ctx) {
             stats: async () => {               
                 const ret = { kind:'render', fps: frames / (tlast - tstart) * phys.speed }
                 if (!gpu.alive) return ret;
-                if (batch) {
-                    let data = new BigInt64Array(await gpu.read(batch.stampBuf))
-                    let labels = batch.stampLabels
-                    ret.profile = [...range(1,labels.length)].map(i => [labels[i], data[i] - data[i-1]])
-                }
+                if (sched)
+                    ret.profile = await sched.queryStamps()                
                 tstart = tlast
                 frames = 0
                 return ret
@@ -652,7 +630,7 @@ export async function Sim(width, height, ctx) {
 
                 syncUniforms()
                 gpu.write(bufs.lbuf, lights)
-                batch.execute()
+                sched.execute()
                 frames++
                 tlast = clock()
             }

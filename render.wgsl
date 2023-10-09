@@ -5,18 +5,18 @@ alias v3 = vec3<f32>;
 alias m3 = mat3x3<f32>;
 alias m4 = mat4x4<f32>;
 
-const shininess = 16.0;
-const ambient = 0.2f;
+const shininess = 2.0;
+const ambient = 0.05f;
+
 
 fn frag(worldx:v3, norm:v3, color:v4) -> v4 {
     var mix = color.rgb * ambient;
     for (var i = 0; i < ${numLights}; i += 1) {
         let light = lbuf[i];
-        var lightdir = light.x - worldx;
-        let distance = length(lightdir);
-        let lightmag = light.color * light.power / (1.0 + distance);
-        lightdir = normalize(lightdir);
-
+        let lightray = light.x - worldx;
+        let lightdir = normalize(lightray);
+        let distance = length(lightray);
+        let lightmag = light.color * .3*light.power / (.3 + distance);
         let lambertian = max(dot(lightdir, norm), 0.0);
         var specular = 0.0f;
         if (lambertian > 0.0) {
@@ -24,11 +24,11 @@ fn frag(worldx:v3, norm:v3, color:v4) -> v4 {
             let reflectdir = reflect(-lightdir, norm);
             let specAngle = max(dot(reflectdir, viewdir), 0.0);
             specular = pow(specAngle, shininess);
-        }
-
+        }      
         mix += lightmag * (color.rgb*lambertian + specular);
     }
-    return v4(clamp(mix,v3(0),v3(1)), color.a);
+    
+     return v4(clamp(mix,v3(0),v3(1)), color.a);
 }
 
 struct SurfOut {
@@ -69,7 +69,7 @@ struct FragDepth {
 @fragment fn surface_frag(input:SurfIn) -> @location(0) v4 {
     let m = mbuf[input.mesh];
     if (m.fluid == 1) { discard; }
-    var color = m.color * select(textureSample(tex, samp, input.uv, m.tex), v4(1), m.tex < 0);
+    var color = m.color * select(textureSample(tex, texsamp, input.uv, m.tex), v4(1), m.tex < 0);
     if (color.a < 0.0001) { discard; }
     color = frag(input.worldx, input.norm, color);
     return v4(color.rgb, color.a);
@@ -94,17 +94,12 @@ fn impostor(vertidx:u32, x:v3, r:f32) -> v3 {
     let fwd = normalize(x - u.cam_x);
     let right = normalize(v3(-fwd.y, fwd.x, 0));
     let up = normalize(cross(fwd,right));
-    if (vertidx == 0) {
-        return r*rexp*(2*up);
-    } else if (vertidx == 1) {
-        return r*rexp*(sq3*right - up);
-    }
-    return r*rexp*(-sq3*right - up);
+    return array(r*rexp*(2*up), r*rexp*(sq3*right - up), r*rexp*(-sq3*right - up))[vertidx];
 }
 
 struct PartIO {
     @builtin(position) position:v4,
-    @location(0) partx:v3,
+    @location(0) @interpolate(flat) partx:v3,
     @location(1) vertx:v3,
     @location(2) uv:v2,
     @location(3) @interpolate(flat) mesh:u32,
@@ -127,7 +122,7 @@ struct PartIO {
 
 struct LightIO {
     @builtin(position) position:v4,
-    @location(0) lightx:v3,
+    @location(0) @interpolate(flat) lightx:v3,
     @location(1) vertx:v3,
     @location(2) uv:v2,
     @location(3) color:v3,
@@ -139,7 +134,7 @@ struct LightIO {
     let l = lbuf[instidx];
     var out:LightIO;
     out.lightx = l.x;
-    out.size = .4*sqrt(l.power);
+    out.size = .02*sqrt(l.power);
     let imp = impostor(vertidx, out.lightx, out.size);
     out.vertx = imp;
     out.position = u.mvp * v4(out.lightx + out.vertx,1);
@@ -187,28 +182,48 @@ fn trace_sphere(vertx:v3, center:v3, r:f32) -> RayTrace {
         rgb = 1 - rgb;
     }
     let trace = trace_sphere(input.vertx, input.partx, u.r);
-    if (trace.t < 0) { discard; }
+    if (trace.t < 0) { discard; }    
     return FragDepth(frag(trace.hit, trace.normal, v4(rgb,1.0f)), trace.clip_depth);
 }
 
 @fragment fn lights_frag(input:LightIO) -> FragDepth {
     let trace = trace_sphere(input.vertx, input.lightx, input.size);
-    var mag = .01/(1-dot(-trace.normal, trace.rd));
-    return FragDepth(v4(input.color*mag,mag), trace.clip_depth);
+    if (trace.t < 0) { discard; }
+
+    var color = v4(input.color, 1.0);
+    // var x = clamp(abs(dot(-trace.normal, trace.rd)), 0, 1);
+    // 
+    let dist = clamp(length(input.vertx)/input.size, 0, 1);
+    var m = pow(dist,5);
+    m = 1 - 3*m*m + 2*m*m*m;
+    m = m*m;    
+    return FragDepth(m*color, trace.clip_depth);
 }
 
-struct GndIO {
+struct WallIO {
     @builtin(position) position:v4,
     @location(0) worldx:v3,
+    @location(1) @interpolate(flat) plane:u32,
 };
 
 
-@vertex fn walls_vert(@builtin(vertex_index) vertidx:u32) -> GndIO {
-    var out:GndIO;
+@vertex fn walls_vert(@builtin(vertex_index) i:u32) -> WallIO {
+    var out:WallIO;
     let p = u.spacemax;
     let n = u.spacemin;    
-    out.worldx = array(v3(n.x,p.y,p.z), v3(p.x,p.y,p.z), v3(n.x,n.y,p.z), v3(p.x,n.y,p.z), v3(p.x,n.y,n.z), v3(p.x,p.y,p.z), v3(p.x,p.y,n.z),
-                   v3(n.x,p.y,p.z), v3(n.x,p.y,n.z), v3(n.x,n.y,p.z), v3(n.x,n.y,n.z), v3(p.x,n.y,n.z), v3(n.x,p.y,n.z), v3(p.x,p.y,n.z))[vertidx];
+    out.worldx = array(v3(n.x,p.y,p.z),v3(n.x,n.y,n.z),v3(n.x,n.y,p.z),
+                       v3(n.x,p.y,p.z),v3(n.x,p.y,n.z),v3(n.x,n.y,n.z),
+                       v3(p.x,p.y,p.z),v3(p.x,n.y,p.z),v3(p.x,p.y,n.z),
+                       v3(p.x,p.y,n.z),v3(p.x,n.y,p.z),v3(p.x,n.y,n.z),
+                       v3(p.x,n.y,n.z),v3(n.x,n.y,p.z),v3(n.x,n.y,n.z),
+                       v3(p.x,n.y,n.z),v3(p.x,n.y,p.z),v3(n.x,n.y,p.z),
+                       v3(n.x,p.y,n.z),v3(p.x,p.y,p.z),v3(p.x,p.y,n.z),
+                       v3(n.x,p.y,n.z),v3(n.x,p.y,p.z),v3(p.x,p.y,p.z),
+                       v3(n.x,p.y,n.z),v3(p.x,n.y,n.z),v3(n.x,n.y,n.z),
+                       v3(n.x,p.y,n.z),v3(p.x,p.y,n.z),v3(p.x,n.y,n.z),
+                       v3(p.x,p.y,p.z),v3(n.x,n.y,p.z),v3(p.x,n.y,p.z),
+                       v3(p.x,p.y,p.z),v3(n.x,p.y,p.z),v3(n.x,n.y,p.z))[i];
+    out.plane = i / 6; 
     out.position = u.mvp * v4(out.worldx, 1);
     return out;
 }
@@ -224,28 +239,22 @@ fn grid(v:v2, d:f32, a:f32) -> f32 {
 }
 
 
-@fragment fn walls_frag(input:GndIO) -> @location(0) v4 {
-
-
+@fragment fn walls_frag(input:WallIO) -> @location(0) v4 {
     let w = input.worldx;
     let p = u.spacemax;
     let n = u.spacemin;
 
-    let dists = array(abs(w.x-n.x), abs(w.x-p.x), abs(w.y-n.y), abs(w.y-p.y), abs(w.z-n.z), abs(w.z-p.z));
-    let planes = array<v2,6>(w.yz, w.yz, w.xz, w.xz, w.xy, w.xy);
-    var dmin = 1e20;
-    var imin = 0;
-    for (var i = 0; i < 6; i++) {
-        if (dists[i] < dmin) {
-            dmin = dists[i];
-            imin = i;
-        }
-    }
-    let plane = planes[imin];
-    let pattern = min(grid(plane,10,.0018), grid(plane,2, .0028));
-
+    let plane = array(w.yz, w.yz, w.xz, w.xz, w.xy, w.xy)[input.plane];
+    let norm = array(v3(1,0,0),v3(-1,0,0),v3(0,1,0),v3(0,-1,0),v3(0,0,1),v3(0,0,-1))[input.plane];
+    let pattern = grid(plane, 10, .004);
     let color = v4(v3(1,.9,1)*pattern, 1);
-    
-    return frag(input.worldx, v3(0,0,1), color);
-
+    return frag(input.worldx, norm, color);
 }
+
+
+
+
+
+    
+    
+
