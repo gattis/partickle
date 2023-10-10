@@ -288,7 +288,7 @@ export const GPU = class GPU {
     renderPipe(args) {
         const pref = this.pref
         const buffers = args.vertBufs ||= []
-        args = { depthWriteEnabled:true, depthCompare:'less', cullMode:'back', topology:'triangle-list', atc:true, ...args }
+        args = { depthWriteEnabled:true, depthCompare:'less-equal', cullMode:'back', topology:'triangle-list', atc:true, ...args }
         let { shader, entry, vertBufs, binds, topology, cullMode, depthWriteEnabled, depthCompare, atc } = args
         const entries = shader.binds.filter(b => binds.includes(b.label)).map(b => (
             { binding:b.idx, ...b.layout,
@@ -750,13 +750,22 @@ export const M4 = GPU.array({
         },
         perspective: (deg, aspect, near, far) => {
             const f = 1 / tan(deg * PI / 360)
-            const Q = far / (near - far)
+            const Q = far == Infinity ? -1 : far / (near - far)
             return m4(
                 [[f/aspect, 0,       0,  0],
                  [0,        f,       0,  0],
                  [0,        0,       Q, -1],
                  [0,        0,  Q*near,  0]])
+        },
+        ortho: (l,r,b,t,n,f) => {
+            let h = 1/(r-l), v = 1/(t-b), d = 1/(n-f)
+            return m4(
+                [[2*h, 0, 0, 0],
+                 [0, 2*v, 0, 0],
+                 [0,   0, d, 0],
+                 [-h*(r+l), -v*(t+b), n*d, 1]])
         }
+    
 
     },
     members: {

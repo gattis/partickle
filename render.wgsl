@@ -33,9 +33,9 @@ fn frag(worldx:v3, norm:v3, color:v4) -> v4 {
 
 struct SurfOut {
     @builtin(position) position: v4,
-    @location(0) worldx:v3,
+    @location(0) worldx:v3,    
     @location(1) norm:v3,
-    @location(2) uv:v2,
+    @location(2) uv:v2,   
     @location(3) @interpolate(flat) mesh:u32,
 };
 
@@ -45,7 +45,7 @@ struct SurfOut {
                         @location(3) uv:v2) -> SurfOut {
     var out:SurfOut;
     out.worldx = x;
-    out.position = u.mvp * v4(out.worldx, 1.0);
+    out.position = u.proj * u.view * v4(out.worldx, 1.0);
     out.norm = norm;
     out.uv = uv;
     out.mesh = mesh;
@@ -81,66 +81,21 @@ struct FragDepth {
     if (vertidx == 1u) {
         worldx += norm * 0.05;
     }
-    return u.mvp * v4(worldx, 1.0);
+    return u.proj * u.view * v4(worldx, 1.0);
 }
 
 @fragment fn vnormals_frag() -> @location(0) v4 {
     return v4(.2,1,.1,1);
 }
 
+fn mul3(m:m4, v:v3) -> v3 {
+    let mv = m*v4(v,1);
+    return mv.xyz / mv.w;
+}
+
+
 const sq3 = 1.73205077648;
-const rexp = 1.15;
-fn impostor(vertidx:u32, x:v3, r:f32) -> v3 {
-    let fwd = normalize(x - u.cam_x);
-    let right = normalize(v3(-fwd.y, fwd.x, 0));
-    let up = normalize(cross(fwd,right));
-    return array(r*rexp*(2*up), r*rexp*(sq3*right - up), r*rexp*(-sq3*right - up))[vertidx];
-}
 
-struct PartIO {
-    @builtin(position) position:v4,
-    @location(0) @interpolate(flat) partx:v3,
-    @location(1) vertx:v3,
-    @location(2) uv:v2,
-    @location(3) @interpolate(flat) mesh:u32,
-    @location(4) @interpolate(flat) selected:u32,
-};
-
-@vertex fn particle_vert(@builtin(vertex_index) vertidx:u32,
-                         @builtin(instance_index) instidx:u32,
-                         @location(0) partx:v3,
-                         @location(1) mesh:u32) -> PartIO {
-    var out:PartIO;
-    let imp = impostor(vertidx, partx, u.r);
-    out.partx = partx;
-    out.vertx = imp;
-    out.position = u.mvp * v4(out.partx + out.vertx,1);
-    out.mesh = mesh;
-    out.selected = select(0u, 1u, i32(instidx) == u.selection);
-    return out;
-}
-
-struct LightIO {
-    @builtin(position) position:v4,
-    @location(0) @interpolate(flat) lightx:v3,
-    @location(1) vertx:v3,
-    @location(2) uv:v2,
-    @location(3) color:v3,
-    @location(4) size:f32,
-};
-
-@vertex fn lights_vert(@builtin(vertex_index) vertidx:u32,
-                       @builtin(instance_index) instidx:u32) -> LightIO {
-    let l = lbuf[instidx];
-    var out:LightIO;
-    out.lightx = l.x;
-    out.size = .02*sqrt(l.power);
-    let imp = impostor(vertidx, out.lightx, out.size);
-    out.vertx = imp;
-    out.position = u.mvp * v4(out.lightx + out.vertx,1);
-    out.color = l.color;
-    return out;
-}
 
 struct RayTrace {
  t:f32,
@@ -167,13 +122,44 @@ fn trace_sphere(vertx:v3, center:v3, r:f32) -> RayTrace {
     let ot = trace.rd * trace.t;
     trace.hit = u.cam_x + ot;
     trace.normal = normalize(ot + co);
-    let hitclip = u.mvp * v4(trace.hit, 1);
+    let hitclip = u.proj * u.view * v4(trace.hit, 1);
     trace.clip_depth = hitclip.z / hitclip.w;
     return trace;
 }
 
-@fragment fn particle_frag(input:PartIO) -> FragDepth {
+fn impostor(vertidx:u32, x:v3, r:f32) -> v3 {
+    let c = length(x - u.cam_x);
+    let rxp = r*c/sqrt(c*c-r*r);    
+    let fwd = normalize(x - u.cam_x);
+    let right = normalize(v3(-fwd.y, fwd.x, 0));
+    let up = normalize(cross(fwd,right));
+    return array(rxp*(2*up), rxp*(sq3*right - up), rxp*(-sq3*right - up))[vertidx];
+}
 
+
+struct PartIO {
+    @builtin(position) position:v4,
+    @location(0) @interpolate(flat) partx:v3,
+    @location(1) vertx:v3,
+    @location(2) @interpolate(flat) mesh:u32,
+    @location(3) @interpolate(flat) selected:u32,
+};
+
+@vertex fn particle_vert(@builtin(vertex_index) vertidx:u32,
+                         @builtin(instance_index) instidx:u32,
+                         @location(0) partx:v3,
+                         @location(1) mesh:u32) -> PartIO {
+    var out:PartIO;
+    let imp = impostor(vertidx, partx, u.r);
+    out.partx = partx;
+    out.vertx = imp;
+    out.position = u.proj * u.view * v4(out.partx + out.vertx,1);
+    out.mesh = mesh;
+    out.selected = select(0u, 1u, i32(instidx) == u.selection);
+    return out;
+}
+
+@fragment fn particle_frag(input:PartIO) -> FragDepth {
     let m = mbuf[input.mesh];
     let color = m.pcolor;
     if (color.a < 0.5) { discard; }
@@ -182,22 +168,40 @@ fn trace_sphere(vertx:v3, center:v3, r:f32) -> RayTrace {
         rgb = 1 - rgb;
     }
     let trace = trace_sphere(input.vertx, input.partx, u.r);
-    if (trace.t < 0) { discard; }    
+    if (trace.t < 0) { discard; }
     return FragDepth(frag(trace.hit, trace.normal, v4(rgb,1.0f)), trace.clip_depth);
+}
+
+
+struct LightIO {
+    @builtin(position) position:v4,
+    @location(0) @interpolate(flat) lightx:v3,
+    @location(1) vertx:v3,
+    @location(2) @interpolate(flat) color:v3,
+    @location(3) @interpolate(flat) size:f32,
+};
+
+@vertex fn lights_vert(@builtin(vertex_index) vertidx:u32,
+                       @builtin(instance_index) instidx:u32) -> LightIO {
+    let l = lbuf[instidx];
+    var out:LightIO;
+    out.lightx = l.x;
+    out.size = .02*sqrt(l.power);
+    let imp = impostor(vertidx, out.lightx, out.size);
+    out.vertx = imp;
+    out.position = u.proj * u.view * v4(out.lightx + out.vertx,1);
+    out.color = l.color;
+    return out;
 }
 
 @fragment fn lights_frag(input:LightIO) -> FragDepth {
     let trace = trace_sphere(input.vertx, input.lightx, input.size);
     if (trace.t < 0) { discard; }
-
-    var color = v4(input.color, 1.0);
-    // var x = clamp(abs(dot(-trace.normal, trace.rd)), 0, 1);
-    // 
-    let dist = clamp(length(input.vertx)/input.size, 0, 1);
-    var m = pow(dist,5);
-    m = 1 - 3*m*m + 2*m*m*m;
-    m = m*m;    
-    return FragDepth(m*color, trace.clip_depth);
+    var d = clamp(length(input.vertx)/input.size, 0, 1);
+    d = 6*pow(d,5) - 15*pow(d,4) + 10*pow(d,3);
+    d = 1 - pow(d,10);   
+    let c = d*v4(input.color, 1);    
+    return FragDepth(c, trace.clip_depth);
 }
 
 struct WallIO {
@@ -224,7 +228,7 @@ struct WallIO {
                        v3(p.x,p.y,p.z),v3(n.x,n.y,p.z),v3(p.x,n.y,p.z),
                        v3(p.x,p.y,p.z),v3(n.x,p.y,p.z),v3(n.x,n.y,p.z))[i];
     out.plane = i / 6; 
-    out.position = u.mvp * v4(out.worldx, 1);
+    out.position = u.proj * u.view * v4(out.worldx, 1);
     return out;
 }
 

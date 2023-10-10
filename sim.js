@@ -10,10 +10,10 @@ const CELLDIM = 256
 
 const particleColors = [v4(.3,.6,.8,1), v4(.99,.44,.57, 1), v4(.9, .48, .48, 1)]
 const LIGHTS = [
-    { power:1, color:v3(1,1,1), x:v3(1,1,1) },
-    { power:1, color:v3(1,1,1), x:v3(1,-1,1) },
-    { power:1, color:v3(1,1,1), x:v3(-1,1,1) },
-    { power:1, color:v3(1,1,1), x:v3(-1,-1,1) },
+    { power:1, color:v3(1,.95,.9), x:v3(1,1,1) },
+    { power:1, color:v3(1,.95,.9), x:v3(1,-1,1) },
+    { power:1, color:v3(1,.95,.9), x:v3(-1,1,1) },
+    { power:1, color:v3(1,.95,.9), x:v3(-1,-1,1) },
 ]
 
 const MESH_DEFAULTS = {
@@ -369,11 +369,11 @@ export async function Sim(width, height, ctx) {
         uni.width = width
         uni.height = height
         uni.cam_fwd = v3(sin(render.cam_lr) * cos(render.cam_ud),
-                              cos(render.cam_lr) * cos(render.cam_ud),
-                              sin(render.cam_ud)).normalized()
-        uni.proj = M4.perspective(render.fov, width/height, .001, 100)
+                         cos(render.cam_lr) * cos(render.cam_ud),
+                         sin(render.cam_ud)).normalized()
+        uni.proj = M4.perspective(render.fov, width/height, 0.001, Infinity)
+        //uni.proj = M4.ortho(-1, 1, -1, 1, .01, 100)
         uni.view = M4.look(render.cam_x, uni.cam_fwd, v3(0,0,1))
-        uni.mvp = uni.view.mul(uni.proj)
         uni.spacemin = v3(phys.xmin, phys.ymin, phys.zmin)
         uni.spacemax = v3(phys.xmax, phys.ymax, phys.zmax)
         uni.damp = phys.damp
