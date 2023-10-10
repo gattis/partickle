@@ -5,7 +5,7 @@ alias v3 = vec3<f32>;
 alias m3 = mat3x3<f32>;
 alias m4 = mat4x4<f32>;
 
-const shininess = 2.0;
+const shininess = 4.0;
 const ambient = 0.05f;
 
 
@@ -17,12 +17,12 @@ fn frag(worldx:v3, norm:v3, color:v4) -> v4 {
         let lightdir = normalize(lightray);
         let distance = length(lightray);
         let lightmag = light.color * .3*light.power / (.3 + distance);
-        let lambertian = max(dot(lightdir, norm), 0.0);
+        let lambertian = clamp(dot(lightdir, norm), 0, 1);
         var specular = 0.0f;
         if (lambertian > 0.0) {
             let viewdir = normalize(u.cam_x - worldx);
             let reflectdir = reflect(-lightdir, norm);
-            let specAngle = max(dot(reflectdir, viewdir), 0.0);
+            let specAngle = clamp(dot(reflectdir, viewdir), 0, 1);
             specular = pow(specAngle, shininess);
         }      
         mix += lightmag * (color.rgb*lambertian + specular);
