@@ -74,44 +74,6 @@ for (const key of render.keys)
         createCtrl[render.type[key]](render,key,'#rpref')
 
 
-cv.on('mousedown', down => {
-    if (down.button != 0) return
-    if (editor.open) return editor.close()
-    const off = window.onoff('pointermove', move => sim && sim.rotateCam(.005*move.movementX, -.005*move.movementY))
-    window.once('pointerup', up => off())
-})
-
-cv.on('mousedown', down => {
-    if (down.button != 1) return
-    const off = window.onoff('pointermove', move => sim && sim.strafeCam(.001*move.movementX, -.001*move.movementY))
-    window.once('pointerup', up => off())
-})
-
-cv.on('mousedown', down => {
-    if (down.button != 2) return
-    sim.grabParticle(down.x, down.y).then(() => {
-        cv.style.cursor = 'grabbing'
-        const moveoff = window.onoff('pointermove', move => sim.moveParticle(move.x, move.y))
-        const lmboff = cv.onoff('mousedown', down2 => down2.button == 0 && sim.fixParticle())
-        window.once('pointerup', up => {
-            moveoff()
-            lmboff()
-            sim.dropParticle()
-            cv.style.cursor = 'grab'
-        })
-    })
-})    
-
-cv.on('wheel', wheel => sim && sim.advanceCam(-0.0002 * wheel.deltaY), { passive: true })
-
-cv.on('contextmenu', menu => menu.preventDefault())
-
-window.on('resize', () => {
-    cv.width = cv.style.width = window.innerWidth
-    cv.height = cv.style.height = window.innerHeight
-    sim.resize(cv.width, cv.height)
-})
-
 const step = html('button', {id: 'step'}, '\u{1F463}').on('click', () => { sim.computer.fwdstep() })
 step.style.display = phys.paused ? 'inline' : 'none'
 
@@ -152,6 +114,7 @@ async function updateInfo() {
     if (ttotal > 0n) lines.push(`total: ${ttotal.toFixed(1)} &mu;s`)
     lines.push('&nbsp;')
     lines.push(`cam pos: ${sim.uni.cam_x}`)
+    lines.push(`cam dir: ${sim.eyeDir()}`)
     $`#info`.innerHTML = lines.join('<br/>')
     setTimeout(updateInfo, 500)
 }
@@ -305,6 +268,46 @@ $`#scene`.on('click', e => editor.open ? editor.close() : editor.show())
 
 window.sim = await Sim(cv.width, cv.height, ctx)
 window.sim.run()
+
+
+cv.on('mousedown', down => {
+    if (down.button != 0) return
+    if (editor.open) return editor.close()
+    const off = window.onoff('pointermove', move => sim.rotateCam(.005*move.movementX, -.005*move.movementY))
+    window.once('pointerup', up => off())
+})
+
+cv.on('mousedown', down => {
+    if (down.button != 1) return
+    const off = window.onoff('pointermove', move => sim.strafeCam(.001*move.movementX, -.001*move.movementY))
+    window.once('pointerup', up => off())
+})
+
+cv.on('mousedown', down => {
+    if (down.button != 2) return
+    sim.grabParticle(down.x, down.y).then(() => {
+        cv.style.cursor = 'grabbing'
+        const moveoff = window.onoff('pointermove', move => sim.moveParticle(move.x, move.y))
+        const lmboff = cv.onoff('mousedown', down2 => down2.button == 0 && sim.fixParticle())
+        window.once('pointerup', up => {
+            moveoff()
+            lmboff()
+            sim.dropParticle()
+            cv.style.cursor = 'grab'
+        })
+    })
+})    
+
+cv.on('wheel', wheel => sim.advanceCam(-0.0002 * wheel.deltaY), { passive: true })
+cv.on('contextmenu', menu => menu.preventDefault())
+
+window.on('resize', () => {
+    cv.width = cv.style.width = window.innerWidth
+    cv.height = cv.style.height = window.innerHeight
+    sim.resize(cv.width, cv.height)
+})
+
+
 
 window.debug = (n = 18) => {
     sim.pull('debug').then(data => {

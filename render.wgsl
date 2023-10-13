@@ -9,23 +9,34 @@ const shininess = 4.0;
 const ambient = 0.05f;
 
 
+fn shadow(x:v3, i:i32) -> f32 {
+    let l = lbuf[i];
+    let uv = l.viewproj * v4(x,1);
+    let c = uv.xy/uv.w * v2(0.5, -0.5) + v2(0.5);
+    let d = uv.z/uv.w;
+    let s = textureSampleCompare(shadowMaps, shadowsamp, c, i, d-.00001 );
+    if (d < 0) { return 0; }
+    
+    if (c.x < 0 || c.y < 0 || c.x > 1 || c.y > 1) { return 0; }
+    return s;
+}
+
 fn frag(worldx:v3, norm:v3, color:v4) -> v4 {
     var mix = color.rgb * ambient;
     for (var i = 0; i < ${numLights}; i += 1) {
-        let light = lbuf[i];
-        let lightray = light.x - worldx;
-        let lightdir = normalize(lightray);
-        let distance = length(lightray);
-        let lightmag = light.color * .3*light.power / (.3 + distance);
-        let lambertian = clamp(dot(lightdir, norm), 0, 1);
+        let l = lbuf[i];
+        let ray = l.x - worldx;
+        let dir = normalize(ray);
+        let power = l.power / dot(ray,ray);
+        let lambert = clamp(dot(dir, norm), 0, 1);
         var specular = 0.0f;
-        if (lambertian > 0.0) {
-            let viewdir = normalize(u.cam_x - worldx);
-            let reflectdir = reflect(-lightdir, norm);
-            let specAngle = clamp(dot(reflectdir, viewdir), 0, 1);
+        if (lambert > 0.0) {
+            let viewdir = normalize(eye.x - worldx);
+            let specAngle = clamp(dot(reflect(-dir, norm), viewdir), 0, 1);
             specular = pow(specAngle, shininess);
-        }      
-        mix += lightmag * (color.rgb*lambertian + specular);
+        }
+        let s = shadow(worldx, i);
+        mix += l.color * power * s * (color.rgb*lambert + specular);
     }
     
      return v4(clamp(mix,v3(0),v3(1)), color.a);
@@ -45,7 +56,7 @@ struct SurfOut {
                         @location(3) uv:v2) -> SurfOut {
     var out:SurfOut;
     out.worldx = x;
-    out.position = u.proj * u.view * v4(out.worldx, 1.0);
+    out.position = eye.viewproj * v4(out.worldx, 1.0);
     out.norm = norm;
     out.uv = uv;
     out.mesh = mesh;
@@ -66,6 +77,10 @@ struct FragDepth {
     @builtin(frag_depth) depth:f32
 };
 
+struct Depth {
+    @builtin(frag_depth) depth:f32
+};
+
 @fragment fn surface_frag(input:SurfIn) -> @location(0) v4 {
     let m = mbuf[input.mesh];
     if (m.fluid == 1) { discard; }
@@ -81,7 +96,7 @@ struct FragDepth {
     if (vertidx == 1u) {
         worldx += norm * 0.05;
     }
-    return u.proj * u.view * v4(worldx, 1.0);
+    return eye.viewproj * v4(worldx, 1.0);
 }
 
 @fragment fn vnormals_frag() -> @location(0) v4 {
@@ -108,8 +123,8 @@ struct RayTrace {
 fn trace_sphere(vertx:v3, center:v3, r:f32) -> RayTrace {
     var trace:RayTrace;
     trace.t = -1;
-    trace.rd = normalize(vertx + center - u.cam_x);
-    let co = u.cam_x - center;
+    trace.rd = normalize(vertx + center - eye.x);
+    let co = eye.x - center;
     let b = dot(co, trace.rd);
     let c = b*b - dot(co, co) + r*r;
     if (c < 0) { return trace; }
@@ -120,17 +135,17 @@ fn trace_sphere(vertx:v3, center:v3, r:f32) -> RayTrace {
     else if (t1 < 0 && t2 >= 0) { trace.t = t2; }
     else { return trace; }
     let ot = trace.rd * trace.t;
-    trace.hit = u.cam_x + ot;
+    trace.hit = eye.x + ot;
     trace.normal = normalize(ot + co);
-    let hitclip = u.proj * u.view * v4(trace.hit, 1);
+    let hitclip = eye.viewproj * v4(trace.hit, 1);
     trace.clip_depth = hitclip.z / hitclip.w;
     return trace;
 }
 
 fn impostor(vertidx:u32, x:v3, r:f32) -> v3 {
-    let c = length(x - u.cam_x);
+    let c = length(x - eye.x);
     let rxp = r*c/sqrt(c*c-r*r);    
-    let fwd = normalize(x - u.cam_x);
+    let fwd = normalize(x - eye.x);
     let right = normalize(v3(-fwd.y, fwd.x, 0));
     let up = normalize(cross(fwd,right));
     return array(rxp*(2*up), rxp*(sq3*right - up), rxp*(-sq3*right - up))[vertidx];
@@ -153,7 +168,7 @@ struct PartIO {
     let imp = impostor(vertidx, partx, u.r);
     out.partx = partx;
     out.vertx = imp;
-    out.position = u.proj * u.view * v4(out.partx + out.vertx,1);
+    out.position = eye.viewproj * v4(out.partx + out.vertx,1);
     out.mesh = mesh;
     out.selected = select(0u, 1u, i32(instidx) == u.selection);
     return out;
@@ -173,6 +188,14 @@ struct PartIO {
 }
 
 
+
+@fragment fn particle_depth(input:PartIO) -> Depth {
+    let trace = trace_sphere(input.vertx, input.partx, u.r);
+    if (trace.t < 0) { return Depth(1.0); }
+    return Depth(trace.clip_depth);
+}
+
+
 struct LightIO {
     @builtin(position) position:v4,
     @location(0) @interpolate(flat) lightx:v3,
@@ -189,7 +212,7 @@ struct LightIO {
     out.size = .02*sqrt(l.power);
     let imp = impostor(vertidx, out.lightx, out.size);
     out.vertx = imp;
-    out.position = u.proj * u.view * v4(out.lightx + out.vertx,1);
+    out.position = eye.viewproj * v4(out.lightx + out.vertx,1);
     out.color = l.color;
     return out;
 }
@@ -199,7 +222,7 @@ struct LightIO {
     if (trace.t < 0) { discard; }
     var d = clamp(length(input.vertx)/input.size, 0, 1);
     d = 6*pow(d,5) - 15*pow(d,4) + 10*pow(d,3);
-    d = 1 - pow(d,10);   
+    d = 1 - d;   
     let c = d*v4(input.color, 1);    
     return FragDepth(c, trace.clip_depth);
 }
@@ -228,7 +251,7 @@ struct WallIO {
                        v3(p.x,p.y,p.z),v3(n.x,n.y,p.z),v3(p.x,n.y,p.z),
                        v3(p.x,p.y,p.z),v3(n.x,p.y,p.z),v3(n.x,n.y,p.z))[i];
     out.plane = i / 6; 
-    out.position = u.proj * u.view * v4(out.worldx, 1);
+    out.position = eye.viewproj * v4(out.worldx, 1);
     return out;
 }
 

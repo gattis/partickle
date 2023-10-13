@@ -7,14 +7,9 @@ const MAXEDGES = 18
 const MAXRING = 48
 const CELLSIZE = 8
 const CELLDIM = 256
+const SHADOWRES = 8192
 
 const particleColors = [v4(.3,.6,.8,1), v4(.99,.44,.57, 1), v4(.9, .48, .48, 1)]
-const LIGHTS = [
-    { power:1, color:v3(1,.95,.9), x:v3(1,1,1) },
-    { power:1, color:v3(1,.95,.9), x:v3(1,-1,1) },
-    { power:1, color:v3(1,.95,.9), x:v3(-1,1,1) },
-    { power:1, color:v3(1,.95,.9), x:v3(-1,-1,1) },
-]
 
 const MESH_DEFAULTS = {
     name:'default', bitmapId:-1, color:[1,1,1,1], offset:[0,0,0], rotation:[0,0,0],
@@ -48,15 +43,19 @@ render.addBool('normals', false)
 render.addBool('lights', true)
 render.addChoice('alpha_mode', 'premultiplied', ['opaque','premultiplied'])
 render.addChoice('format', 'rgba16float', ['rgba8unorm','bgra8unorm','rgba16float'])
-render.addChoice('stencil_fmt', 'depth24plus-stencil8', ['depth24plus-stencil8','depth32float-stencil8'])
+render.addChoice('depth_fmt', 'depth24plus', ['depth24plus','depth32float'])
 render.addNum('samples', 4, 1, 4, 3)
 render.addNum('fov', 60, 1, 150, 1)
+
+
+
 render.addVector('cam_x', v3(0, -2, 2))
 render.addNum('cam_ud', 0)
 render.addNum('cam_lr', 0)
 render.hidden['cam_x'] = true
 render.hidden['cam_ud'] = true
 render.hidden['cam_lr'] = true
+
 
 const clock = () => phys.speed*performance.now()/1000
 
@@ -105,29 +104,30 @@ export const ParticleVert = GPU.struct({
     ]
 })
     
-
-
+export const Eye = GPU.struct({
+    nane:'Eye',
+    fields:[
+        ['viewproj',M4],
+        ['x', V3],
+        ['dir', V3],
+    ]
+})
 
 export const Light = GPU.struct({
     name:'Light',
     fields:[
+        ['viewproj',M4],
         ['x', V3],
         ['dir', V3],
-        ['power', f32],
-        ['color', V3]
+        ['color', V3],
+        ['power', f32]
     ]
 })
 
 export const Uniforms = GPU.struct({
     name:'Uniforms',
-    fields:[       
-        ['proj', M4],
-        ['view', M4],
-        ['mvp', M4],
-        ['cam_x', V3],
-        ['cam_fwd', V3],
-        ['width', i32],
-        ['height', i32],
+    fields:[
+        ['cam_x',V3],
         ['dt', f32],
         ['t', f32],
         ['r', f32],
@@ -168,16 +168,6 @@ export const Triangle = GPU.struct({
     ]
 })
 
-/*export const Bounds = GPU.struct({
-    name:'Bounds',
-    fields:[
-        ['min', V3],
-        ['max', V3],        
-        ['grid', V3I],
-        ['stride', V3I],
-    ]
-})*/
-
 export const GrabHit = GPU.struct({
     name:'GrabHit',
     fields:[
@@ -195,13 +185,6 @@ export const GrabHits = GPU.struct({
 })
 
 export const Cell = GPU.array({ type:iatomic, length: CELLSIZE })
-
-/*GPU.struct({
-    name:'Cell',
-    fields:[
-        ['pids', GPU.array({ type:i32, length: 8 })],
-    ]
-})*/
 
 export const Cluster = GPU.struct({
     name:'Cluster',
@@ -221,6 +204,18 @@ const ParticleVerts = GPU.array({ type:ParticleVert })
 const Triangles = GPU.array({ type:Triangle })
 const Cells = GPU.array({ type:Cell })
 const Clusters = GPU.array({ type:Cluster })
+
+let lights = [
+    Light.of(M4.alloc(), V3.alloc(), v3(0,0,-1), v3(1,.95,.9), 1),
+    Light.of(M4.alloc(), V3.alloc(), v3(0,0,1), v3(1,.95,.9), 1),
+    Light.of(M4.alloc(), V3.alloc(), v3(0,-1,0), v3(1,.95,.9), 1),
+    Light.of(M4.alloc(), V3.alloc(), v3(0,1,0), v3(1,.95,.9), 1),
+    Light.of(M4.alloc(), V3.alloc(), v3(-1,0,0), v3(1,.95,.9), 1),
+    Light.of(M4.alloc(), V3.alloc(), v3(1,0,0), v3(1,.95,.9), 1),
+]
+const Lights = GPU.array({ type:Light, length:lights.length })
+lights = Lights.of(lights)
+
 
 export async function Sim(width, height, ctx) {
     console.time('gpu init')
@@ -332,13 +327,18 @@ export async function Sim(width, height, ctx) {
     uni.selection = -1
     uni.grab_pid = -1
 
-    const lights = GPU.array({ type:Light, length:LIGHTS.length }).alloc(LIGHTS.length)
-    for (const [i,l] of enumerate(LIGHTS)) {
-        lights[i].color = l.color
-        lights[i].x = l.x
-        lights[i].power = l.power
+    let eye = gpu.buf({ type:Eye, usage:'UNIFORM|COPY_DST' })
+    let lightEyes = range(lights.length).map(i => gpu.buf({ type:Eye, usage:'UNIFORM|COPY_DST' }))
+    let colorTex, depthTex
+    const setAttachments = () => {
+        if (colorTex) colorTex.destroy()
+        if (depthTex) depthTex.destroy()
+        let size=[width,height], sampleCount=render.samples
+        let usage=GPUTextureUsage.RENDER_ATTACHMENT|GPUTextureUsage.TEXTURE_BINDING
+        colorTex = gpu.texture({ label:'colorAttach', size, sampleCount, format:render.format, usage })
+        depthTex = gpu.texture({ label:'depthAttach', size, sampleCount, format:render.depth_fmt, usage })            
     }
-
+    
     let cells = new Int32Array(CELLSIZE * CELLDIM**3)
     for (let i of range(cells.length)) cells[i] = -1
     cells = new Cells(cells.buffer)
@@ -356,24 +356,16 @@ export async function Sim(width, height, ctx) {
         gpu.buf({ label:'lbuf', data:lights, usage:'UNIFORM|FRAGMENT|COPY_DST' }),
         gpu.buf({ label:'grab_hits', data:grab_hits, usage:'STORAGE|COPY_SRC|COPY_DST' }),
         gpu.buf({ label:'w0', data:w0, usage:'STORAGE|COPY_SRC|COPY_DST' }),
-        gpu.buf({ label:'cells', data:cells, usage:'STORAGE|COPY_DST|COPY_SRC' })        
+        gpu.buf({ label:'cells', data:cells, usage:'STORAGE|COPY_DST|COPY_SRC' }),
     ].map(buf => [buf.label, buf]))
 
     const pd = ceil(particles.length/gpu.threads), pd2 = ceil(pd / gpu.threads)
 
     console.timeEnd('db load')
-    
+   
     const syncUniforms = () => {
         uni.r = phys.r * diameter/2
         uni.cam_x = render.cam_x
-        uni.width = width
-        uni.height = height
-        uni.cam_fwd = v3(sin(render.cam_lr) * cos(render.cam_ud),
-                         cos(render.cam_lr) * cos(render.cam_ud),
-                         sin(render.cam_ud)).normalized()
-        uni.proj = M4.perspective(render.fov, width/height, 0.001, Infinity)
-        //uni.proj = M4.ortho(-1, 1, -1, 1, .01, 100)
-        uni.view = M4.look(render.cam_x, uni.cam_fwd, v3(0,0,1))
         uni.spacemin = v3(phys.xmin, phys.ymin, phys.zmin)
         uni.spacemax = v3(phys.xmax, phys.ymax, phys.zmax)
         uni.damp = phys.damp
@@ -501,7 +493,7 @@ export async function Sim(width, height, ctx) {
         
         const setup = async () => {
             gpu.configure(ctx, width, height, render)
-            render.watch(render.keys.filter(key => !['fov','cam_x','cam_ud','cam_lr'].includes(key)), () => {
+            render.watch(render.keys.filter(key => !['fov','cam_x','cam_ud','cam_lr','dir','lfov','near','far'].includes(key)), () => {
                 reset = true
             })
 
@@ -517,17 +509,16 @@ export async function Sim(width, height, ctx) {
             wgsl = await fetchtext('./render.wgsl')
             wgsl = wgsl.interp({numLights: lights.length })
             const shader = await gpu.shader({
-                wgsl, defs:[Mesh, Uniforms, Light],
+                wgsl, defs:[Mesh, Uniforms, Light, Eye],
                 storage:{ mbuf:Meshes },
-                uniform:{ u:Uniforms, lbuf:lights.constructor },
-                textures:{ tex:{ name:'texture_2d_array<f32>' } },
-                samplers:{ texsamp:{ name:'sampler' } }
+                uniform:{ u:Uniforms, lbuf:Lights, eye:Eye },
+                textures:{
+                    tex:{ name:'texture_2d_array<f32>' },
+                    shadowMaps:{ name:'texture_depth_2d_array', sampleType:'depth' }
+                },
+                samplers:{ texsamp:{ name:'sampler' }, shadowsamp:{ name:'sampler_comparison' } }
             })
             
-            let tex = gpu.texture(bitmaps)
-            const usage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
-            let texsamp = gpu.sampler({ magFilter: 'linear', minFilter: 'linear'})
-
             const { u, mbuf, pbuf, vbuf, lbuf, tribuf } = bufs
             let keys = obj => [...Object.keys(obj)]
             let binds,dispatch,pipe,desc
@@ -549,9 +540,41 @@ export async function Sim(width, height, ctx) {
                 precomp.call({ pipe:updTris, dispatch:td, binds })
                 precomp.stamp('updatetris')
             }
-                
 
-            const renderPass = sched.renderPass()
+            let tex = gpu.bitmapTexture(bitmaps)
+            let texsamp = gpu.sampler({ magFilter: 'linear', minFilter: 'linear'})
+            let shadowsamp = gpu.sampler({ compare:'less', magFilter: 'linear', minFilter: 'linear' })
+            let usage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
+            let shadowDepth = gpu.texture({ size:[SHADOWRES,SHADOWRES,max(2,lights.length)], format:render.depth_fmt, usage })
+            let shadowMaps = { resource: shadowDepth.createView() }
+            setAttachments()
+            
+            const shadowPasses = range(lights.length).map(i => sched.drawPass(() => ({
+                colorAttachments:[],
+                depthStencilAttachment: {
+                    view:shadowDepth.createView({ baseArrayLayer:i, arrayLayerCount:1 }),
+                    depthClearValue: 1, depthLoadOp:'clear', depthStoreOp:'store'
+                }
+            })))
+            
+            sched.stamp('shadowpasses')
+
+            let ms = render.samples > 1
+            let renderPass = sched.drawPass(() => {
+                let ctxView = ctx.getCurrentTexture().createView()
+                return {
+                    colorAttachments: [{
+                        view: ms ? colorTex.createView() : ctxView,
+                        resolveTarget: ms ? ctxView : undefined,
+                        loadOp:'clear', storeOp:'store',
+                        clearValue:{ r:0,g:0,b:0,a:0 }
+                    }],
+                    depthStencilAttachment: {
+                        view:depthTex.createView({label:'depthAttach'}),
+                        depthClearValue:1, depthLoadOp:'clear', depthStoreOp:'store',
+                    }
+                }
+            })
             sched.stamp('renderpass')
             
             if (tris.length > 0) {                
@@ -564,9 +587,14 @@ export async function Sim(width, height, ctx) {
                                               { shaderLocation:2, offset:TriVert.mesh.off, format:'uint32' },
                                               { shaderLocation:3, offset:TriVert.uv.off, format:'float32x2' }]}]
                 }
-                binds = { mbuf, u, lbuf, tex, texsamp }
+                
+                binds = { mbuf, u, eye, lbuf, tex, texsamp }
+                pipe = gpu.renderPipe({ ...desc, binds:keys(binds), frag:false, samples:1 })
+                for (let i of range(lights.length))
+                    shadowPasses[i].draw({ pipe, dispatch, binds:{ ...binds, eye:lightEyes[i] }})
+                binds = { ...binds, shadowMaps, shadowsamp }
                 pipe = gpu.renderPipe({ ...desc, binds:keys(binds) })
-                renderPass.draw({ pipe, dispatch, binds })                
+                renderPass.draw({ pipe, dispatch, binds })
             }
 
             if (render.particles && particles.length > 0) {
@@ -578,7 +606,11 @@ export async function Sim(width, height, ctx) {
                                { buf:vbuf, arrayStride:ParticleVerts.stride, stepMode:'instance',
                                  attributes: [{ shaderLocation:1, offset:ParticleVert.mesh.off, format:'uint32' }]}]
                 }
-                binds = { mbuf, u, lbuf }
+                binds = { mbuf, u, eye, lbuf }
+                pipe = gpu.renderPipe({ ...desc, binds:keys(binds), frag:'depth', samples:1 })
+                for (let i of range(lights.length))
+                    shadowPasses[i].draw({ pipe, dispatch, binds:{ ...binds, eye:lightEyes[i] }})
+                binds = { ...binds, shadowMaps, shadowsamp }
                 pipe = gpu.renderPipe({ ...desc, binds:keys(binds) })
                 renderPass.draw({ pipe, dispatch, binds })
             }
@@ -586,21 +618,26 @@ export async function Sim(width, height, ctx) {
             if (render.walls) {
                 dispatch = 36
                 desc = { shader, entry:'walls', cullMode:'front', topology:'triangle-list' }               
-                binds = { u, lbuf }
+                binds = { u, eye, lbuf }
+                pipe = gpu.renderPipe({ ...desc, binds:keys(binds), frag:false, samples:1 })
+                for (let i of range(lights.length))
+                    shadowPasses[i].draw({ pipe, dispatch, binds:{ ...binds, eye:lightEyes[i] }})
+                binds = { ...binds, shadowMaps, shadowsamp }
                 pipe = gpu.renderPipe({ ...desc, binds:keys(binds) })
                 renderPass.draw({ pipe, dispatch, binds })
             }
 
             if (render.normals) {
-                let pipe = gpu.renderPipe({ shader, entry:'vnormals', binds:['u'], topology: 'line-list',
-                    vertBufs: [{ buf:tribuf, arrayStride:TriVert.size, stepMode: 'instance',
-                    attributes: [{ shaderLocation:0, offset:TriVert.x.off, format:'float32x3' },
-                                 { shaderLocation:1, offset:TriVert.norm.off, format:'float32x3' }]}]})
-                renderPass.draw({ pipe, dispatch:[2, tris.length*3], binds:{u} })
+                binds = { u, eye }
+                pipe = gpu.renderPipe({ shader, entry:'vnormals', binds:keys(binds), topology: 'line-list',
+                                        vertBufs: [{ buf:tribuf, arrayStride:TriVert.size, stepMode: 'instance',
+                                                     attributes: [{ shaderLocation:0, offset:TriVert.x.off, format:'float32x3' },
+                                                                  { shaderLocation:1, offset:TriVert.norm.off, format:'float32x3' }]}]})
+                renderPass.draw({ pipe, dispatch:[2, tris.length*3], binds })
             }
 
             if (render.lights) {
-                let binds = { u, lbuf }
+                let binds = { u, eye, lbuf }
                 let pipe = gpu.renderPipe({ shader, entry:'lights', binds:keys(binds), topology: 'triangle-list',
                                             atc:false, depthWriteEnabled:false })
                 renderPass.draw({ pipe, dispatch:[3, lights.length], binds })                
@@ -609,6 +646,22 @@ export async function Sim(width, height, ctx) {
         }
 
         await setup()
+
+        const syncEyes = () => {
+            let proj = M4.perspective(90, 1, .01, 100)
+            for (const l of lights) {
+                let bmin = v3(phys.xmin, phys.ymin, phys.zmin)
+                let bmax = v3(phys.xmax, phys.ymax, phys.zmax)
+                l.x = bmin.add(bmax).divc(2)
+                let b = bmax.sub(bmin)
+                l.power = b.mag()/10
+                l.viewproj = proj.mul(M4.look(l.x, l.dir))
+            }            
+            gpu.write(bufs.lbuf, lights)            
+            gpu.write(eye, Eye.of(eyeProj().mul(eyeView()), render.cam_x, eyeDir()))
+            for (let [i,l] of enumerate(lights))
+                gpu.write(lightEyes[i], Eye.of(l.viewproj, l.x, l.dir))
+        }
 
         return {
             stats: async () => {               
@@ -629,6 +682,7 @@ export async function Sim(width, height, ctx) {
                 }
 
                 syncUniforms()
+                syncEyes()
                 gpu.write(bufs.lbuf, lights)
                 sched.execute()
                 frames++
@@ -644,18 +698,24 @@ export async function Sim(width, height, ctx) {
         return data
     }
 
+    const eyeDir = () => v3(sin(render.cam_lr) * cos(render.cam_ud),
+                            cos(render.cam_lr) * cos(render.cam_ud),
+                            sin(render.cam_ud)).normalized()    
+    const eyeProj = () => M4.perspective(render.fov, width/height, 0.01, 100)
+    const eyeView = () => M4.look(render.cam_x, eyeDir())
+
     const clipToRay = (x,y) => {
         let clip = v4(2*x/width - 1, 1 - 2*y/height,-1,1)
-        let eye = uni.proj.inverse().transform(clip)
-        let ray = uni.view.inverse().transform(v4(eye.x,eye.y,-1,0))
+        let eye = eyeProj().inverse().transform(clip)
+        let ray = eyeView().inverse().transform(v4(eye.x,eye.y,-1,0))
         return v3(ray.x,ray.y,ray.z).normalized()
     }
 
     function resize(w, h) {
         width = w
         height = h
-        gpu.configure(ctx,w,h,render)
-
+        gpu.configure(ctx,w,h,render)        
+        setAttachments()
     }
 
     async function run() {
@@ -677,7 +737,7 @@ export async function Sim(width, height, ctx) {
     
     function rotateCam(dx, dy) {
         render.cam_lr += dx
-        render.cam_ud = clamp(render.cam_ud + dy, -PI / 2, PI / 2)
+        render.cam_ud = clamp(render.cam_ud + dy, -PI / 2.1, PI / 2.1)
     }
 
     function strafeCam(dx, dy) {

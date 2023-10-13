@@ -102,23 +102,7 @@ class CmdScheduler {
 
     renderPass() {
         let multisamp = this.gpu.pref.samples > 1        
-        return this.drawPass(() => {
-            let canvasView = this.gpu.ctx.getCurrentTexture().createView({label:'canvasTex'})
-            return {
-                colorAttachments: [{
-                    view: multisamp ? this.gpu.colorTex.createView({label:'colorAttach'}) : canvasView,                
-                    resolveTarget: multisamp ? canvasView : undefined,
-                    loadOp:'clear', storeOp:'store',
-                    clearValue:{ r:0,g:0,b:0,a:0 }
-                }],
-                depthStencilAttachment: {
-                    view:this.gpu.depthTex.createView({label:'depthAttach'}),
-                    depthClearValue:1,  stencilClearValue: 0.0,
-                    depthLoadOp:'clear', depthStoreOp:'store',
-                    stencilLoadOp:'clear', stencilStoreOp: 'store'
-                }
-            }
-        })
+
     }
 
     execute() {         
@@ -186,13 +170,6 @@ export const GPU = class GPU {
         this.pref = pref
         this.ctx = ctx
         ctx.configure({ device: this.dev, format:pref.format, alphaMode:pref.alpha_mode, colorSpace: 'srgb' })
-        const size = {width, height}
-        if (this.depthTex) this.depthTex.destroy()
-        if (this.colorTex) this.colorTex.destroy()
-        let usage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
-        this.colorTex = this.dev.createTexture({ label:'colorAttach', size, sampleCount:pref.samples, format:pref.format, usage })
-        this.depthTex = this.dev.createTexture({ label:'depthAttach', size, sampleCount:pref.samples, format:pref.stencil_fmt, usage })
-
     }
 
 
@@ -253,7 +230,7 @@ export const GPU = class GPU {
             binds.push({ label, type, as: '<uniform>', layout:{ buffer:{ type:'uniform' } }, idx:binds.length })
         for (const [label,type] of Object.entries(textures||{}))
             binds.push({ label, type, as: '', idx: binds.length,
-                         layout:{ texture:type.name.match(/depth/) ? { sampleType:'depth' } : { viewDimension:'2d-array' }}})
+                         layout:{ texture:{ viewDimension:'2d-array', sampleType:type.sampleType }}})
         for (const [label,type] of Object.entries(samplers||{}))
             binds.push({ label, type, as: '', layout:{ sampler:{ type:type.name.match(/comparison/) ? 'comparison':'filtering'}}, idx:binds.length })
         let code = [
@@ -288,27 +265,29 @@ export const GPU = class GPU {
     renderPipe(args) {
         const pref = this.pref
         const buffers = args.vertBufs ||= []
-        args = { depthWriteEnabled:true, depthCompare:'less-equal', cullMode:'back', topology:'triangle-list', atc:true, ...args }
-        let { shader, entry, vertBufs, binds, topology, cullMode, depthWriteEnabled, depthCompare, atc } = args
+        args = { depthWriteEnabled:true, depthCompare:'less-equal', cullMode:'back', topology:'triangle-list', atc:true,
+                 frag:'frag', samples:pref.samples, ...args }
+        let { shader, entry, vertBufs, binds, topology, cullMode, depthWriteEnabled, depthCompare, atc, frag, samples } = args
         const entries = shader.binds.filter(b => binds.includes(b.label)).map(b => (
             { binding:b.idx, ...b.layout,
               visibility: GPUShaderStage.FRAGMENT | (b.label in shader.uniform ? GPUShaderStage.VERTEX : 0) }))
         args.layout = this.dev.createBindGroupLayout({ entries })
         const blend = { color: { operation:'add', srcFactor:'one', dstFactor:'one-minus-src-alpha' },
                         alpha: { operation:'add', srcFactor:'one', dstFactor:'one-minus-src-alpha' }}
+        const targets = frag == 'depth' ? [] : [{ format: pref.format, blend }]
+        let fragment = frag ? { module: shader.module , entryPoint:entry+'_'+frag, targets } : undefined
         const pipeDesc = {
             layout: this.dev.createPipelineLayout({ bindGroupLayouts: [ args.layout ] }),
-            multisample: { count:pref.samples, alphaToCoverageEnabled: atc && pref.samples > 1 },
-            vertex: { module: shader.module, entryPoint:entry+'_vert', buffers:vertBufs },
-            fragment: { module: shader.module , entryPoint:entry+'_frag', targets: [{ format: pref.format, blend }]},
+            multisample: { count:samples, alphaToCoverageEnabled: atc && samples > 1 && frag },
+            vertex: { module: shader.module, entryPoint:entry+'_vert', buffers:vertBufs }, fragment,
             primitive: { topology, cullMode },
-            depthStencil: { depthWriteEnabled, depthCompare, format:pref.stencil_fmt },
+            depthStencil: { depthWriteEnabled, depthCompare, format:pref.depth_fmt },
         }
         args.pipeline = this.dev.createRenderPipeline(pipeDesc)
         return args
     }
 
-    texture(bitmaps) {
+    bitmapTexture(bitmaps) {
         const size = [1,1,bitmaps.length || 1]
         bitmaps.forEach(bitmap => {
             size[0] = max(size[0], bitmap.width)
@@ -327,9 +306,8 @@ export const GPU = class GPU {
             mipLevelCount: 1, baseArrayLayer:0, arrayLayerCount: bitmaps.length || 1 }) }
     }
 
-    depthTexture(args) {
-        const texture = this.dev.createTexture(args)        
-        return { resource: texture.createView()  }
+    texture(args) {
+        return this.dev.createTexture(args)
     }
     
     sampler(args) {
@@ -737,33 +715,31 @@ export const M4 = GPU.array({
              [  0,   0, v.z, 0],
              [  0,   0,   0, 1]]
         ),
-        look: (pos, dir, up) => {
+        look: (pos, dir) => {
             const z = dir.normalized().mulc(-1)
+            let oz = v3(0,0,1), oy = v3(0,1,0)
+            let up = abs(z.dot(oz)) == 1 ? oy : oz
             const x = up.cross(z).normalized()
             const y = z.cross(x).normalized()
-            return m4(
-                [[        x.x,         y.x,         z.x, 0],
-                 [        x.y,         y.y,         z.y, 0],
-                 [        x.z,         y.z,         z.z, 0],
-                 [-x.dot(pos), -y.dot(pos), -z.dot(pos), 1]]
-            )
+            return m4([[        x.x,         y.x,         z.x, 0],
+                       [        x.y,         y.y,         z.y, 0],
+                       [        x.z,         y.z,         z.z, 0],
+                       [-x.dot(pos), -y.dot(pos), -z.dot(pos), 1]])
         },
         perspective: (deg, aspect, near, far) => {
             const f = 1 / tan(deg * PI / 360)
             const Q = far == Infinity ? -1 : far / (near - far)
-            return m4(
-                [[f/aspect, 0,       0,  0],
-                 [0,        f,       0,  0],
-                 [0,        0,       Q, -1],
-                 [0,        0,  Q*near,  0]])
+            return m4([[f/aspect, 0,       0,  0],
+                       [0,        f,       0,  0],
+                       [0,        0,       Q, -1],
+                       [0,        0,  Q*near,  0]])
         },
-        ortho: (l,r,b,t,n,f) => {
-            let h = 1/(r-l), v = 1/(t-b), d = 1/(n-f)
-            return m4(
-                [[2*h, 0, 0, 0],
-                 [0, 2*v, 0, 0],
-                 [0,   0, d, 0],
-                 [-h*(r+l), -v*(t+b), n*d, 1]])
+        ortho: (h,v,n,f) => {
+            let nf = 1/(n-f)
+            return m4([[1/h,   0,    0, 0],
+                       [  0, 1/v,    0, 0],
+                       [  0,   0,   nf, 0],
+                       [  0,   0, n*nf, 1]])
         }
     
 
@@ -786,7 +762,7 @@ export const M4 = GPU.array({
             const c = M4.alloc()
             for (const i of range(4))
                 for (const j of range(4))
-                    c[i][j] = this.row(i).dot(b.col(j))
+                    c[i][j] = this.col(j).dot(b.row(i))
             return c
         },
         mulc: function(c) {
