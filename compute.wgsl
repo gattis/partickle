@@ -125,19 +125,45 @@ fn collide(@builtin(global_invocation_id) gid:vec3<u32>) {
                         let jpid = atomicLoad(&((*pids)[j]));                    
                         if (jpid == -1 || u32(jpid) == ipid) { continue; }
                         let jp = &pbuf[jpid];
-                        let r = ix - (*jp).x;
-                        let dist = length(r);
-                        if (dist >= 2*u.r) { continue; }
-                        let n = select(r / dist, v3(0,0,1), dist == 0);
-                        let jw = (*jp).w;
-                        let w = iw + jw;
-                        if (w == 0) { continue; }
-                        let v = iv - (*jp).v;
-                        let vt = v - n*dot(v,n);
+                        let jx = (*jp).x;
+                        let x = ix - jx;
+                        let l = length(x);
+                        let dist = 2*u.r - l;
+                        if (dist <= 0) { continue; }
+                        let w = iw + (*jp).w;
+                        if (w == 0) { continue; }                        
+                        let n = select(x/l, v3(0,0,1), l == 0);
+                        let jxp = (*jp).xprev;
+                        let xp = ixp - jxp;
+                        let dxn = min(0, 2*u.r - length(xp));
+                        let jv = (*jp).v;
+                        let jvp = (*jp).vprev;
+                        let v = iv - jv;
+                        let vp = ivp - jvp;
+                        let vpn = dot(vp, n);
+                        let a = (v - vp)/u.dt;
+                        let an = dot(a, n);
+                        var tc:f32;
+                        if (an != 0) {
+                            let discrim = vpn*vpn + 2*an*dxn;
+                            if (discrim < 0) { continue; }
+                            tc = (-vpn - sqrt(discrim))/an;
+                        } else {
+                            if (vpn == 0) { continue; }
+                            tc = dxn / vpn;            
+                        }
+                        let tr = u.dt - tc;
+                        let vc1 = vp + a * tc;
+                        let vcn1 = dot(vc1, n);
+                        let vct = vc1 - n*vcn1;
                         let ec = iec * (*jp).collision;
                         let ef = pow(ief * (*jp).friction, 3.0);
-                        let dx = 2*ec*(2*u.r - dist)*n - ef*vt*u.dt;
+                        let vc2 = vc1 + n*(max(-vcn1*ec, -.5*an*tr) - vcn1) - ef*vct;
+                        let xc = xp + (vp + vc1) * tc/2;
+                        let dv = vc2 + a*tr;
+                        let dx = xc + vc2*tr + .5*a*tr*tr;
                         ix += iw/w * dx;
+                        iv += iw/w * dv;
                     }                
                 }
             }
@@ -148,7 +174,7 @@ fn collide(@builtin(global_invocation_id) gid:vec3<u32>) {
         let n = plane_normals[i];
         let point = select(u.spacemin, u.spacemax, i >= 3);
         let dist = u.r - dot(ix - point, n);
-        if (dist < 0) { continue; }
+        if (dist <= 0) { continue; }
         var dxn = min(0,u.r - dot(ixp - point, n));        
         let vpn = dot(ivp, n);
         let a = (iv - ivp)/u.dt;
@@ -166,7 +192,7 @@ fn collide(@builtin(global_invocation_id) gid:vec3<u32>) {
         let vc1 = ivp + a * tc;
         let vcn1 = dot(vc1, n);
         let vct = vc1 - n*vcn1;
-        let vc2 = vc1 + n*(max(-vcn1*iec, -.5*an*tr) - vcn1) - ief*vct;
+        let vc2 = vc1 + n*(max(-vcn1*iec, -.5*an*tr) - vcn1) - pow(ief, 3.0)*vct;
         let xc = ixp + (ivp + vc1) * tc/2;
         iv = vc2 + a*tr;
         ix = xc + vc2*tr + .5*a*tr*tr;
