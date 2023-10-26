@@ -115,6 +115,7 @@ async function updateInfo() {
     lines.push('&nbsp;')
     lines.push(`cam pos: ${sim.uni.cam_x}`)
     lines.push(`cam dir: ${sim.eyeDir()}`)
+    lines.push(`sim t: ${sim.uni.t}`)
     $`#info`.innerHTML = lines.join('<br/>')
     setTimeout(updateInfo, 500)
 }

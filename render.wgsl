@@ -6,19 +6,28 @@ alias m3 = mat3x3<f32>;
 alias m4 = mat4x4<f32>;
 
 const shininess = 4.0;
-const ambient = 0.05f;
+const ambient = 0.03f;
+
+
 
 
 fn shadow(x:v3, i:i32) -> f32 {
     let l = lbuf[i];
-    let uv = l.viewproj * v4(x,1);
-    let c = uv.xy/uv.w * v2(0.5, -0.5) + v2(0.5);
-    let d = uv.z/uv.w;
-    let s = textureSampleCompare(shadowMaps, shadowsamp, c, i, d-.00001 );
-    if (d < 0) { return 0; }
-    
-    if (c.x < 0 || c.y < 0 || c.x > 1 || c.y > 1) { return 0; }
-    return s;
+    let ss = l.viewproj * v4(x,1);
+    let c = ss.xyz/ss.w * v3(.5, -.5, 1) + v3(.5,.5, -1e-6);
+    if (ss.z < 0 || c.x < 0 || c.y < 0 || c.x > 1 || c.y > 1) { return 0; }
+    if (l.shadow == 0) { return 1.0; }
+    let uv = c.xy;
+    let d = c.z;
+    return clamp((textureSampleCompareLevel(shadowMaps, shadowSamp, uv, i, d, v2i( 0, 0)) +
+                  textureSampleCompareLevel(shadowMaps, shadowSamp, uv, i, d, v2i(-1,-1)) +
+                  textureSampleCompareLevel(shadowMaps, shadowSamp, uv, i, d, v2i(-1, 0)) +
+                  textureSampleCompareLevel(shadowMaps, shadowSamp, uv, i, d, v2i(-1, 1)) +
+                  textureSampleCompareLevel(shadowMaps, shadowSamp, uv, i, d, v2i( 0,-1)) +
+                  textureSampleCompareLevel(shadowMaps, shadowSamp, uv, i, d, v2i( 0, 1)) +
+                  textureSampleCompareLevel(shadowMaps, shadowSamp, uv, i, d, v2i( 1,-1)) +
+                  textureSampleCompareLevel(shadowMaps, shadowSamp, uv, i, d, v2i( 1, 0)) +
+                  textureSampleCompareLevel(shadowMaps, shadowSamp, uv, i, d, v2i( 1, 1)))/9.0, 0, 1);
 }
 
 fn frag(worldx:v3, norm:v3, color:v4) -> v4 {
@@ -27,7 +36,7 @@ fn frag(worldx:v3, norm:v3, color:v4) -> v4 {
         let l = lbuf[i];
         let ray = l.x - worldx;
         let dir = normalize(ray);
-        let power = l.power / dot(ray,ray);
+        let power = .5 * l.power / dot(ray,ray);
         let lambert = clamp(dot(dir, norm), 0, 1);
         var specular = 0.0f;
         if (lambert > 0.0) {
@@ -38,8 +47,8 @@ fn frag(worldx:v3, norm:v3, color:v4) -> v4 {
         let s = shadow(worldx, i);
         mix += l.color * power * s * (color.rgb*lambert + specular);
     }
-    
-     return v4(clamp(mix,v3(0),v3(1)), color.a);
+  
+    return v4(clamp(mix,v3(0),v3(1)), color.a);
 }
 
 struct SurfOut {
@@ -84,13 +93,14 @@ struct Depth {
 @fragment fn surface_frag(input:SurfIn) -> @location(0) v4 {
     let m = mbuf[input.mesh];
     if (m.fluid == 1) { discard; }
-    var color = m.color * select(textureSample(tex, texsamp, input.uv, m.tex), v4(1), m.tex < 0);
+    var color = m.color * select(textureSample(tex, texSamp, input.uv, m.tex), v4(1), m.tex < 0);
     if (color.a < 0.0001) { discard; }
     color = frag(input.worldx, input.norm, color);
     return v4(color.rgb, color.a);
 }
 
-@vertex fn vnormals_vert(@builtin(vertex_index) vertidx:u32, @location(0) vertx:v3,
+@vertex fn vnormals_vert(@builtin(vertex_index) vertidx:u32,
+                         @location(0) vertx:v3,
                          @location(1) norm:v3) -> @builtin(position) v4 {
     var worldx = vertx;
     if (vertidx == 1u) {
@@ -102,6 +112,23 @@ struct Depth {
 @fragment fn vnormals_frag() -> @location(0) v4 {
     return v4(.2,1,.1,1);
 }
+
+@vertex fn velocity_vert(@builtin(vertex_index) vertidx:u32,
+                         @location(0) partx:v3,
+                         @location(1) partv:v3) -> @builtin(position) v4 {
+    var worldx = partx;
+    if (vertidx == 1u) {
+        worldx += partv;
+    }
+    return eye.viewproj * v4(worldx, 1.0);
+}
+
+@fragment fn velocity_frag() -> @location(0) v4 {
+    return v4(1,.2,.1,1);
+}
+
+
+
 
 fn mul3(m:m4, v:v3) -> v3 {
     let mv = m*v4(v,1);
@@ -146,7 +173,9 @@ fn impostor(vertidx:u32, x:v3, r:f32) -> v3 {
     let c = length(x - eye.x);
     let rxp = r*c/sqrt(c*c-r*r);    
     let fwd = normalize(x - eye.x);
-    let right = normalize(v3(-fwd.y, fwd.x, 0));
+    var right = v3(-fwd.y, fwd.x, 0);
+    var lright = length(right);
+    right = select(right/lright, v3(0,1,0), lright == 0);
     let up = normalize(cross(fwd,right));
     return array(rxp*(2*up), rxp*(sq3*right - up), rxp*(-sq3*right - up))[vertidx];
 }
@@ -277,6 +306,9 @@ fn grid(v:v2, d:f32, a:f32) -> f32 {
     let color = v4(v3(1,.9,1)*pattern, 1);
     return frag(input.worldx, norm, color);
 }
+
+
+
 
 
 

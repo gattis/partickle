@@ -254,7 +254,7 @@ export const repr = (v) => {
     if (typeof v == 'string') return v
     if (typeof v == 'number') {
         if (v%1 == 0) return v.toString()
-        let [f,p] = v.toPrecision(6).split('e')
+        let [f,p] = v.toPrecision(8).split('e')
         f = f.includes('.') ? f.replace(/0+$/,'').replace(/\.$/,'') : f
         p = p ? 'e'+p : ''
         return f + p

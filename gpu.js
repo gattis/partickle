@@ -56,9 +56,7 @@ class CmdScheduler {
             stamp: label => {
                 if (!this.qSet) return
                 const index = this.qLabels.push(label)
-                calls.push(pass => {
-                    pass.writeTimestamp(this.qSet, index)
-                })
+                calls.push(pass => pass.writeTimestamp(this.qSet, index))
             },
             call: args => {
                 let { pipe, dispatch, indirect, binds } = args
@@ -82,6 +80,11 @@ class CmdScheduler {
             pass.end()
         })
         return {
+            stamp: label => {
+                if (!this.qSet) return
+                const index = this.qLabels.push(label)
+                draws.push(pass => pass.writeTimestamp(this.qSet, index))
+            },
             draw: args => {
                 let { pipe, dispatch, binds } = args
                 if (dispatch.length == undefined) dispatch = [dispatch]
@@ -100,11 +103,6 @@ class CmdScheduler {
         }
     }
 
-    renderPass() {
-        let multisamp = this.gpu.pref.samples > 1        
-
-    }
-
     execute() {         
         const encoder = this.gpu.dev.createCommandEncoder()
         if (this.qSet) encoder.writeTimestamp(this.qSet, 0)
@@ -116,7 +114,7 @@ class CmdScheduler {
     async queryStamps() {
         if (!this.qSet) return
         const encoder = this.gpu.dev.createCommandEncoder()
-        encoder.resolveQuerySet(this.qSet, 0, this.qLabels.length, this.qBuf.buffer, 0)
+        encoder.resolveQuerySet(this.qSet, 0, this.qLabels.length + 1, this.qBuf.buffer, 0)
         this.gpu.dev.queue.submit([encoder.finish()])
         let data = new BigInt64Array(await this.gpu.read(this.qBuf))
         let stamps = []
@@ -740,9 +738,11 @@ export const M4 = GPU.array({
                        [  0, 1/v,    0, 0],
                        [  0,   0,   nf, 0],
                        [  0,   0, n*nf, 1]])
-        }
-    
-
+        },
+        box: (h,v,n,f) => m4([[1/h,   0,   0,  0],
+                              [  0, 1/v,   0,  0],
+                              [  0,   0,  f/(n-f), -1],
+                              [  0,   0,  n*f/(n-f),  0]])
     },
     members: {
         transposed: function() {
