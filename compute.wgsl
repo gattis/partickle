@@ -114,7 +114,6 @@ fn wall_collide(@builtin(global_invocation_id) gid:vec3<u32>) {
     let pid = gid.x;
     if (pid >= arrayLength(&pbuf)) { return; }
     let p = &pbuf[pid];
-    let dsq = 4*u.r*u.r;
     let ec = u.collision * (*p).collision;
     let ef = u.friction * (*p).friction;
     let x = (*p).x;
@@ -150,7 +149,6 @@ fn pair_collide(@builtin(global_invocation_id) gid:vec3<u32>) {
     let pw = (*p).w;
     if (pw == 0) { return; }
     let D = 2*u.r;
-    let Dsq = D*D;
     let pec = u.collision * (*p).collision;
     let pef = u.friction * (*p).friction;
     let px = (*p).x;
@@ -173,20 +171,8 @@ fn pair_collide(@builtin(global_invocation_id) gid:vec3<u32>) {
                     let l = length(x);
                     if (l >= D) { continue; }
                     let v = pv - (*q).v;
-                    let vv = dot(v,v);
-                    let b = 2*dot(x,v);
                     var n = select(x/l, select(v3(1,0,0),v3(-1,0,0),pid < u32(qid)), l == 0);
                     var dxc = pw/w * (2*u.r - l) * n;
-                    if (vv != 0) {                        
-                        let disc = b*b - 4*vv*(l*l - Dsq);
-                        if (disc >= 0) {
-                            let t = .5*(-b - sqrt(disc))/vv;
-                            if (t <= 0 && t >= -1) {
-                                n = normalize(x + v*t);
-                                dxc = pv*t;
-                            }                                
-                        }
-                    }
                     let ec = pec * (*q).collision;
                     let pvn = dot(pv,n);
                     let pvn2 = ec * (pvn - 2*pw/w*dot(v,n));
