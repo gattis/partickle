@@ -92,7 +92,6 @@ export const Particle = GPU.struct({
         ['dx', V3],
         ['hash',i32],
         ['dv',V3],
-        //['dbg',V3],
     ]
 })
 
@@ -296,15 +295,6 @@ export async function Sim(width, height, ctx) {
         meshes.push(mesh)
     }
 
-    let s = .01      
-    /*particles[0].v = v3(-s,0,0)
-    particles[1].v = v3(s,0,0)
-    particles[2].v = v3(0,0,0)
-    particles[3].v = v3(s,0,0)
-    particles[4].v = v3(0,s,0)
-    particles[5].v = v3(s,0,0)*/
-
-    
     meshes = Meshes.of(meshes)
     particles = Particles.of(particles)
     pverts = ParticleVerts.of(pverts)
@@ -429,12 +419,10 @@ export async function Sim(width, height, ctx) {
         pass.call({ pipe:pipe({ shader, entryPoint:'xvupd', binds:keys(binds) }), dispatch:pd, binds })
         pass.stamp('xvupd')
                                                           
-        /*
+        
         binds = { pbuf, mbuf, u, cbuf }
         pass.call({ pipe:pipe({ shader, entryPoint:'surfmatch', binds:keys(binds) }), dispatch:1, binds })
         pass.stamp('surface match')
-
-
         
         let mbufs = []
         for (let [i,m] of enumerate(meshes)) {
@@ -466,7 +454,6 @@ export async function Sim(width, height, ctx) {
         for (const i of range(meshes.length)) meshavgs(i)
         for (const i of range(meshes.length)) meshavgs(i)
         pass.stamp('mesh avgs')
-        */
 
         return {
             stats: async () => {
@@ -488,9 +475,6 @@ export async function Sim(width, height, ctx) {
                     checkGrabHits()
                     frames++
                     steps++
-                    //let ps = await dbgbuf(pbuf)
-                    //dbg({ dbg0:ps[0].dbg, dbg1:ps[1].dbg })
-                   
                 }
                 tlast = clock()
                 fwdstep = false
@@ -712,7 +696,6 @@ export async function Sim(width, height, ctx) {
                 }
             }            
             gpu.write(bufs.lbuf, lights)
-            //gpu.write(eye, Eye.of(lights[4].viewproj, lights[4].x, lights[4].dir))
             gpu.write(eye, Eye.of(eyeProj().mul(eyeView()), render.cam_x, eyeDir()))
             for (let [i,l] of enumerate(lights))
                 gpu.write(lightEyes[i], Eye.of(l.viewproj, l.x, l.dir))
