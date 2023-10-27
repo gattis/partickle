@@ -126,38 +126,15 @@ fn wall_collide(@builtin(global_invocation_id) gid:vec3<u32>) {
         let n = plane_normals[plane];
         let point = select(u.spacemin, u.spacemax, plane >= 3) + u.r*n;
         var xn = dot(x-point, n);
-
         if (xn >= 0) { continue; }
-        var vn1 = dot(v,n);
-        var an = dot(u.a,n);
-        if (an == 0) {
-            if (vn1 != 0) {
-                let t = -xn/vn1;
-                let vn2 = max(0, ec * -vn1);
-                dx -= (xn + vn2*t)*n;
-                dv += (vn2 - vn1)*n;
-            } else {
-                dx -= xn * n;
-            }
-        } else {
-            let disc = vn1*vn1 - 2*an*xn;
-            if (disc >= 0) {                
-                let t = (-vn1 - sqrt(disc))/an;
-                let vn2 = max(0, ec * (-vn1 - 2*an*t));
-                (*p).dbg.x = vn2;                
-                (*p).dbg.y = xn + vn2*t - .5*an*t*t;
-                (*p).dbg.z = (vn2-vn1);
-                dx -= (xn + vn2*t - .5*an*t*t) * n;
-                dv += (vn2 - vn1) * n;
-
-            } else {
-                dx -= xn * n;
-                dv -= vn1 * n;
-            }
-        }              
+        dx -= xn*n;
+        let vn1 = dot(v,n);
+        let an = dot(u.a,n);
+        let disc = vn1*vn1 - 2*an*xn;
+        let vn2 = select(ec * sqrt(disc), 0, disc <= 0);
+        dv += (vn2 - vn1)*n;
     }
-
-    
+   
     (*p).x += dx;
     (*p).v += dv;
 
@@ -172,7 +149,8 @@ fn pair_collide(@builtin(global_invocation_id) gid:vec3<u32>) {
     let p = &pbuf[pid];
     let pw = (*p).w;
     if (pw == 0) { return; }
-    let dsq = 4*u.r*u.r;
+    let D = 2*u.r;
+    let Dsq = D*D;
     let pec = u.collision * (*p).collision;
     let pef = u.friction * (*p).friction;
     let px = (*p).x;
@@ -192,21 +170,28 @@ fn pair_collide(@builtin(global_invocation_id) gid:vec3<u32>) {
                     let w = pw + (*q).w;
                     if (w == 0) { continue; }
                     let x = px - (*q).x;
-                    let xx = dot(x,x);
-                    if (xx > dsq) { continue; }
-                    let l = sqrt(xx);
-                    let ec = pec * (*q).collision;
-                    let v = pv - (*q).v;                    
+                    let l = length(x);
+                    if (l >= D) { continue; }
+                    let v = pv - (*q).v;
                     let vv = dot(v,v);
                     let b = 2*dot(x,v);
-                    let disc = b*b - 4*vv*(xx - dsq);
-                    var t = select((-b - sqrt(disc))/(2*vv), 0.0, vv == 0 || disc < 0);
-                    let n = select(normalize(x + v*t), select(x/l, select(v3(1,0,0),v3(-1,0,0),pid < u32(qid)), l == 0), t == 0);
-                    let dxc = select(pv*t, pw/w * (2*u.r - l) * n, t == 0);
-                    let vn1 = dot(pv,n);
-                    let vn2 = max(0, ec * (vn1 - 2*pw/w*dot(v,n)));
-                    dv += (vn2 - vn1) * n;
-                    dx += dxc - vn2*t*n;
+                    var n = select(x/l, select(v3(1,0,0),v3(-1,0,0),pid < u32(qid)), l == 0);
+                    var dxc = pw/w * (2*u.r - l) * n;
+                    if (vv != 0) {                        
+                        let disc = b*b - 4*vv*(l*l - Dsq);
+                        if (disc >= 0) {
+                            let t = .5*(-b - sqrt(disc))/vv;
+                            if (t <= 0 && t >= -1) {
+                                n = normalize(x + v*t);
+                                dxc = pv*t;
+                            }                                
+                        }
+                    }
+                    let ec = pec * (*q).collision;
+                    let pvn = dot(pv,n);
+                    let pvn2 = ec * (pvn - 2*pw/w*dot(v,n));
+                    dv += (pvn2 - pvn)*n;
+                    dx += dxc;
                 }                
             }
         }

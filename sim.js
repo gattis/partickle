@@ -92,7 +92,7 @@ export const Particle = GPU.struct({
         ['dx', V3],
         ['hash',i32],
         ['dv',V3],
-        ['dbg',V3],
+        //['dbg',V3],
     ]
 })
 
@@ -297,12 +297,12 @@ export async function Sim(width, height, ctx) {
     }
 
     let s = .01      
-    particles[0].v = v3(-s,0,0)
+    /*particles[0].v = v3(-s,0,0)
     particles[1].v = v3(s,0,0)
     particles[2].v = v3(0,0,0)
     particles[3].v = v3(s,0,0)
     particles[4].v = v3(0,s,0)
-    particles[5].v = v3(s,0,0)
+    particles[5].v = v3(s,0,0)*/
 
     
     meshes = Meshes.of(meshes)
@@ -488,8 +488,8 @@ export async function Sim(width, height, ctx) {
                     checkGrabHits()
                     frames++
                     steps++
-                    let ps = await dbgbuf(pbuf)
-                    dbg({ dbg10:ps[10].dbg, dbg11:ps[11].dbg  })
+                    //let ps = await dbgbuf(pbuf)
+                    //dbg({ dbg0:ps[0].dbg, dbg1:ps[1].dbg })
                    
                 }
                 tlast = clock()
