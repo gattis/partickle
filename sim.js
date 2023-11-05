@@ -7,7 +7,7 @@ const MAXEDGES = 18
 const MAXRING = 48
 const CELLSIZE = 8
 const CELLDIM = 256
-const SHADOWRES = 2048
+const SHADOWRES = 4096
 
 const particleColors = [v4(.3,.6,.8,1), v4(.99,.44,.57, 1), v4(.9, .48, .48, 1)]
 
@@ -26,12 +26,12 @@ phys.addNum('shearstiff', .5, 0, 1, 0.001)
 phys.addNum('damp', 0.5, 0, 1, .1)
 phys.addNum('friction', 1, 0, 1, .01)
 phys.addNum('collision', 1, 0, 1, .01)
-//phys.addNum('xmin', -1.5, -25, 0, 0.01)
-phys.addNum('xmax', 1.5, 0.1, 25, 0.01)
-//phys.addNum('ymin', -1.5, -25, 0, 0.01)
-phys.addNum('ymax', 1.5, .1, 25, 0.01)
-//phys.addNum('zmin', 0, -25, 0, 0.01)
-phys.addNum('zmax', 3, 0.1, 50, 0.01)
+phys.addNum('xmin', -1.5, -25, 0, 0.01)
+phys.addNum('xmax', 1.5, .01, 25, 0.01)
+phys.addNum('ymin', -1.5, -25, 0, 0.01)
+phys.addNum('ymax', 1.5, .01, 25, 0.01)
+phys.addNum('zmin', 0, -25, 0, 0.01)
+phys.addNum('zmax', 3, 0.01, 50, 0.01)
 
 
 
@@ -42,7 +42,8 @@ render.addBool('walls', true)
 render.addBool('normals', false)
 render.addBool('shadows', true)
 render.addBool('lights', true)
-render.addBool('velocity', true)
+render.addBool('velocity', false)
+render.addBool('surfaces', true)
 
 render.addChoice('alpha_mode', 'premultiplied', ['opaque','premultiplied'])
 render.addChoice('format', 'rgba16float', ['rgba8unorm','bgra8unorm','rgba16float'])
@@ -359,9 +360,6 @@ export async function Sim(width, height, ctx) {
     const syncUniforms = () => {
         uni.r = phys.r * diameter/2
         uni.cam_x = render.cam_x
-        phys.xmin = -phys.xmax
-        phys.ymin = -phys.ymax
-        phys.zmin = 0
         uni.spacemin = v3(phys.xmin, phys.ymin, phys.zmin)
         uni.spacemax = v3(phys.xmax, phys.ymax, phys.zmax)
         uni.damp = phys.damp
@@ -582,7 +580,7 @@ export async function Sim(width, height, ctx) {
                 }
             })
             
-            if (tris.length > 0) {                
+            if (tris.length > 0 && render.surfaces) {
                 dispatch = tris.length * 3
                 desc = {
                     shader, entry:'surface',
@@ -676,9 +674,6 @@ export async function Sim(width, height, ctx) {
         await setup()
 
         const syncEyes = () => {
-            phys.xmin = -phys.xmax
-            phys.ymin = -phys.ymax
-            phys.zmin = 0
             let bmin = v3(phys.xmin, phys.ymin, phys.zmin)
             let bmax = v3(phys.xmax, phys.ymax, phys.zmax)
             let x = bmin.add(bmax).divc(2)

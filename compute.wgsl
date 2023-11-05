@@ -14,7 +14,7 @@ fn softmin(a:f32, b:f32, k:f32) -> f32 {
 
 fn safenorm(v:v3) -> v3 {
     let l = length(v);
-    return select(v/l, v3(0,0,1), l == 0);
+    return select(v/l, v3(0,0,0), l == 0);
 }
 
 fn cell_insert(hash:i32, pid:u32) {
@@ -115,7 +115,7 @@ fn wall_collide(@builtin(global_invocation_id) gid:vec3<u32>) {
     if (pid >= arrayLength(&pbuf)) { return; }
     let p = &pbuf[pid];
     let ec = u.collision * (*p).collision;
-    let ef = u.friction * (*p).friction;
+    let ef = pow(u.friction * (*p).friction, 3.0);
     let x = (*p).x;
     let v = (*p).v;
     var dx = v3(0,0,0);
@@ -131,7 +131,11 @@ fn wall_collide(@builtin(global_invocation_id) gid:vec3<u32>) {
         let an = dot(u.a,n);
         let disc = vn1*vn1 - 2*an*xn;
         let vn2 = select(ec * sqrt(disc), 0, disc <= 0);
-        dv += (vn2 - vn1)*n;
+        let vt = v - n*vn1;
+        let vtmag = length(vt);
+        let vtdir = select(vt/vtmag, v3(0,0,0), vtmag == 0);
+        let an2 = vn2 - vn1;
+        dv += an2*n - min(ef*an2,vtmag)*vtdir;
     }
    
     (*p).x += dx;
@@ -172,12 +176,13 @@ fn pair_collide(@builtin(global_invocation_id) gid:vec3<u32>) {
                     if (l >= D) { continue; }
                     let v = pv - (*q).v;
                     var n = select(x/l, select(v3(1,0,0),v3(-1,0,0),pid < u32(qid)), l == 0);
-                    var dxc = pw/w * (2*u.r - l) * n;
                     let ec = pec * (*q).collision;
+                    let vn = dot(v,n);
                     let pvn = dot(pv,n);
-                    let pvn2 = ec * (pvn - 2*pw/w*dot(v,n));
-                    dv += (pvn2 - pvn)*n;
-                    dx += dxc;
+                    let pvn2 = ec * (pvn - 2*pw/w*vn);
+                    let dvn = pvn2 - pvn;
+                    dv += dvn*n;
+                    dx += pw/w * (2*u.r - l) * n;
                 }                
             }
         }

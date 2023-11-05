@@ -271,25 +271,25 @@ window.sim = await Sim(cv.width, cv.height, ctx)
 window.sim.run()
 
 
-cv.on('mousedown', down => {
+cv.on('pointerdown', down => {
     if (down.button != 0) return
     if (editor.open) return editor.close()
     const off = window.onoff('pointermove', move => sim.rotateCam(.005*move.movementX, -.005*move.movementY))
     window.once('pointerup', up => off())
 })
 
-cv.on('mousedown', down => {
+cv.on('pointerdown', down => {
     if (down.button != 1) return
     const off = window.onoff('pointermove', move => sim.strafeCam(.001*move.movementX, -.001*move.movementY))
     window.once('pointerup', up => off())
 })
 
-cv.on('mousedown', down => {
+cv.on('pointerdown', down => {
     if (down.button != 2) return
     sim.grabParticle(down.x, down.y).then(() => {
         cv.style.cursor = 'grabbing'
         const moveoff = window.onoff('pointermove', move => sim.moveParticle(move.x, move.y))
-        const lmboff = cv.onoff('mousedown', down2 => down2.button == 0 && sim.fixParticle())
+        const lmboff = cv.onoff('pointerdown', down2 => down2.button == 0 && sim.fixParticle())
         window.once('pointerup', up => {
             moveoff()
             lmboff()

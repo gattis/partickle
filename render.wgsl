@@ -9,25 +9,26 @@ const shininess = 4.0;
 const ambient = 0.03f;
 
 
-
-
-fn shadow(x:v3, i:i32) -> f32 {
+fn shadow(xw:v3, i:i32) -> f32 {
     let l = lbuf[i];
-    let ss = l.viewproj * v4(x,1);
-    let c = ss.xyz/ss.w * v3(.5, -.5, 1) + v3(.5,.5, -1e-6);
-    if (ss.z < 0 || c.x < 0 || c.y < 0 || c.x > 1 || c.y > 1) { return 0; }
     if (l.shadow == 0) { return 1.0; }
+    let ss = l.viewproj * v4(xw,1);
+
+    let eps = 1e-6;
+    let c = ss.xyz/ss.w * v3(.5, -.5, 1) + v3(.5,.5, -eps);
+    if (ss.z < 0 || c.x < 0 || c.y < 0 || c.x > 1 || c.y > 1) { return 0; }
+    
     let uv = c.xy;
     let d = c.z;
-    return clamp((textureSampleCompareLevel(shadowMaps, shadowSamp, uv, i, d, v2i( 0, 0)) +
-                  textureSampleCompareLevel(shadowMaps, shadowSamp, uv, i, d, v2i(-1,-1)) +
-                  textureSampleCompareLevel(shadowMaps, shadowSamp, uv, i, d, v2i(-1, 0)) +
-                  textureSampleCompareLevel(shadowMaps, shadowSamp, uv, i, d, v2i(-1, 1)) +
-                  textureSampleCompareLevel(shadowMaps, shadowSamp, uv, i, d, v2i( 0,-1)) +
-                  textureSampleCompareLevel(shadowMaps, shadowSamp, uv, i, d, v2i( 0, 1)) +
-                  textureSampleCompareLevel(shadowMaps, shadowSamp, uv, i, d, v2i( 1,-1)) +
-                  textureSampleCompareLevel(shadowMaps, shadowSamp, uv, i, d, v2i( 1, 0)) +
-                  textureSampleCompareLevel(shadowMaps, shadowSamp, uv, i, d, v2i( 1, 1)))/9.0, 0, 1);
+
+    var s = 0.0;
+    let dim = v2(textureDimensions(shadowMaps));
+    for (var y = -1; y <= 1; y++) {
+        for (var x = -1; x <= 1; x++) {
+            s += textureSampleCompareLevel(shadowMaps, shadowSamp, uv + v2(v2i(x,y)) / dim, i, d);
+        }
+    }
+    return s / 9.0;
 }
 
 fn frag(worldx:v3, norm:v3, color:v4) -> v4 {
