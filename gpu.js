@@ -136,7 +136,7 @@ export const GPU = class GPU {
             if (!['multi-planar-formats','clear-texture','chromium-experimental-dp4a'].includes(feature))
                features.push(feature)
         for (const prop of Object.getOwnPropertyNames(adapter.limits.constructor.prototype)) {
-            if (prop == 'maxInterStageShaderVariables') continue
+            if (prop == 'maxInterStageShaderVariables' || prop == 'minSubgroupSize') continue
             const val = adapter.limits[prop]
             if (prop != 'constructor' && val != undefined)
                 limits[prop] = val
